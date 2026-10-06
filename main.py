@@ -46,6 +46,10 @@ from telegram.ext import (
 
 from market_data import (
     DEFAULT_SYMBOL,
+    SECONDARY_SYMBOL,
+    POPULAR_SYMBOLS,
+    resolve_symbol,
+    get_market_overview,
     get_ticker,
     get_level_analysis,
     format_level_analysis_message,
@@ -248,14 +252,15 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = (
         "🤖 <b>Welcome to Gemini Trading Assistant!</b>\n\n"
         "Your intelligent assistant combining Delta Exchange market intelligence, automatic level "
-        "analysis, price alerts, multi-timeframe candle scanner, and <b>Gautam Jha Price-Action & Liquidity strategy</b>.\n\n"
+        "analysis, price alerts, multi-timeframe candle scanner, and <b>Gautam Jha Price-Action & Liquidity strategy</b> "
+        "for <b>Bitcoin (BTC)</b> and <b>Gold (XAU)</b>.\n\n"
         "🔥 <b>Key Features:</b>\n"
-        "• <b>Live Prices:</b> <code>/price XAUTUSD</code>\n"
-        "• <b>Automatic Levels:</b> <code>/levels XAUTUSD</code> (Pivots, Fibs, S/R, DO, PDH, PDL)\n"
-        "• <b>Gautam Jha Liquidity:</b> <code>/gj XAUTUSD</code> (Daily Open, PDH/PDL sweeps, 3 Trade Styles)\n"
-        "• <b>Price Alerts:</b> <code>/alert 4180</code> or <code>/alert BTCUSD 86000</code>\n"
-        "• <b>Candle Entry Scan:</b> <code>/entry XAUTUSD</code> (1m, 5m, 15m setups)\n"
-        "• <b>Automated Entry Alerts:</b> <code>/watch XAUTUSD</code> (Notifies on candle close)\n"
+        "• <b>Market Overview:</b> <code>/price</code> (Live BTC & Gold overview)\n"
+        "• <b>Bitcoin (BTC):</b> <code>/btc</code>, <code>/btclevels</code>, <code>/btcgj</code>, <code>/btcentry</code>\n"
+        "• <b>Gold (XAU):</b> <code>/gold</code>, <code>/goldlevels</code>, <code>/goldgj</code>, <code>/goldentry</code>\n"
+        "• <b>Price Alerts:</b> <code>/alert btc 85000</code> or <code>/alert gold 4180</code>\n"
+        "• <b>Candle Entry Scan:</b> <code>/entry btc</code> or <code>/entry gold</code> (1m, 5m, 15m)\n"
+        "• <b>Automated Entry Alerts:</b> <code>/btcwatch</code> or <code>/watch btc</code>\n"
         "• <b>📸 Chart Photo Scanner:</b> Send any chart photo/screenshot for instant Gautam Jha analysis!\n"
         "• <b>Manage Alerts:</b> <code>/alerts</code>, <code>/delalert &lt;ID&gt;</code>, <code>/watchers</code>\n"
         "• <b>AI Analysis:</b> Send any question to get precise trade plans grounded in live levels!\n\n"
@@ -268,27 +273,37 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Show all bot commands in a quick, clean reference list."""
     msg = (
         "📜 <b>ALL BOT COMMANDS:</b>\n\n"
-        "💹 <b>Market Data & Prices</b>\n"
-        "• <code>/price [SYMBOL]</code> — Live ticker, 24h high/low, open, and change %\n\n"
-        "📊 <b>Level & Liquidity Analysis</b>\n"
-        "• <code>/levels [SYMBOL]</code> — Automatic Level Analysis (Pivots, Fibs, S/R, DO)\n"
-        "• <code>/analysis [SYMBOL]</code> — Alias for /levels\n"
-        "• <code>/gj [SYMBOL]</code> — Gautam Jha Price-Action Analysis (DO, PDH, PDL, sweeps)\n"
-        "• <code>/liquidity [SYMBOL]</code> — Alias for /gj\n\n"
-        "🚨 <b>Price Alerts</b>\n"
-        "• <code>/alert [SYMBOL] &lt;PRICE&gt;</code> — Set price alert (auto >= or <=)\n"
+        "🪙 <b>Bitcoin (BTC) Shortcuts:</b>\n"
+        "• <code>/btc</code> — Live BTC ticker & 24h stats\n"
+        "• <code>/btclevels</code> — BTC Automatic Level Analysis (Pivots, Fibs, S/R)\n"
+        "• <code>/btcgj</code> — BTC Gautam Jha Liquidity (DO, PDH, PDL, sweeps)\n"
+        "• <code>/btcentry</code> — BTC 1m, 5m, 15m candle entry scan\n"
+        "• <code>/btcwatch</code> — Turn ON automated candle alerts for BTC\n\n"
+        "🥇 <b>Gold (XAU) Shortcuts:</b>\n"
+        "• <code>/gold</code> (or <code>/xau</code>) — Live Gold ticker & stats\n"
+        "• <code>/goldlevels</code> — Gold Automatic Level Analysis\n"
+        "• <code>/goldgj</code> — Gold Gautam Jha Liquidity\n"
+        "• <code>/goldentry</code> — Gold 1m, 5m, 15m candle entry scan\n"
+        "• <code>/goldwatch</code> — Turn ON automated candle alerts for Gold\n\n"
+        "💹 <b>Market Data & Any Symbol:</b>\n"
+        "• <code>/price</code> — Live overview of BTC & Gold\n"
+        "• <code>/price [SYMBOL]</code> — Live ticker for any coin (e.g. <code>/price ETH</code>)\n\n"
+        "📊 <b>Level & Liquidity Analysis:</b>\n"
+        "• <code>/levels [SYMBOL]</code> (or <code>/analysis</code>) — S/R, Pivots, Fibs, DO\n"
+        "• <code>/gj [SYMBOL]</code> (or <code>/liquidity</code>) — Gautam Jha Price Action\n\n"
+        "🚨 <b>Price Alerts:</b>\n"
+        "• <code>/alert [SYMBOL] &lt;PRICE&gt;</code> — Set price alert (e.g. <code>/alert btc 85000</code>)\n"
         "• <code>/alerts</code> — List your active price alerts\n"
         "• <code>/delalert &lt;ID&gt;</code> — Remove an alert by ID\n"
         "• <code>/clearalerts</code> — Clear all your active price alerts\n\n"
-        "🎯 <b>1m, 5m, 15m Candle Entry Alerts</b>\n"
-        "• <code>/entry [SYMBOL]</code> — Instant scan on 1m, 5m, 15m candle setups\n"
-        "• <code>/scan [SYMBOL]</code> — Alias for /entry\n"
-        "• <code>/watch [SYMBOL] [tfs]</code> — Turn ON automated candle entry alerts\n"
-        "• <code>/unwatch [SYMBOL]</code> — Turn OFF automated candle entry alerts\n"
+        "🎯 <b>1m, 5m, 15m Candle Entry Alerts:</b>\n"
+        "• <code>/entry [SYMBOL]</code> (or <code>/scan</code>) — Scan 1m, 5m, 15m candles\n"
+        "• <code>/watch [SYMBOL] [tfs]</code> — Turn ON automated candle alerts\n"
+        "• <code>/unwatch [SYMBOL]</code> — Turn OFF automated candle alerts\n"
         "• <code>/watchers</code> — List active candle scanners\n\n"
-        "📸 <b>Chart Photo Analysis</b>\n"
+        "📸 <b>Chart Photo Analysis:</b>\n"
         "• <i>Send Chart Photo</i> — Upload any screenshot for Gautam Jha vision analysis\n\n"
-        "🤖 <b>Bot Controls & Chat</b>\n"
+        "🤖 <b>Bot Controls & Chat:</b>\n"
         "• <code>/list</code> — Show this full commands list\n"
         "• <code>/help</code> — Detailed instructions & examples\n"
         "• <code>/start</code> — Introduction & welcome overview\n"
@@ -301,44 +316,53 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Help command with usage examples."""
     msg = (
-        "📖 <b>Trading Assistant Commands:</b>\n\n"
-        "<b>1. Price & Market Data:</b>\n"
-        "• <code>/price [SYMBOL]</code> — Live ticker (default: XAUTUSD)\n"
-        "  <i>Example: /price BTCUSD</i>\n\n"
-        "<b>2. Automatic Level & Liquidity Analysis:</b>\n"
-        "• <code>/levels [SYMBOL]</code> (or <code>/analysis</code>) — Calculates Daily Pivots, "
-        "Fibonacci Retracements, Nearest Support & Resistance, Daily Open, and Trend Bias.\n"
-        "• <code>/gj [SYMBOL]</code> (or <code>/liquidity</code>) — Pure <b>Gautam Jha Strategy</b>: "
-        "Daily Open (DO), Previous Day High (PDH), Previous Day Low (PDL), liquidity sweep status, and 3 trade setups.\n"
-        "  <i>Example: /gj XAUTUSD</i>\n\n"
-        "<b>3. Price Alerts:</b>\n"
-        "• <code>/alert &lt;PRICE&gt;</code> — Set alert on default symbol (auto-detects above/below)\n"
-        "• <code>/alert &lt;SYMBOL&gt; &lt;PRICE&gt;</code> — Set alert for specific symbol\n"
-        "• <code>/alert &lt;SYMBOL&gt; &gt;= &lt;PRICE&gt;</code> — Explicit condition\n"
-        "  <i>Examples: /alert 4180 | /alert BTCUSD 86500</i>\n"
-        "• <code>/alerts</code> — View all your active price alerts\n"
+        "📖 <b>Trading Assistant Commands & Guide:</b>\n\n"
+        "🪙 <b>Bitcoin (BTC) Shortcuts:</b>\n"
+        "• <code>/btc</code> — Live BTC ticker & 24h stats\n"
+        "• <code>/btclevels</code> — BTC key levels (Pivots, Fibs, S/R)\n"
+        "• <code>/btcgj</code> — BTC Gautam Jha Liquidity (DO, PDH, PDL)\n"
+        "• <code>/btcentry</code> — BTC 1m, 5m, 15m candle entry scan\n"
+        "• <code>/btcwatch</code> — Automated candle alerts for BTC\n\n"
+        "🥇 <b>Gold (XAU) Shortcuts:</b>\n"
+        "• <code>/gold</code> (or <code>/xau</code>) — Live Gold ticker\n"
+        "• <code>/goldlevels</code> — Gold key levels\n"
+        "• <code>/goldgj</code> — Gold Gautam Jha Liquidity\n"
+        "• <code>/goldentry</code> — Gold 1m, 5m, 15m candle entry scan\n"
+        "• <code>/goldwatch</code> — Automated candle alerts for Gold\n\n"
+        "💹 <b>Market Data & Any Symbol:</b>\n"
+        "• <code>/price</code> — Live comparison overview (BTC & Gold)\n"
+        "• <code>/price [SYMBOL]</code> — Live ticker (e.g. <code>/price ETH</code>)\n"
+        "• <code>/levels [SYMBOL]</code> — S/R, Pivots, Fibs for any coin\n"
+        "• <code>/gj [SYMBOL]</code> — Gautam Jha analysis for any coin\n\n"
+        "🚨 <b>Price Alerts:</b>\n"
+        "• <code>/alert [SYMBOL] &lt;PRICE&gt;</code> — Set price alert\n"
+        "  <i>Examples: <code>/alert btc 85000</code> | <code>/alert gold 4180</code> | <code>/alert 85000</code></i>\n"
+        "• <code>/alerts</code> — List your active price alerts\n"
         "• <code>/delalert &lt;ID&gt;</code> — Delete alert by ID\n"
         "• <code>/clearalerts</code> — Clear all price alerts\n\n"
-        "<b>4. 1m, 5m, 15m Candle Entry Alerts:</b>\n"
-        "• <code>/entry [SYMBOL]</code> (or <code>/scan</code>) — Instantly scan 1m, 5m, and 15m "
-        "candles for Break-and-Go, Retrace-to-DO, Pin Bars, Engulfing, and S/R Bounces with Entry, SL, TP1, TP2!\n"
-        "• <code>/watch [SYMBOL] [tfs]</code> — Enable <b>automatic entry alerts</b>! Sends notification "
-        "when an entry setup forms on a candle close.\n"
-        "  <i>Examples: /watch XAUTUSD | /watch BTCUSD 5m,15m</i>\n"
-        "• <code>/unwatch [SYMBOL]</code> — Stop entry alerts (or <code>/unwatch all</code>)\n"
-        "• <code>/watchers</code> — View active entry scanners\n\n"
-        "<b>5. Chart Photos & AI Chat:</b>\n"
-        "• <b>📸 Send Chart Screenshot</b> — Upload any chart photo (add caption e.g. <code>XAUUSD 15m</code>) "
-        "and get a complete Gautam Jha top-down liquidity breakdown!\n"
+        "🎯 <b>1m, 5m, 15m Candle Entry Alerts:</b>\n"
+        "• <code>/entry [SYMBOL]</code> — Instant candle entry scan with Entry, SL, TP1, TP2\n"
+        "• <code>/watch [SYMBOL] [tfs]</code> — Enable background candle alerts\n"
+        "• <code>/unwatch [SYMBOL]</code> — Disable candle alerts\n"
+        "• <code>/watchers</code> — List active candle scanners\n\n"
+        "📸 <b>Chart Photo Vision Analysis:</b>\n"
+        "• Send any chart screenshot to get instant Gautam Jha top-down liquidity breakdown!\n\n"
+        "🤖 <b>Bot Controls:</b>\n"
+        "• <code>/list</code> — All commands directory\n"
         "• <code>/reset</code> — Clear AI conversation history\n"
-        "• <i>Any text</i> — Chat with assistant (sees live market data, DO, PDH, PDL, and candle signals)"
+        "• <i>Any text</i> — Chat with assistant (sees live market context)"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
 async def price_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Live price command."""
-    symbol = ctx.args[0].upper() if ctx.args else DEFAULT_SYMBOL
+    """Live price command: shows market overview if no args, or specific ticker if symbol given."""
+    if not ctx.args:
+        msg = get_market_overview()
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        return
+
+    symbol = resolve_symbol(ctx.args[0])
     try:
         t = get_ticker(symbol)
         mark = t["mark_price"] or t["close"]
@@ -346,14 +370,16 @@ async def price_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         chg_pct = (chg / t["open"] * 100.0) if t["open"] > 0 else 0.0
         sign = "+" if chg >= 0 else ""
 
+        name = "Bitcoin (BTC)" if "BTC" in symbol else ("Gold (XAU)" if "XAU" in symbol else symbol)
         msg = (
-            f"🪙 <b>#{t['symbol']} Live Ticker</b>\n\n"
+            f"🪙 <b>{name}</b> (<code>#{t['symbol']}</code>) <b>Live Ticker</b>\n\n"
             f"💵 <b>Price:</b> <code>${mark:,.2f}</code>\n"
             f"📊 <b>24h Change:</b> <code>{sign}{chg:,.2f} ({sign}{chg_pct:.2f}%)</code>\n"
             f"🔺 <b>24h High:</b> <code>${t['high']:,.2f}</code>\n"
             f"🔻 <b>24h Low:</b> <code>${t['low']:,.2f}</code>\n"
             f"🚪 <b>24h Open:</b> <code>${t['open']:,.2f}</code>\n"
-            f"📦 <b>24h Volume:</b> <code>{t['volume']:,.0f}</code>"
+            f"📦 <b>24h Volume:</b> <code>{t['volume']:,.0f}</code>\n\n"
+            f"💡 <i>Shortcuts: <code>/levels {symbol}</code> | <code>/gj {symbol}</code> | <code>/entry {symbol}</code></i>"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
     except Exception as e:
@@ -362,7 +388,7 @@ async def price_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def levels_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Automatic level analysis command."""
-    symbol = ctx.args[0].upper() if ctx.args else DEFAULT_SYMBOL
+    symbol = resolve_symbol(ctx.args[0]) if ctx.args else DEFAULT_SYMBOL
     try:
         analysis = get_level_analysis(symbol)
         msg = format_level_analysis_message(analysis)
@@ -373,7 +399,7 @@ async def levels_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def gj_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Dedicated Gautam Jha Liquidity Level Analysis command."""
-    symbol = ctx.args[0].upper() if ctx.args else DEFAULT_SYMBOL
+    symbol = resolve_symbol(ctx.args[0]) if ctx.args else DEFAULT_SYMBOL
     try:
         analysis = get_gautam_jha_analysis(symbol)
         msg = format_gautam_jha_message(analysis)
@@ -382,15 +408,81 @@ async def gj_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error computing Gautam Jha analysis for {symbol}: {e}")
 
 
+# Shortcuts for Bitcoin (BTC)
+async def btc_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut: /btc -> Live BTC ticker."""
+    ctx.args = ["BTCUSD"]
+    await price_cmd(update, ctx)
+
+
+async def btc_levels_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut: /btclevels -> BTC Level Analysis."""
+    ctx.args = ["BTCUSD"]
+    await levels_cmd(update, ctx)
+
+
+async def btc_gj_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut: /btcgj -> BTC Gautam Jha Liquidity."""
+    ctx.args = ["BTCUSD"]
+    await gj_cmd(update, ctx)
+
+
+async def btc_entry_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut: /btcentry -> BTC 1m, 5m, 15m candle entry scan."""
+    ctx.args = ["BTCUSD"]
+    await entry_cmd(update, ctx)
+
+
+async def btc_watch_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut: /btcwatch -> Enable automated candle alerts for BTC."""
+    tfs = ctx.args if ctx.args else ["1m,5m,15m"]
+    ctx.args = ["BTCUSD"] + tfs
+    await watch_cmd(update, ctx)
+
+
+# Shortcuts for Gold (XAU)
+async def gold_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut: /gold or /xau -> Live Gold ticker."""
+    ctx.args = ["XAUTUSD"]
+    await price_cmd(update, ctx)
+
+
+async def gold_levels_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut: /goldlevels -> Gold Level Analysis."""
+    ctx.args = ["XAUTUSD"]
+    await levels_cmd(update, ctx)
+
+
+async def gold_gj_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut: /goldgj -> Gold Gautam Jha Liquidity."""
+    ctx.args = ["XAUTUSD"]
+    await gj_cmd(update, ctx)
+
+
+async def gold_entry_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut: /goldentry -> Gold 1m, 5m, 15m candle entry scan."""
+    ctx.args = ["XAUTUSD"]
+    await entry_cmd(update, ctx)
+
+
+async def gold_watch_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut: /goldwatch -> Enable automated candle alerts for Gold."""
+    tfs = ctx.args if ctx.args else ["1m,5m,15m"]
+    ctx.args = ["XAUTUSD"] + tfs
+    await watch_cmd(update, ctx)
+
+
 def _parse_alert_args(args: List[str]) -> Tuple[Optional[str], Optional[float], Optional[str], Optional[str]]:
-    """Parse alert command arguments flexibly."""
+    """Parse alert command arguments flexibly with smart symbol inference."""
     if not args:
         return None, None, None, (
             "Usage: <code>/alert [SYMBOL] [CONDITION] &lt;PRICE&gt;</code>\n"
             "Examples:\n"
-            "• <code>/alert 4180</code>\n"
-            "• <code>/alert XAUTUSD 4180</code>\n"
-            "• <code>/alert BTCUSD &lt;= 85000</code>"
+            "• <code>/alert btc 85000</code>\n"
+            "• <code>/alert gold 4180</code>\n"
+            "• <code>/alert 85000</code> (auto-detects BTC)\n"
+            "• <code>/alert 4180</code> (auto-detects Gold)\n"
+            "• <code>/alert BTCUSD &lt;= 84500</code>"
         )
 
     symbol = None
@@ -416,9 +508,19 @@ def _parse_alert_args(args: List[str]) -> Tuple[Optional[str], Optional[float], 
             pass
 
     if target_price is None:
-        return None, None, None, "❌ Could not parse price. Example: <code>/alert 4180</code> or <code>/alert BTCUSD 86000</code>"
+        return None, None, None, "❌ Could not parse price. Example: <code>/alert btc 85000</code> or <code>/alert gold 4180</code>"
 
-    symbol = tokens[0].upper() if tokens else DEFAULT_SYMBOL
+    if tokens:
+        symbol = resolve_symbol(tokens[0])
+    else:
+        # Auto-detect BTC vs Gold based on price magnitude
+        if target_price >= 15000:
+            symbol = "BTCUSD"
+        elif 1000 <= target_price < 15000:
+            symbol = "XAUTUSD"
+        else:
+            symbol = DEFAULT_SYMBOL
+
     return symbol, target_price, condition, None
 
 
@@ -522,7 +624,7 @@ async def clear_alerts_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def entry_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Instant multi-timeframe candle entry scanner."""
-    symbol = ctx.args[0].upper() if ctx.args else DEFAULT_SYMBOL
+    symbol = resolve_symbol(ctx.args[0]) if ctx.args else DEFAULT_SYMBOL
     await update.message.reply_text(f"⏳ Analyzing 1m, 5m, and 15m candles for #{symbol}...")
     try:
         multi_data = get_multi_timeframe_entry(symbol, ["1m", "5m", "15m"])
@@ -547,7 +649,7 @@ def _parse_watch_args(args: List[str]) -> Tuple[str, List[str]]:
         if matched_tfs:
             timeframes = matched_tfs
         else:
-            symbol = arg.upper()
+            symbol = resolve_symbol(arg)
 
     return symbol, timeframes
 
@@ -620,6 +722,26 @@ async def reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🧹 Conversation history cleared.")
 
 
+def _detect_symbol_from_text(text: Optional[str], default: str = DEFAULT_SYMBOL) -> str:
+    """Helper to detect symbol mentioned in a chat message or image caption."""
+    if not text:
+        return default
+    upper = text.upper()
+    if "GOLD" in upper or "XAU" in upper:
+        return "XAUTUSD"
+    if "BTC" in upper or "BITCOIN" in upper:
+        return "BTCUSD"
+    if "ETH" in upper or "ETHEREUM" in upper:
+        return "ETHUSD"
+    if "SOL" in upper or "SOLANA" in upper:
+        return "SOLUSD"
+    for word in text.split():
+        clean_word = word.strip("$#,!?.").upper()
+        if clean_word.endswith("USD") and len(clean_word) >= 5:
+            return resolve_symbol(clean_word)
+    return default
+
+
 async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Chat with AI assistant with live market context injected."""
     chat_id = update.effective_chat.id
@@ -628,12 +750,7 @@ async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # Detect symbol from text if mentioned, else default
-    symbol = DEFAULT_SYMBOL
-    for word in text.split():
-        clean_word = word.strip("$#,!?.").upper()
-        if clean_word.endswith("USD") and len(clean_word) >= 5:
-            symbol = clean_word
-            break
+    symbol = _detect_symbol_from_text(text, DEFAULT_SYMBOL)
 
     # Build rich market context
     try:
@@ -681,12 +798,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     caption = update.message.caption or "Analyze this chart using Gautam Jha style."
 
     # Detect symbol from caption if present
-    symbol = DEFAULT_SYMBOL
-    for word in caption.split():
-        clean_word = word.strip("$#,!?.").upper()
-        if clean_word.endswith("USD") and len(clean_word) >= 5:
-            symbol = clean_word
-            break
+    symbol = _detect_symbol_from_text(caption, DEFAULT_SYMBOL)
 
     # Enrich prompt with live market liquidity data if available
     context_note = ""
@@ -848,6 +960,23 @@ def main():
     app.add_handler(CommandHandler("list", list_cmd))
     app.add_handler(CommandHandler("commands", list_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
+
+    # BTC Shortcuts
+    app.add_handler(CommandHandler("btc", btc_cmd))
+    app.add_handler(CommandHandler("btclevels", btc_levels_cmd))
+    app.add_handler(CommandHandler("btcgj", btc_gj_cmd))
+    app.add_handler(CommandHandler("btcentry", btc_entry_cmd))
+    app.add_handler(CommandHandler("btcwatch", btc_watch_cmd))
+
+    # Gold Shortcuts
+    app.add_handler(CommandHandler("gold", gold_cmd))
+    app.add_handler(CommandHandler("xau", gold_cmd))
+    app.add_handler(CommandHandler("goldlevels", gold_levels_cmd))
+    app.add_handler(CommandHandler("goldgj", gold_gj_cmd))
+    app.add_handler(CommandHandler("goldentry", gold_entry_cmd))
+    app.add_handler(CommandHandler("goldwatch", gold_watch_cmd))
+
+    # General Market Commands
     app.add_handler(CommandHandler("price", price_cmd))
     app.add_handler(CommandHandler("levels", levels_cmd))
     app.add_handler(CommandHandler("analysis", levels_cmd))

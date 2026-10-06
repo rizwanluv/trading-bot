@@ -133,16 +133,31 @@ class TestAlertManager(unittest.TestCase):
 
 class TestArgumentParsers(unittest.TestCase):
     def test_alert_args(self):
+        # Auto-detects Gold when price in Gold range
         sym, pr, cond, err = _parse_alert_args(["4180"])
         self.assertIsNone(err)
         self.assertEqual(sym, "XAUTUSD")
         self.assertEqual(pr, 4180.0)
 
-        sym, pr, cond, err = _parse_alert_args(["BTCUSD", "86000"])
+        # Auto-detects Bitcoin when price >= 15000
+        sym, pr, cond, err = _parse_alert_args(["85000"])
+        self.assertIsNone(err)
+        self.assertEqual(sym, "BTCUSD")
+        self.assertEqual(pr, 85000.0)
+
+        # Explicit BTC alias
+        sym, pr, cond, err = _parse_alert_args(["btc", "86000"])
         self.assertIsNone(err)
         self.assertEqual(sym, "BTCUSD")
         self.assertEqual(pr, 86000.0)
 
+        # Explicit Gold alias
+        sym, pr, cond, err = _parse_alert_args(["gold", "4200"])
+        self.assertIsNone(err)
+        self.assertEqual(sym, "XAUTUSD")
+        self.assertEqual(pr, 4200.0)
+
+        # Explicit condition
         sym, pr, cond, err = _parse_alert_args(["BTCUSD", "<=", "85000"])
         self.assertIsNone(err)
         self.assertEqual(sym, "BTCUSD")
@@ -151,12 +166,38 @@ class TestArgumentParsers(unittest.TestCase):
 
     def test_watch_args(self):
         sym, tfs = _parse_watch_args([])
+        self.assertEqual(sym, "BTCUSD")
+        self.assertEqual(tfs, ["1m", "5m", "15m"])
+
+        sym, tfs = _parse_watch_args(["gold"])
         self.assertEqual(sym, "XAUTUSD")
         self.assertEqual(tfs, ["1m", "5m", "15m"])
 
         sym, tfs = _parse_watch_args(["BTCUSD", "5m,15m"])
         self.assertEqual(sym, "BTCUSD")
         self.assertEqual(tfs, ["5m", "15m"])
+
+
+class TestSymbolResolution(unittest.TestCase):
+    def test_resolve_symbol(self):
+        from market_data import resolve_symbol
+        self.assertEqual(resolve_symbol("btc"), "BTCUSD")
+        self.assertEqual(resolve_symbol("bitcoin"), "BTCUSD")
+        self.assertEqual(resolve_symbol("BTCUSD"), "BTCUSD")
+        self.assertEqual(resolve_symbol("gold"), "XAUTUSD")
+        self.assertEqual(resolve_symbol("xau"), "XAUTUSD")
+        self.assertEqual(resolve_symbol("xautusd"), "XAUTUSD")
+        self.assertEqual(resolve_symbol("eth"), "ETHUSD")
+        self.assertEqual(resolve_symbol("sol"), "SOLUSD")
+        self.assertEqual(resolve_symbol(None), "BTCUSD")
+
+    def test_detect_symbol_from_text(self):
+        from main import _detect_symbol_from_text
+        self.assertEqual(_detect_symbol_from_text("what is the gold price?"), "XAUTUSD")
+        self.assertEqual(_detect_symbol_from_text("is xau forming a reversal?"), "XAUTUSD")
+        self.assertEqual(_detect_symbol_from_text("btc looking bullish today"), "BTCUSD")
+        self.assertEqual(_detect_symbol_from_text("bitcoin break and go setup"), "BTCUSD")
+        self.assertEqual(_detect_symbol_from_text("eth levels"), "ETHUSD")
 
 
 class TestGautamJhaStrategy(unittest.TestCase):
@@ -205,14 +246,25 @@ class TestGautamJhaStrategy(unittest.TestCase):
 
 
 class TestMarketDataLive(unittest.TestCase):
-    def test_live_ticker(self):
-        t = get_ticker("XAUTUSD")
-        self.assertEqual(t["symbol"], "XAUTUSD")
-        self.assertGreater(t["close"], 0)
+    def test_live_tickers(self):
+        t_btc = get_ticker("BTCUSD")
+        self.assertEqual(t_btc["symbol"], "BTCUSD")
+        self.assertGreater(t_btc["close"], 0)
+
+        t_gold = get_ticker("XAUTUSD")
+        self.assertEqual(t_gold["symbol"], "XAUTUSD")
+        self.assertGreater(t_gold["close"], 0)
+
+    def test_live_market_overview(self):
+        from market_data import get_market_overview
+        overview = get_market_overview()
+        self.assertIn("MARKET OVERVIEW", overview)
+        self.assertIn("Bitcoin (BTC)", overview)
+        self.assertIn("Gold (XAU)", overview)
 
     def test_live_levels(self):
-        levels = get_level_analysis("XAUTUSD")
-        self.assertEqual(levels["symbol"], "XAUTUSD")
+        levels = get_level_analysis("BTCUSD")
+        self.assertEqual(levels["symbol"], "BTCUSD")
         self.assertIn("pivots", levels)
         self.assertIn("nearest_resistance", levels)
         self.assertIn("nearest_support", levels)
@@ -223,8 +275,8 @@ class TestMarketDataLive(unittest.TestCase):
 
     def test_live_gautam_jha_analysis(self):
         from market_data import get_gautam_jha_analysis, format_gautam_jha_message
-        analysis = get_gautam_jha_analysis("XAUTUSD")
-        self.assertEqual(analysis["symbol"], "XAUTUSD")
+        analysis = get_gautam_jha_analysis("BTCUSD")
+        self.assertEqual(analysis["symbol"], "BTCUSD")
         self.assertIn("gautam_jha", analysis)
         self.assertIn("market_structure", analysis)
         msg = format_gautam_jha_message(analysis)
@@ -233,8 +285,8 @@ class TestMarketDataLive(unittest.TestCase):
         self.assertIn("Previous Day High", msg)
 
     def test_live_multi_entry(self):
-        multi = get_multi_timeframe_entry("XAUTUSD", ["1m", "5m", "15m"])
-        self.assertEqual(multi["symbol"], "XAUTUSD")
+        multi = get_multi_timeframe_entry("BTCUSD", ["1m", "5m", "15m"])
+        self.assertEqual(multi["symbol"], "BTCUSD")
         self.assertIn("1m", multi["timeframes"])
         self.assertIn("5m", multi["timeframes"])
         self.assertIn("15m", multi["timeframes"])
@@ -259,8 +311,10 @@ class TestBotCommands(unittest.TestCase):
         mock_update.message.reply_text.assert_called_once()
         sent_text = mock_update.message.reply_text.call_args[0][0]
 
-        # Verify all essential commands are listed
+        # Verify all essential commands and shortcuts are listed
         expected_cmds = [
+            "/btc", "/btclevels", "/btcgj", "/btcentry", "/btcwatch",
+            "/gold", "/xau", "/goldlevels", "/goldgj", "/goldentry", "/goldwatch",
             "/price", "/levels", "/analysis", "/gj", "/liquidity",
             "/alert", "/alerts", "/delalert", "/clearalerts",
             "/entry", "/scan", "/watch", "/unwatch", "/watchers",

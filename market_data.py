@@ -7,12 +7,76 @@ from typing import Dict, Any, List, Optional
 from indicators import TechnicalAnalysis
 
 DELTA_API = "https://api.india.delta.exchange/v2"
-DEFAULT_SYMBOL = "XAUTUSD"
+DEFAULT_SYMBOL = "BTCUSD"
+SECONDARY_SYMBOL = "XAUTUSD"
+POPULAR_SYMBOLS = ["BTCUSD", "XAUTUSD"]
+
+SYMBOL_ALIASES = {
+    "BTC": "BTCUSD",
+    "BITCOIN": "BTCUSD",
+    "BTCUSD": "BTCUSD",
+    "BTCUSDT": "BTCUSD",
+    "XAU": "XAUTUSD",
+    "XAUT": "XAUTUSD",
+    "GOLD": "XAUTUSD",
+    "XAUTUSD": "XAUTUSD",
+    "ETH": "ETHUSD",
+    "ETHEREUM": "ETHUSD",
+    "ETHUSD": "ETHUSD",
+    "SOL": "SOLUSD",
+    "SOLANA": "SOLUSD",
+    "SOLUSD": "SOLUSD",
+}
+
+
+def resolve_symbol(symbol: Optional[str] = None, default: str = DEFAULT_SYMBOL) -> str:
+    """Normalize user input symbol to canonical Delta Exchange symbol (e.g. BTC -> BTCUSD, GOLD -> XAUTUSD)."""
+    if not symbol:
+        return default
+    cleaned = symbol.strip().upper().replace("$", "").replace("#", "")
+    if cleaned in SYMBOL_ALIASES:
+        return SYMBOL_ALIASES[cleaned]
+    if cleaned.endswith("USD"):
+        return cleaned
+    return f"{cleaned}USD"
+
+
+def get_market_overview(symbols: Optional[List[str]] = None) -> str:
+    """Return a live market overview comparing Bitcoin (BTC) and Gold (XAU)."""
+    if not symbols:
+        symbols = POPULAR_SYMBOLS
+
+    lines = ["🪙 <b>MARKET OVERVIEW (Live):</b>\n"]
+    for sym in symbols:
+        try:
+            t = get_ticker(sym)
+            mark = t["mark_price"] or t["close"]
+            chg = mark - t["open"] if t["open"] > 0 else 0.0
+            chg_pct = (chg / t["open"] * 100.0) if t["open"] > 0 else 0.0
+            sign = "+" if chg >= 0 else ""
+            color_emoji = "🟢" if chg >= 0 else "🔴"
+
+            name = "Bitcoin (BTC)" if "BTC" in sym else ("Gold (XAU)" if "XAU" in sym else sym)
+            lines.append(
+                f"{color_emoji} <b>{name}</b> (<code>#{t['symbol']}</code>)\n"
+                f"• <b>Price:</b> <code>${mark:,.2f}</code> ({sign}{chg_pct:.2f}%)\n"
+                f"• <b>24h Range:</b> <code>${t['low']:,.2f}</code> — <code>${t['high']:,.2f}</code>\n"
+            )
+        except Exception as e:
+            lines.append(f"• <code>#{sym}</code>: Error fetching price ({e})\n")
+
+    lines.append(
+        "💡 <i>Quick shortcuts:</i>\n"
+        "• <code>/btc</code> — Live BTC ticker | <code>/btclevels</code> — BTC key levels\n"
+        "• <code>/btcgj</code> — BTC liquidity | <code>/btcentry</code> — BTC candle setups\n"
+        "• <code>/gold</code> — Live Gold ticker | <code>/goldlevels</code> — Gold levels"
+    )
+    return "\n".join(lines)
 
 
 def get_ticker(symbol: str = DEFAULT_SYMBOL) -> Dict[str, Any]:
     """Fetch live ticker data from Delta Exchange."""
-    sym = symbol.upper()
+    sym = resolve_symbol(symbol)
     url = f"{DELTA_API}/tickers/{sym}"
     try:
         r = requests.get(url, timeout=10)
@@ -57,7 +121,7 @@ def get_candles(symbol: str = DEFAULT_SYMBOL, resolution: str = "5m", count: int
     Fetch historical candles for given resolution ('1m', '5m', '15m', '1h', '1d').
     Returns candles in chronological order (oldest to newest).
     """
-    sym = symbol.upper()
+    sym = resolve_symbol(symbol)
     now = int(time.time())
     res_seconds = {
         "1m": 60,
@@ -103,7 +167,8 @@ def get_level_analysis(symbol: str = DEFAULT_SYMBOL) -> Dict[str, Any]:
     - Fibonacci Retracements
     - Trend Bias & 24h Range status
     """
-    ticker = get_ticker(symbol)
+    sym = resolve_symbol(symbol)
+    ticker = get_ticker(sym)
     mark = ticker["mark_price"] or ticker["close"]
     high_24h = ticker["high"]
     low_24h = ticker["low"]
@@ -256,10 +321,11 @@ def format_level_analysis_message(analysis: Dict[str, Any]) -> str:
 
 def get_gautam_jha_analysis(symbol: str = DEFAULT_SYMBOL) -> Dict[str, Any]:
     """Perform top-down Gautam Jha Price-Action & Liquidity Analysis."""
-    level_data = get_level_analysis(symbol)
+    sym = resolve_symbol(symbol)
+    level_data = get_level_analysis(sym)
     gj = level_data["gautam_jha"]
     mark = level_data["mark_price"]
-    candles_15m = get_candles(symbol, resolution="15m", count=40)
+    candles_15m = get_candles(sym, resolution="15m", count=40)
     atr = TechnicalAnalysis.calc_atr(candles_15m, period=14) if len(candles_15m) >= 15 else (mark * 0.002)
 
     # Check for immediate Gautam Jha trade setup on 15m and 5m
@@ -281,7 +347,7 @@ def get_gautam_jha_analysis(symbol: str = DEFAULT_SYMBOL) -> Dict[str, Any]:
         market_structure = "Consolidating around Daily Open"
 
     return {
-        "symbol": symbol.upper(),
+        "symbol": sym,
         "mark_price": mark,
         "gautam_jha": gj,
         "market_structure": market_structure,
@@ -358,9 +424,11 @@ def get_candle_entry(symbol: str = DEFAULT_SYMBOL, timeframe: str = "5m") -> Dic
     Analyze candlestick price action, indicators, and key levels for a specific timeframe (1m, 5m, 15m).
     Detects Long / Short entry opportunities with defined Entry, Stop Loss, and Take Profit targets.
     """
-    candles = get_candles(symbol, resolution=timeframe, count=60)
+    sym = resolve_symbol(symbol)
+    candles = get_candles(sym, resolution=timeframe, count=60)
     if len(candles) < 25:
         return {
+            "symbol": sym,
             "timeframe": timeframe,
             "has_setup": False,
             "signal": "NEUTRAL",
@@ -556,7 +624,7 @@ def get_candle_entry(symbol: str = DEFAULT_SYMBOL, timeframe: str = "5m") -> Dic
         reasons = [f"No high-probability trigger. RSI {rsi:.1f}, pattern: {pattern_name}"]
 
     return {
-        "symbol": symbol.upper(),
+        "symbol": sym,
         "timeframe": timeframe,
         "candle_time": curr_closed["time"],
         "close_price": c,
@@ -575,17 +643,18 @@ def get_candle_entry(symbol: str = DEFAULT_SYMBOL, timeframe: str = "5m") -> Dic
 
 def get_multi_timeframe_entry(symbol: str = DEFAULT_SYMBOL, timeframes: Optional[List[str]] = None) -> Dict[str, Any]:
     """Analyze 1m, 5m, and 15m candles simultaneously."""
+    sym = resolve_symbol(symbol)
     if not timeframes:
         timeframes = ["1m", "5m", "15m"]
 
     results = {}
     for tf in timeframes:
         try:
-            results[tf] = get_candle_entry(symbol, timeframe=tf)
+            results[tf] = get_candle_entry(sym, timeframe=tf)
         except Exception as e:
             results[tf] = {"timeframe": tf, "has_setup": False, "signal": "ERROR", "reason": str(e)}
 
-    return {"symbol": symbol.upper(), "timeframes": results}
+    return {"symbol": sym, "timeframes": results}
 
 
 def format_entry_analysis_message(multi_data: Dict[str, Any]) -> str:
