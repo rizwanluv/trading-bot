@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+alerts_store.json
+test_alerts*.json
+.env
+attachments/
