@@ -61,6 +61,8 @@ from market_data import (
     format_gautam_jha_message,
 )
 from alerts_manager import AlertManager
+from delta_client import DeltaClient, DEFAULT_BASE_URL
+from auto_trader import AutoTrader
 
 # Logging setup
 logging.basicConfig(
@@ -127,6 +129,8 @@ except ImportError:
 
 # Global state
 alert_manager = AlertManager("alerts_store.json")
+delta_client = DeltaClient()
+auto_trader = AutoTrader(store_file="autotrade_store.json", delta_client=delta_client)
 histories: Dict[int, List[Dict[str, str]]] = {}
 
 
@@ -251,19 +255,20 @@ def generate_ai_vision_reply(prompt_text: str, image_bytes: bytes, mime_type: st
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Start command intro."""
     msg = (
-        "🤖 <b>Welcome to Gemini Trading Assistant!</b>\n\n"
-        "Your intelligent assistant combining Delta Exchange market intelligence, automatic level "
-        "analysis, price alerts, multi-timeframe candle scanner, and <b>Gautam Jha Price-Action & Liquidity strategy</b> "
-        "for <b>🥇 Gold (XAU/USD)</b> and <b>🪙 Bitcoin (BTC/USD)</b>.\n\n"
-        "🔥 <b>Key Shortcuts:</b>\n"
-        "• <b>🥇 Gold (XAU/USD):</b> <code>/gold</code> (or <code>/xau</code>, <code>/xauusd</code>), <code>/goldlevels</code>, <code>/goldgj</code>, <code>/goldentry</code>, <code>/goldwatch</code>\n"
+        "🤖 <b>Welcome to Gemini Trading Assistant & Auto-Trade Bot!</b>\n\n"
+        "Your intelligent algorithmic assistant powered by Delta Exchange live data, automatic level "
+        "analysis, price alerts, multi-timeframe candle scanner, <b>Gautam Jha Liquidity strategy</b>, "
+        "and <b>Automated Order Execution</b> for <b>🥇 Gold (XAU/USD)</b> and <b>🪙 Bitcoin (BTC/USD)</b>.\n\n"
+        "🔥 <b>Key Capabilities:</b>\n"
+        "• <b>🤖 Automated Trading:</b> <code>/autotrade on [live|paper]</code> (Executes high-probability setups)\n"
+        "• <b>⚡ Manual Trading:</b> <code>/trade btc buy 1</code> | <code>/trade gold sell 1</code> (Auto SL & TP)\n"
+        "• <b>📈 Positions & Balances:</b> <code>/positions</code> | <code>/balance</code> | <code>/closeall</code>\n"
+        "• <b>🔑 Delta API Keys:</b> <code>/setkeys &lt;KEY&gt; &lt;SECRET&gt;</code> | <code>/keys</code>\n"
+        "• <b>🥇 Gold (XAU/USD):</b> <code>/gold</code>, <code>/goldlevels</code>, <code>/goldgj</code>, <code>/goldentry</code>, <code>/goldwatch</code>\n"
         "• <b>🪙 Bitcoin (BTC):</b> <code>/btc</code>, <code>/btclevels</code>, <code>/btcgj</code>, <code>/btcentry</code>, <code>/btcwatch</code>\n"
         "• <b>🌐 Live Market Overview:</b> <code>/price</code> (Live Gold & BTC overview)\n"
-        "• <b>🚨 Price Alerts:</b> <code>/alert gold 4180</code> or <code>/alert btc 85000</code> (or <code>/alert 4180</code>)\n"
-        "• <b>🎯 Candle Entry Scan:</b> <code>/entry gold</code> or <code>/entry btc</code> (1m, 5m, 15m)\n"
-        "• <b>📸 Chart Photo Scanner:</b> Send any chart photo/screenshot for instant Gautam Jha analysis!\n"
-        "• <b>📋 Manage Alerts:</b> <code>/alerts</code>, <code>/delalert &lt;ID&gt;</code>, <code>/watchers</code>\n"
-        "• <b>💬 AI Analysis:</b> Ask any question to get precise trade plans grounded in live levels!\n\n"
+        "• <b>🚨 Price Alerts:</b> <code>/alert gold 4180</code> or <code>/alert btc 85000</code>\n"
+        "• <b>📸 Chart Photo Scanner:</b> Send any chart photo for instant Gautam Jha analysis!\n\n"
         "Type <code>/list</code> to view all commands or <code>/help</code> for detailed instructions."
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
@@ -273,6 +278,20 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Show all bot commands in a quick, clean reference list."""
     msg = (
         "📜 <b>ALL BOT COMMANDS:</b>\n\n"
+        "🤖 <b>Automated & Manual Trading:</b>\n"
+        "• <code>/autotrade on [symbol] [live|paper]</code> — Turn ON automated trading\n"
+        "• <code>/autotrade off [symbol]</code> — Turn OFF automated trading\n"
+        "• <code>/autotrade status</code> — View auto-trading engine dashboard\n"
+        "• <code>/trade &lt;SYMBOL&gt; &lt;BUY/SELL&gt; [SIZE]</code> — Execute order with auto SL/TP\n"
+        "• <code>/positions</code> — View active open positions & unrealized PnL\n"
+        "• <code>/closeposition &lt;SYMBOL&gt;</code> (or <code>/closeall</code>) — Close position at market\n"
+        "• <code>/balance</code> — View Delta Exchange wallet & paper balance\n"
+        "• <code>/mode [live|paper]</code> — Switch between Live & Paper trading\n\n"
+        "🔑 <b>Delta Exchange API Keys:</b>\n"
+        "• <code>/setkeys &lt;KEY&gt; &lt;SECRET&gt;</code> — Connect Delta Exchange API credentials\n"
+        "• <code>/keys</code> — Check API key connection & permissions\n"
+        "• <code>/orders</code> — View active open orders on Delta\n"
+        "• <code>/cancelorders [SYMBOL]</code> — Cancel working orders\n\n"
         "🥇 <b>Gold (XAU/USD) Shortcuts:</b>\n"
         "• <code>/gold</code> (or <code>/xau</code>, <code>/xauusd</code>) — Live Gold ticker & 24h stats\n"
         "• <code>/goldlevels</code> (or <code>/xaulevels</code>) — Gold Automatic Level Analysis\n"
@@ -316,41 +335,44 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Help command with usage examples."""
     msg = (
-        "📖 <b>Trading Assistant Commands & Guide:</b>\n\n"
-        "🥇 <b>Gold (XAU/USD) Shortcuts:</b>\n"
+        "📖 <b>Trading Assistant & Auto-Trade Guide:</b>\n\n"
+        "<b>1. Automated Trading (Auto-Trade Engine):</b>\n"
+        "• <code>/autotrade on [symbol] [live|paper]</code> — Turn on auto-trading\n"
+        "  <i>Examples: <code>/autotrade on btc paper</code> | <code>/autotrade on gold live</code> | <code>/autotrade on</code></i>\n"
+        "• <code>/autotrade off</code> — Turn off auto-trading\n"
+        "• <code>/autotrade status</code> — View performance, win-rate & open trades\n"
+        "• <code>/mode [live|paper]</code> — Switch between Live Delta Exchange and Paper simulation\n\n"
+        "<b>2. Manual Trading & Positions:</b>\n"
+        "• <code>/trade &lt;SYMBOL&gt; &lt;BUY/SELL&gt; [SIZE]</code> — Immediate trade with auto SL & TP\n"
+        "  <i>Examples: <code>/trade btc buy 1</code> | <code>/trade gold sell 1</code></i>\n"
+        "• <code>/positions</code> — View all open positions, mark prices & real-time PnL\n"
+        "• <code>/closeposition &lt;SYMBOL&gt;</code> — Close position at market (or <code>/closeall</code>)\n"
+        "• <code>/balance</code> — View Delta Exchange wallet balances & paper portfolio\n\n"
+        "<b>3. Delta Exchange API Configuration:</b>\n"
+        "• <code>/setkeys &lt;API_KEY&gt; &lt;API_SECRET&gt;</code> — Set your Delta credentials directly\n"
+        "• <code>/keys</code> — Check connection status & permissions\n"
+        "• <code>/orders</code> — View working open orders on Delta\n"
+        "• <code>/cancelorders</code> — Cancel working orders\n\n"
+        "<b>4. 🥇 Gold (XAU/USD) Shortcuts:</b>\n"
         "• <code>/gold</code> (or <code>/xau</code>, <code>/xauusd</code>) — Live Gold ticker\n"
         "• <code>/goldlevels</code> (or <code>/xaulevels</code>) — Gold key levels (Pivots, Fibs, S/R)\n"
         "• <code>/goldgj</code> (or <code>/xaugj</code>) — Gold Gautam Jha Liquidity (DO, PDH, PDL sweeps)\n"
         "• <code>/goldentry</code> (or <code>/xauentry</code>) — Gold 1m, 5m, 15m candle entry scan\n"
         "• <code>/goldwatch</code> (or <code>/xauwatch</code>) — Automated candle alerts for Gold\n\n"
-        "🪙 <b>Bitcoin (BTC) Shortcuts:</b>\n"
+        "<b>5. 🪙 Bitcoin (BTC) Shortcuts:</b>\n"
         "• <code>/btc</code> — Live BTC ticker & 24h stats\n"
         "• <code>/btclevels</code> — BTC key levels (Pivots, Fibs, S/R)\n"
         "• <code>/btcgj</code> — BTC Gautam Jha Liquidity (DO, PDH, PDL)\n"
         "• <code>/btcentry</code> — BTC 1m, 5m, 15m candle entry scan\n"
         "• <code>/btcwatch</code> — Automated candle alerts for BTC\n\n"
-        "💹 <b>Market Data & Any Symbol:</b>\n"
+        "<b>6. Market Data, Alerts & Analysis:</b>\n"
         "• <code>/price</code> — Live comparison overview (Gold & BTC)\n"
-        "• <code>/price [SYMBOL]</code> — Live ticker (e.g. <code>/price ETH</code>)\n"
         "• <code>/levels [SYMBOL]</code> — S/R, Pivots, Fibs for any coin\n"
-        "• <code>/gj [SYMBOL]</code> — Gautam Jha analysis for any coin\n\n"
-        "🚨 <b>Price Alerts:</b>\n"
-        "• <code>/alert [SYMBOL] &lt;PRICE&gt;</code> — Set price alert\n"
-        "  <i>Examples: <code>/alert gold 4180</code> | <code>/alert btc 85000</code> | <code>/alert 4180</code></i>\n"
-        "• <code>/alerts</code> — List your active price alerts\n"
-        "• <code>/delalert &lt;ID&gt;</code> — Delete alert by ID\n"
-        "• <code>/clearalerts</code> — Clear all price alerts\n\n"
-        "🎯 <b>1m, 5m, 15m Candle Entry Alerts:</b>\n"
-        "• <code>/entry [SYMBOL]</code> — Instant candle entry scan with Entry, SL, TP1, TP2\n"
-        "• <code>/watch [SYMBOL] [tfs]</code> — Enable background candle alerts\n"
-        "• <code>/unwatch [SYMBOL]</code> — Disable candle alerts\n"
-        "• <code>/watchers</code> — List active candle scanners\n\n"
-        "📸 <b>Chart Photo Vision Analysis:</b>\n"
-        "• Send any chart screenshot to get instant Gautam Jha top-down liquidity breakdown!\n\n"
-        "🤖 <b>Bot Controls:</b>\n"
-        "• <code>/list</code> — All commands directory\n"
-        "• <code>/reset</code> — Clear AI conversation history\n"
-        "• <i>Any text</i> — Chat with assistant (sees live market context)"
+        "• <code>/gj [SYMBOL]</code> — Gautam Jha analysis for any coin\n"
+        "• <code>/alert [SYMBOL] &lt;PRICE&gt;</code> — Custom price alerts\n"
+        "• <code>/entry [SYMBOL]</code> — 1m, 5m, 15m candle setups\n"
+        "• <code>/watch [SYMBOL]</code> — Automated background candle alerts\n"
+        "• <b>📸 Send Chart Screenshot</b> — Gautam Jha AI vision analysis"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
@@ -834,6 +856,551 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
 
 
+# ==================== Trading & Delta Exchange Commands ====================
+
+def save_delta_keys_to_env(api_key: str, api_secret: str, base_url: Optional[str] = None, env_path: str = ".env") -> bool:
+    """Save Delta Exchange credentials to .env file and update current process environment."""
+    os.environ["DELTA_API_KEY"] = api_key
+    os.environ["DELTA_API_SECRET"] = api_secret
+    if base_url:
+        os.environ["DELTA_BASE_URL"] = base_url
+
+    delta_client.set_credentials(api_key, api_secret, base_url)
+
+    lines = []
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception as e:
+            logger.warning(f"Could not read existing {env_path}: {e}")
+
+    keys_set = set()
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("DELTA_API_KEY="):
+            new_lines.append(f"DELTA_API_KEY={api_key}\n")
+            keys_set.add("DELTA_API_KEY")
+        elif stripped.startswith("DELTA_API_SECRET="):
+            new_lines.append(f"DELTA_API_SECRET={api_secret}\n")
+            keys_set.add("DELTA_API_SECRET")
+        elif base_url and stripped.startswith("DELTA_BASE_URL="):
+            new_lines.append(f"DELTA_BASE_URL={base_url}\n")
+            keys_set.add("DELTA_BASE_URL")
+        else:
+            new_lines.append(line)
+
+    if "DELTA_API_KEY" not in keys_set:
+        new_lines.append(f"DELTA_API_KEY={api_key}\n")
+    if "DELTA_API_SECRET" not in keys_set:
+        new_lines.append(f"DELTA_API_SECRET={api_secret}\n")
+    if base_url and "DELTA_BASE_URL" not in keys_set:
+        new_lines.append(f"DELTA_BASE_URL={base_url}\n")
+
+    try:
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to write keys to {env_path}: {e}")
+        return False
+
+
+async def set_keys_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Set Delta Exchange API Key and Secret (/setkeys <API_KEY> <API_SECRET>)."""
+    args = ctx.args or []
+    if len(args) < 2:
+        masked = delta_client.get_masked_key()
+        await update.message.reply_text(
+            "🔑 <b>Delta Exchange API Key Setup</b>\n\n"
+            f"<b>Status:</b> {('Configured (' + masked + ')') if delta_client.is_configured() else 'Not Configured ⚠️'}\n\n"
+            "<b>Usage:</b>\n"
+            "<code>/setkeys &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>\n\n"
+            "<b>Example:</b>\n"
+            "<code>/setkeys d_key_123456789 secret_abcdef123456789</code>\n\n"
+            "💡 <b>How to get keys:</b>\n"
+            "1. Log into your Delta Exchange India or Global account\n"
+            "2. Go to <b>Settings → API Keys → Create New API Key</b>\n"
+            "3. Enable <b>Trading / Orders</b> permissions\n"
+            "4. Copy your API Key & API Secret and send them here\n\n"
+            "🔒 <i>Your keys are stored securely in local <code>.env</code> file.</i>\n"
+            "<i>(Tip: delete your Telegram message after sending to protect your secret)</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    api_key = args[0].strip()
+    api_secret = args[1].strip()
+
+    ok = save_delta_keys_to_env(api_key, api_secret)
+    masked = delta_client.get_masked_key()
+
+    if ok:
+        await update.message.reply_text(
+            "✅ <b>Delta Exchange API Keys Saved!</b>\n\n"
+            f"• <b>API Key:</b> <code>{masked}</code>\n"
+            f"• <b>Status:</b> Configured & Active\n"
+            f"• <b>Base URL:</b> <code>{delta_client.base_url}</code>\n"
+            f"• <b>Current Mode:</b> <code>{auto_trader.mode.upper()}</code>\n\n"
+            "🎯 <b>Next Steps:</b>\n"
+            "• Use <code>/balance</code> to view wallet balance\n"
+            "• Use <code>/mode live</code> to switch to live trading\n"
+            "• Use <code>/autotrade on</code> to start automated trading\n"
+            "• Use <code>/trade BTC buy</code> for manual execution",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await update.message.reply_text(
+            "⚠️ <i>Error saving keys to .env file, but keys are active for current session.</i>",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def keys_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """View Delta Exchange API connection status (/keys)."""
+    is_cfg = delta_client.is_configured()
+    masked = delta_client.get_masked_key()
+    mode = auto_trader.mode.upper()
+    at_status = "🟢 ACTIVE" if auto_trader.enabled else "🔴 OFF"
+    status_badge = "🟢 CONNECTED" if is_cfg else "🔴 NOT CONFIGURED"
+
+    msg = (
+        "🔐 <b>Delta Exchange API Status</b>\n\n"
+        f"• <b>Connection:</b> {status_badge}\n"
+        f"• <b>API Key:</b> <code>{masked}</code>\n"
+        f"• <b>Base URL:</b> <code>{delta_client.base_url}</code>\n"
+        f"• <b>Trading Mode:</b> <code>{mode}</code>\n"
+        f"• <b>Auto-Trading:</b> {at_status}\n\n"
+        "💡 <i>To configure or update your keys:</i>\n"
+        "<code>/setkeys &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>\n\n"
+        "💡 <i>To toggle paper vs live mode:</i>\n"
+        "<code>/mode paper</code> or <code>/mode live</code>"
+    )
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def mode_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Switch or check trading mode (/mode [paper|live])."""
+    args = ctx.args or []
+    if not args:
+        mode_text = (
+            f"🎮 <b>PAPER TRADING</b> (Simulated with $10,000 virtual balance)"
+            if auto_trader.mode == "paper"
+            else f"⚡ <b>LIVE TRADING</b> (Connected to Delta Exchange)"
+        )
+        await update.message.reply_text(
+            f"⚙️ <b>Current Trading Mode:</b> {mode_text}\n\n"
+            f"• <b>Auto-Trader:</b> {'🟢 ON' if auto_trader.enabled else '🔴 OFF'}\n"
+            f"• <b>Delta Keys:</b> {('Configured' if delta_client.is_configured() else 'Not Configured')}\n\n"
+            "<b>To change mode:</b>\n"
+            "• <code>/mode paper</code> — Safe simulated trading ($10,000 demo cash)\n"
+            "• <code>/mode live</code> — Real orders via Delta Exchange API",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    req_mode = args[0].lower().strip()
+    if req_mode in ("live", "real"):
+        if not delta_client.is_configured():
+            await update.message.reply_text(
+                "⚠️ <b>Cannot switch to LIVE mode yet!</b>\n\n"
+                "Delta Exchange API keys are not configured.\n"
+                "Please configure them first using:\n"
+                "<code>/setkeys &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        auto_trader.set_mode("live")
+        await update.message.reply_text(
+            "⚡ <b>Trading Mode Switched to LIVE!</b>\n\n"
+            "⚠️ <i>Orders will now be executed on your Delta Exchange account with real capital.</i>\n"
+            "Use <code>/balance</code> to check your wallet balance and <code>/positions</code> to inspect positions.",
+            parse_mode=ParseMode.HTML,
+        )
+    elif req_mode in ("paper", "demo", "sim", "virtual"):
+        auto_trader.set_mode("paper")
+        await update.message.reply_text(
+            "🎮 <b>Trading Mode Switched to PAPER!</b>\n\n"
+            "All trades are simulated with virtual balance. No real funds are risked.",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await update.message.reply_text(
+            "Usage: <code>/mode paper</code> or <code>/mode live</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def autotrade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Enable or disable automated strategy execution (/autotrade [on|off])."""
+    chat_id = update.effective_chat.id
+    args = ctx.args or []
+    if not args:
+        status_str = "🟢 <b>ACTIVE / RUNNING</b>" if auto_trader.enabled else "🔴 <b>DISABLED</b>"
+        mode_str = auto_trader.mode.upper()
+        summary = auto_trader.get_account_summary()
+        await update.message.reply_text(
+            f"🤖 <b>Gautam Jha Automated Trading Engine</b>\n\n"
+            f"• <b>Status:</b> {status_str}\n"
+            f"• <b>Mode:</b> <code>{mode_str}</code>\n"
+            f"• <b>Subscribed for Alerts:</b> {'Yes' if chat_id in auto_trader.subscribers else 'No'}\n"
+            f"• <b>Open Positions:</b> {summary['open_positions_count']}\n"
+            f"• <b>Balance:</b> <code>${summary['balance']:,.2f}</code>\n"
+            f"• <b>Win Rate:</b> {summary['win_rate_pct']}%\n"
+            f"• <b>Total Trades:</b> {summary['total_trades']}\n\n"
+            "<b>Controls:</b>\n"
+            "• <code>/autotrade on</code> — Turn ON automated bot & alerts\n"
+            "• <code>/autotrade off</code> — Pause automated trading\n"
+            "• <code>/mode paper</code> / <code>/mode live</code> — Switch mode",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    subcmd = args[0].lower().strip()
+    if subcmd in ("on", "start", "enable", "1", "true"):
+        if auto_trader.mode == "live" and not delta_client.is_configured():
+            await update.message.reply_text(
+                "⚠️ Delta Exchange API keys are not set. Run <code>/setkeys &lt;KEY&gt; &lt;SECRET&gt;</code> first, or switch to <code>/mode paper</code>.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        auto_trader.set_enabled(True)
+        auto_trader.add_subscriber(chat_id)
+        await update.message.reply_text(
+            "🟢 <b>Automated Trading Bot is now ACTIVE!</b>\n\n"
+            f"• <b>Mode:</b> <code>{auto_trader.mode.upper()}</code>\n"
+            "• <b>Scanned Markets:</b> BTCUSD (#BTC), XAUTUSD (#GOLD)\n"
+            "• <b>Strategy:</b> Gautam Jha Price-Action & Liquidity Rules\n"
+            "  - Daily Open (DO) color flip reversals & continuations\n"
+            "  - Previous Day High (PDH) & Low (PDL) sweeps\n"
+            "  - 5m & 15m candle pattern confirmations\n"
+            "  - Automated Stop Loss & Take Profit (TP1 1:1.5, TP2 1:2.5)\n\n"
+            "🔔 <i>You will receive instant notifications when trades are opened or closed.</i>\n"
+            "To pause at any time, run <code>/autotrade off</code>.",
+            parse_mode=ParseMode.HTML,
+        )
+    elif subcmd in ("off", "stop", "disable", "0", "false"):
+        auto_trader.set_enabled(False)
+        await update.message.reply_text(
+            "🔴 <b>Automated Trading Bot has been PAUSED.</b>\n\n"
+            "No new automated trades will be entered. Existing positions remain managed until closed.",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await update.message.reply_text("Usage: <code>/autotrade on</code> or <code>/autotrade off</code>", parse_mode=ParseMode.HTML)
+
+
+async def trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Execute a manual trade (/trade <SYMBOL> <buy|sell> [size])."""
+    args = ctx.args or []
+    if len(args) < 2:
+        await update.message.reply_text(
+            "⚡ <b>Manual Trade Execution</b>\n\n"
+            "<b>Usage:</b>\n"
+            "<code>/trade &lt;SYMBOL&gt; &lt;buy|sell&gt; [size]</code>\n\n"
+            "<b>Examples:</b>\n"
+            "• <code>/trade BTC buy</code> (Buy BTC with default size)\n"
+            "• <code>/trade GOLD sell 0.05</code> (Short Gold)\n"
+            "• <code>/trade BTCUSD buy 0.01</code>\n\n"
+            f"• <b>Current Mode:</b> <code>{auto_trader.mode.upper()}</code>\n"
+            "<i>(Auto-calculates entry, SL, TP1, and TP2 based on Gautam Jha levels!)</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    sym_raw = args[0]
+    side = args[1].lower().strip()
+    if side not in ("buy", "sell", "long", "short"):
+        await update.message.reply_text("⚠️ Side must be <code>buy</code> or <code>sell</code>.", parse_mode=ParseMode.HTML)
+        return
+
+    if side == "long":
+        side = "buy"
+    elif side == "short":
+        side = "sell"
+
+    size = None
+    if len(args) >= 3:
+        try:
+            size = float(args[2])
+        except ValueError:
+            await update.message.reply_text("⚠️ Invalid size. Please specify a numeric amount.", parse_mode=ParseMode.HTML)
+            return
+
+    symbol = resolve_symbol(sym_raw)
+
+    await update.message.reply_text(f"⏳ Executing {side.upper()} order for {symbol} ({auto_trader.mode.upper()} mode)...")
+
+    res = auto_trader.execute_trade(
+        symbol=symbol,
+        side=side,
+        size=size,
+        trade_type="manual",
+    )
+
+    if res.get("status") in ("executed", "simulated", "filled", "open"):
+        emoji = "🟢 LONG" if side == "buy" else "🔴 SHORT"
+        msg = (
+            f"✅ <b>TRADE EXECUTED!</b>\n\n"
+            f"• <b>Symbol:</b> <code>#{symbol}</code>\n"
+            f"• <b>Action:</b> {emoji}\n"
+            f"• <b>Size:</b> <code>{res.get('size')}</code>\n"
+            f"• <b>Entry Price:</b> <code>${res.get('entry_price', 0):,.2f}</code>\n"
+            f"• <b>Stop Loss:</b> <code>${res.get('sl_price', 0):,.2f}</code>\n"
+            f"• <b>Take Profit 1:</b> <code>${res.get('tp1_price', 0):,.2f}</code>\n"
+            f"• <b>Take Profit 2:</b> <code>${res.get('tp2_price', 0):,.2f}</code>\n"
+            f"• <b>Mode:</b> <code>{res.get('mode', '').upper()}</code>\n"
+            f"• <b>Position ID:</b> <code>{res.get('position_id', 'N/A')}</code>\n\n"
+            "📊 <i>Track with <code>/positions</code> or close with <code>/closeposition {id}</code></i>"
+        )
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+    else:
+        err = res.get("error", "Unknown error")
+        await update.message.reply_text(
+            f"❌ <b>Trade Execution Failed:</b> {err}\n\n"
+            f"Mode: <code>{auto_trader.mode.upper()}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def positions_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """View active positions and PnL (/positions)."""
+    if auto_trader.mode == "live":
+        live_res = delta_client.get_positions()
+        live_positions = live_res.get("result", []) if live_res.get("success") else []
+        local_positions = auto_trader.get_open_positions()
+
+        if not live_positions and not local_positions:
+            await update.message.reply_text(
+                "📋 <b>No Open Positions (LIVE Mode)</b>\n\n"
+                "Use <code>/trade &lt;SYMBOL&gt; &lt;buy|sell&gt;</code> or <code>/autotrade on</code> to open trades.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        lines = [f"⚡ <b>Open Positions (LIVE Mode):</b>\n"]
+        for p in live_positions:
+            prod_id = p.get("product_id")
+            size = p.get("size", 0)
+            entry = float(p.get("entry_price") or 0)
+            mark = float(p.get("mark_price") or 0)
+            upnl = float(p.get("unrealized_pnl") or 0)
+            side = "LONG" if size > 0 else "SHORT"
+            sym = "BTCUSD" if prod_id == 27 else ("XAUTUSD" if prod_id == 131253 else f"Product {prod_id}")
+            lines.append(
+                f"• <b>{sym}</b> [{side}] Size: {abs(size)}\n"
+                f"  Entry: <code>${entry:,.2f}</code> | Current: <code>${mark:,.2f}</code>\n"
+                f"  PnL: <b>{'🟢' if upnl >= 0 else '🔴'} ${upnl:+,.2f}</b>\n"
+            )
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+        return
+
+    # Paper mode
+    positions = auto_trader.get_open_positions()
+    if not positions:
+        await update.message.reply_text(
+            "📋 <b>No Open Positions (PAPER Mode)</b>\n\n"
+            f"Virtual Balance: <code>${auto_trader.balance:,.2f}</code>\n"
+            "Use <code>/trade BTCUSD buy</code> or <code>/autotrade on</code> to get started!",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    lines = [f"🎮 <b>Active Paper Positions ({len(positions)}):</b>\n"]
+    for p in positions:
+        sym = p["symbol"]
+        side = p["side"].upper()
+        size = p["size"]
+        entry = p["entry_price"]
+        sl = p.get("sl_price", 0)
+        tp1 = p.get("tp1_price", 0)
+        tp2 = p.get("tp2_price", 0)
+        pid = p["id"]
+
+        try:
+            t = get_ticker(sym)
+            curr = t["mark_price"] or t["close"]
+            pnl_mult = 1 if side == "BUY" else -1
+            pnl_usd = (curr - entry) * size * pnl_mult
+            pnl_pct = ((curr - entry) / entry * 100.0) * pnl_mult
+            pnl_str = f"{'🟢' if pnl_usd >= 0 else '🔴'} ${pnl_usd:+,.2f} ({pnl_pct:+.2f}%)"
+            curr_str = f"${curr:,.2f}"
+        except Exception:
+            curr_str = "N/A"
+            pnl_str = "N/A"
+
+        lines.append(
+            f"• <b>{sym}</b> [{side}] | Size: <code>{size}</code>\n"
+            f"  Entry: <code>${entry:,.2f}</code> | Current: <code>{curr_str}</code>\n"
+            f"  Unrealized PnL: <b>{pnl_str}</b>\n"
+            f"  Targets: SL <code>${sl:,.2f}</code> | TP1 <code>${tp1:,.2f}</code> | TP2 <code>${tp2:,.2f}</code>\n"
+            f"  ID: <code>{pid}</code> (Close: <code>/closeposition {pid}</code>)\n"
+        )
+
+    lines.append("💡 <i>Close all with <code>/closeall</code></i>")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def close_position_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Close an open position by ID (/closeposition <id>)."""
+    args = ctx.args or []
+    if not args:
+        await update.message.reply_text(
+            "Usage: <code>/closeposition &lt;position_id&gt;</code>\n"
+            "View active IDs with <code>/positions</code>, or close all with <code>/closeall</code>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    pid = args[0].strip()
+    res = auto_trader.close_position(pid)
+    if res.get("status") == "closed":
+        pnl = res.get("pnl", 0.0)
+        pnl_pct = res.get("pnl_pct", 0.0)
+        emoji = "🟢" if pnl >= 0 else "🔴"
+        await update.message.reply_text(
+            f"✅ <b>Position Closed:</b> <code>{pid}</code>\n\n"
+            f"• <b>Symbol:</b> <code>{res.get('symbol')}</code>\n"
+            f"• <b>Exit Price:</b> <code>${res.get('exit_price', 0):,.2f}</code>\n"
+            f"• <b>Realized PnL:</b> {emoji} <b>${pnl:+,.2f} ({pnl_pct:+.2f}%)</b>\n"
+            f"• <b>New Balance:</b> <code>${auto_trader.balance:,.2f}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        err = res.get("error", "Position not found or could not be closed")
+        await update.message.reply_text(f"⚠️ {err}", parse_mode=ParseMode.HTML)
+
+
+async def close_all_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Close all open positions (/closeall)."""
+    closed = auto_trader.close_all_positions()
+    if not closed:
+        await update.message.reply_text("📋 No open positions to close.", parse_mode=ParseMode.HTML)
+        return
+
+    total_pnl = sum(p.get("pnl", 0.0) for p in closed)
+    emoji = "🟢" if total_pnl >= 0 else "🔴"
+    await update.message.reply_text(
+        f"✅ <b>Closed {len(closed)} Position(s)!</b>\n\n"
+        f"• <b>Total Realized PnL:</b> {emoji} <b>${total_pnl:+,.2f}</b>\n"
+        f"• <b>New Balance:</b> <code>${auto_trader.balance:,.2f}</code>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def balance_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """View account balances and equity (/balance)."""
+    summary = auto_trader.get_account_summary()
+
+    if auto_trader.mode == "live":
+        if not delta_client.is_configured():
+            await update.message.reply_text(
+                "⚠️ Delta Exchange API keys are not configured. Run <code>/setkeys &lt;KEY&gt; &lt;SECRET&gt;</code>.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        bal_res = delta_client.get_wallet_balances()
+        if bal_res.get("success"):
+            balances = bal_res.get("result", [])
+            lines = ["⚡ <b>Delta Exchange Wallet Balances (LIVE)</b>\n"]
+            if balances:
+                for b in balances:
+                    asset = b.get("asset_symbol", "USDT")
+                    bal = float(b.get("balance", 0))
+                    avail = float(b.get("available_balance", 0))
+                    lines.append(f"• <b>{asset}:</b> {bal:,.4f} (Avail: {avail:,.4f})")
+            else:
+                lines.append("• No balances returned.")
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+            return
+        else:
+            err = bal_res.get("error", {}).get("message") or bal_res.get("error", "Failed to fetch balances")
+            await update.message.reply_text(f"⚠️ Error fetching Delta Exchange balances: {err}", parse_mode=ParseMode.HTML)
+            return
+
+    # Paper mode
+    pnl = summary["total_realized_pnl"]
+    pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+    msg = (
+        f"🎮 <b>Paper Trading Account Balance</b>\n\n"
+        f"• <b>Cash Balance:</b> <code>${summary['balance']:,.2f}</code>\n"
+        f"• <b>Initial Balance:</b> <code>${summary['initial_balance']:,.2f}</code>\n"
+        f"• <b>Estimated Equity:</b> <code>${summary['equity']:,.2f}</code>\n"
+        f"• <b>Total Realized PnL:</b> {pnl_emoji} <b>${pnl:+,.2f}</b>\n"
+        f"• <b>Open Positions:</b> {summary['open_positions_count']}\n"
+        f"• <b>Win Rate:</b> {summary['win_rate_pct']}%\n"
+        f"• <b>Total Trades:</b> {summary['total_trades']}\n\n"
+        "💡 <i>To trade with real funds on Delta Exchange:</i>\n"
+        "1. <code>/setkeys &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>\n"
+        "2. <code>/mode live</code>"
+    )
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def orders_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """View open orders on Delta Exchange (/orders)."""
+    if auto_trader.mode != "live":
+        open_pos = auto_trader.get_open_positions()
+        if not open_pos:
+            await update.message.reply_text("📋 No active paper orders or positions.", parse_mode=ParseMode.HTML)
+            return
+        msg = f"🎮 <b>Paper Trading Active Positions ({len(open_pos)}):</b>\n\n"
+        for p in open_pos:
+            msg += f"• #{p['symbol']} [{p['side'].upper()}] Entry: ${p['entry_price']:,.2f} | SL: ${p.get('sl_price', 0):,.2f} | TP: ${p.get('tp1_price', 0):,.2f}\n"
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        return
+
+    if not delta_client.is_configured():
+        await update.message.reply_text("⚠️ Delta keys not set. Run <code>/setkeys &lt;KEY&gt; &lt;SECRET&gt;</code>.", parse_mode=ParseMode.HTML)
+        return
+
+    orders_res = delta_client.get_open_orders()
+    if orders_res.get("success"):
+        orders = orders_res.get("result", [])
+        if not orders:
+            await update.message.reply_text("📋 No open orders on Delta Exchange.", parse_mode=ParseMode.HTML)
+            return
+        lines = [f"⚡ <b>Open Orders on Delta Exchange ({len(orders)}):</b>\n"]
+        for o in orders:
+            lines.append(
+                f"• Order #{o.get('id')}: {o.get('order_type')} {o.get('side')} "
+                f"Size: {o.get('size')} Price: ${float(o.get('limit_price') or 0):,.2f}"
+            )
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+    else:
+        err = orders_res.get("error", "Failed to retrieve orders")
+        await update.message.reply_text(f"⚠️ Error: {err}", parse_mode=ParseMode.HTML)
+
+
+async def cancel_orders_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Cancel open orders on Delta Exchange (/cancelorders [symbol])."""
+    if auto_trader.mode != "live":
+        await update.message.reply_text(
+            "ℹ️ In paper mode, use <code>/closeall</code> or <code>/closeposition &lt;id&gt;</code> to close positions.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if not delta_client.is_configured():
+        await update.message.reply_text("⚠️ Delta keys not set.", parse_mode=ParseMode.HTML)
+        return
+
+    args = ctx.args or []
+    prod_id = None
+    if args:
+        sym = resolve_symbol(args[0])
+        prod_id = delta_client.get_product_id(sym)
+
+    res = delta_client.cancel_all_orders(product_id=prod_id)
+    if res.get("success"):
+        await update.message.reply_text("✅ All open orders on Delta Exchange cancelled successfully.", parse_mode=ParseMode.HTML)
+    else:
+        await update.message.reply_text(f"⚠️ Cancel failed: {res.get('error')}", parse_mode=ParseMode.HTML)
+
+
 # ==================== Background Tasks ====================
 
 async def price_alert_loop(application):
@@ -947,11 +1514,78 @@ async def entry_alert_loop(application):
         await asyncio.sleep(25)
 
 
+async def auto_trade_loop(application):
+    """Background engine: monitors open positions for exits and auto-executes high-probability setups."""
+    logger.info("Automated trading background loop started.")
+    symbols_to_scan = ["BTCUSD", "XAUTUSD"]
+
+    while True:
+        try:
+            # 1. Check open positions for Stop Loss or Take Profit triggers
+            exits = auto_trader.check_open_positions_for_exits()
+            for exit_info in exits:
+                pnl = exit_info.get("pnl", 0.0)
+                pnl_pct = exit_info.get("pnl_pct", 0.0)
+                emoji = "🟢 TAKE PROFIT HIT! 🚀" if pnl >= 0 else "🛑 STOP LOSS TRIGGERED"
+                msg = (
+                    f"{emoji}\n\n"
+                    f"🪙 <b>Symbol:</b> <code>#{exit_info.get('symbol')}</code>\n"
+                    f"⚡ <b>Reason:</b> <code>{exit_info.get('exit_reason')}</code>\n"
+                    f"🎯 <b>Exit Price:</b> <code>${exit_info.get('exit_price', 0):,.2f}</code>\n"
+                    f"📈 <b>Entry Price:</b> <code>${exit_info.get('entry_price', 0):,.2f}</code>\n"
+                    f"💰 <b>Realized PnL:</b> <b>${pnl:+,.2f} ({pnl_pct:+.2f}%)</b>\n"
+                    f"💼 <b>Balance:</b> <code>${auto_trader.balance:,.2f}</code> ({auto_trader.mode.upper()} mode)"
+                )
+                for chat_id in auto_trader.subscribers:
+                    try:
+                        await application.bot.send_message(
+                            chat_id=chat_id,
+                            text=msg,
+                            parse_mode=ParseMode.HTML,
+                        )
+                    except Exception as send_err:
+                        logger.warning(f"Failed to send exit notification to {chat_id}: {send_err}")
+
+            # 2. If autotrade is enabled, scan for high-probability setups
+            if auto_trader.enabled:
+                new_trades = auto_trader.scan_and_auto_trade(symbols=symbols_to_scan)
+                for tr in new_trades:
+                    side_emoji = "🟢 LONG" if tr.get("side") == "buy" else "🔴 SHORT"
+                    trade_msg = (
+                        f"🤖 <b>AUTO-TRADE EXECUTED!</b> 🎯\n\n"
+                        f"🪙 <b>Symbol:</b> <code>#{tr.get('symbol')}</code>\n"
+                        f"🚦 <b>Side:</b> {side_emoji}\n"
+                        f"📦 <b>Size:</b> <code>{tr.get('size')}</code>\n"
+                        f"⚡ <b>Entry:</b> <code>${tr.get('entry_price', 0):,.2f}</code>\n"
+                        f"🛑 <b>Stop Loss:</b> <code>${tr.get('sl_price', 0):,.2f}</code>\n"
+                        f"🎯 <b>Take Profit 1:</b> <code>${tr.get('tp1_price', 0):,.2f}</code> (1:1.5)\n"
+                        f"🎯 <b>Take Profit 2:</b> <code>${tr.get('tp2_price', 0):,.2f}</code> (1:2.5)\n"
+                        f"💡 <b>Strategy:</b> Gautam Jha Liquidity ({tr.get('reason')})\n"
+                        f"⚙️ <b>Mode:</b> <code>{tr.get('mode', '').upper()}</code>\n"
+                        f"🆔 <b>Position ID:</b> <code>{tr.get('position_id')}</code>"
+                    )
+                    for chat_id in auto_trader.subscribers:
+                        try:
+                            await application.bot.send_message(
+                                chat_id=chat_id,
+                                text=trade_msg,
+                                parse_mode=ParseMode.HTML,
+                            )
+                        except Exception as send_err:
+                            logger.warning(f"Failed to send auto-trade notification to {chat_id}: {send_err}")
+
+        except Exception as e:
+            logger.error(f"Error in auto_trade_loop: {e}")
+
+        await asyncio.sleep(18)
+
+
 async def post_init(application):
     """Start background async monitoring tasks after bot initialization."""
     asyncio.create_task(price_alert_loop(application))
     asyncio.create_task(entry_alert_loop(application))
-    logger.info("Background alert tasks successfully scheduled.")
+    asyncio.create_task(auto_trade_loop(application))
+    logger.info("Background alert & auto-trading tasks successfully scheduled.")
 
 
 def main():
@@ -968,6 +1602,19 @@ def main():
     app.add_handler(CommandHandler("list", list_cmd))
     app.add_handler(CommandHandler("commands", list_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
+
+    # Delta Exchange & Automated Trading Commands
+    app.add_handler(CommandHandler("autotrade", autotrade_cmd))
+    app.add_handler(CommandHandler("mode", mode_cmd))
+    app.add_handler(CommandHandler("trade", trade_cmd))
+    app.add_handler(CommandHandler("positions", positions_cmd))
+    app.add_handler(CommandHandler("closeposition", close_position_cmd))
+    app.add_handler(CommandHandler("closeall", close_all_cmd))
+    app.add_handler(CommandHandler("balance", balance_cmd))
+    app.add_handler(CommandHandler("orders", orders_cmd))
+    app.add_handler(CommandHandler("cancelorders", cancel_orders_cmd))
+    app.add_handler(CommandHandler("setkeys", set_keys_cmd))
+    app.add_handler(CommandHandler("keys", keys_cmd))
 
     # BTC Shortcuts
     app.add_handler(CommandHandler("btc", btc_cmd))

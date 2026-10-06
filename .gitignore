@@ -3,5 +3,7 @@ __pycache__/
 *.pyo
 alerts_store.json
 test_alerts*.json
+autotrade_store.json
+test_trader*.json
 .env
 attachments/

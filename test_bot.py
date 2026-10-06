@@ -331,11 +331,222 @@ class TestBotCommands(unittest.TestCase):
             "/price", "/levels", "/analysis", "/gj", "/liquidity",
             "/alert", "/alerts", "/delalert", "/clearalerts",
             "/entry", "/scan", "/watch", "/unwatch", "/watchers",
+            "/autotrade", "/trade", "/positions", "/closeposition", "/balance", "/mode", "/setkeys", "/keys",
             "/list", "/help", "/start", "/reset"
         ]
         for cmd in expected_cmds:
             self.assertIn(cmd, sent_text, f"Command {cmd} should be in /list output")
 
+    def test_trading_commands(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from main import (
+            keys_cmd,
+            mode_cmd,
+            autotrade_cmd,
+            balance_cmd,
+            positions_cmd,
+            set_keys_cmd,
+            trade_cmd,
+            close_all_cmd,
+            auto_trader,
+        )
+
+        mock_update = MagicMock()
+        mock_update.effective_chat.id = 555
+        mock_update.message.reply_text = AsyncMock()
+
+        # 1. /keys
+        mock_ctx = MagicMock()
+        asyncio.run(keys_cmd(mock_update, mock_ctx))
+        self.assertIn("Delta Exchange API Status", mock_update.message.reply_text.call_args[0][0])
+
+        # 2. /mode
+        mock_ctx.args = []
+        asyncio.run(mode_cmd(mock_update, mock_ctx))
+        self.assertIn("Current Trading Mode", mock_update.message.reply_text.call_args[0][0])
+
+        # 3. /autotrade
+        mock_ctx.args = ["on"]
+        asyncio.run(autotrade_cmd(mock_update, mock_ctx))
+        self.assertTrue(auto_trader.enabled)
+        self.assertIn("Automated Trading Bot is now ACTIVE", mock_update.message.reply_text.call_args[0][0])
+
+        # 4. /balance
+        mock_ctx.args = []
+        asyncio.run(balance_cmd(mock_update, mock_ctx))
+        self.assertIn("Paper Trading Account Balance", mock_update.message.reply_text.call_args[0][0])
+
+        # 5. /trade BTC buy
+        mock_ctx.args = ["BTC", "buy", "0.01"]
+        asyncio.run(trade_cmd(mock_update, mock_ctx))
+        self.assertIn("TRADE EXECUTED", mock_update.message.reply_text.call_args[0][0])
+
+        # 6. /positions
+        asyncio.run(positions_cmd(mock_update, mock_ctx))
+        self.assertIn("Active Paper Positions", mock_update.message.reply_text.call_args[0][0])
+
+        # 7. /closeall
+        asyncio.run(close_all_cmd(mock_update, mock_ctx))
+        self.assertIn("Closed", mock_update.message.reply_text.call_args[0][0])
+
+        # 8. /autotrade off
+        mock_ctx.args = ["off"]
+        asyncio.run(autotrade_cmd(mock_update, mock_ctx))
+        self.assertFalse(auto_trader.enabled)
+
+
+
+class TestDeltaClient(unittest.TestCase):
+    def setUp(self):
+        from delta_client import DeltaClient
+        self.client = DeltaClient(api_key="test_api_key_12345", api_secret="test_secret_67890")
+
+    def test_client_configuration(self):
+        self.assertTrue(self.client.is_configured())
+        masked = self.client.get_masked_key()
+        self.assertTrue(masked.startswith("te"))
+        self.assertTrue(masked.endswith("45"))
+        self.assertIn("...", masked)
+
+    def test_product_resolution(self):
+        self.assertEqual(self.client.get_product_id("BTCUSD"), 27)
+        self.assertEqual(self.client.get_product_id("BTC"), 27)
+        self.assertEqual(self.client.get_product_id("XAUTUSD"), 131253)
+        self.assertEqual(self.client.get_product_id("GOLD"), 131253)
+
+    def test_signature_generation(self):
+        sig, ts = self.client._generate_signature("GET", "/v2/wallet/balances")
+        self.assertIsInstance(sig, str)
+        self.assertGreater(len(sig), 20)
+        self.assertIsInstance(ts, str)
+        self.assertTrue(ts.isdigit())
+
+        headers = self.client._get_headers("POST", "/v2/orders", payload={"product_id": 27})
+        self.assertEqual(headers["api-key"], "test_api_key_12345")
+        self.assertIn("signature", headers)
+        self.assertIn("timestamp", headers)
+        self.assertEqual(headers["Content-Type"], "application/json")
+
+
+class TestAutoTrader(unittest.TestCase):
+    def setUp(self):
+        from auto_trader import AutoTrader
+        self.test_store = "test_autotrader_store.json"
+        if os.path.exists(self.test_store):
+            os.remove(self.test_store)
+        self.trader = AutoTrader(store_file=self.test_store, mode="paper", default_size=0.01)
+
+    def tearDown(self):
+        if os.path.exists(self.test_store):
+            os.remove(self.test_store)
+
+    def test_trader_initial_state(self):
+        self.assertEqual(self.trader.mode, "paper")
+        self.assertFalse(self.trader.enabled)
+        self.assertEqual(self.trader.balance, 10000.0)
+        self.assertEqual(len(self.trader.get_open_positions()), 0)
+
+    def test_execute_paper_trade(self):
+        # Open Long position on BTCUSD
+        pos = self.trader.execute_trade(
+            symbol="BTCUSD",
+            side="buy",
+            size=0.02,
+            trade_type="manual",
+            sl_price=60000.0,
+            tp1_price=70000.0,
+            tp2_price=75000.0,
+        )
+        self.assertEqual(pos["status"], "open")
+        self.assertEqual(pos["symbol"], "BTCUSD")
+        self.assertEqual(pos["side"], "buy")
+        self.assertEqual(pos["size"], 0.02)
+        self.assertEqual(pos["sl_price"], 60000.0)
+        self.assertEqual(pos["tp1_price"], 70000.0)
+
+        # Verify open positions count
+        open_pos = self.trader.get_open_positions()
+        self.assertEqual(len(open_pos), 1)
+        self.assertEqual(open_pos[0]["id"], pos["position_id"])
+
+    def test_close_paper_trade_with_pnl(self):
+        # Execute trade with manual entry
+        pos = self.trader.execute_trade(
+            symbol="BTCUSD",
+            side="buy",
+            size=1.0,
+            trade_type="manual",
+        )
+        pid = pos["position_id"]
+        entry = pos["entry_price"]
+
+        # Close position at entry + $1000
+        close_res = self.trader.close_position(pid, exit_price=entry + 1000.0)
+        self.assertEqual(close_res["status"], "closed")
+        self.assertEqual(close_res["exit_price"], entry + 1000.0)
+        self.assertAlmostEqual(close_res["pnl"], 1000.0)
+        self.assertEqual(self.trader.balance, 11000.0)
+        self.assertEqual(len(self.trader.get_open_positions()), 0)
+
+    def test_close_all_positions(self):
+        self.trader.execute_trade("BTCUSD", "buy", size=0.01)
+        self.trader.execute_trade("XAUTUSD", "sell", size=0.05)
+        self.assertEqual(len(self.trader.get_open_positions()), 2)
+
+        closed = self.trader.close_all_positions()
+        self.assertEqual(len(closed), 2)
+        self.assertEqual(len(self.trader.get_open_positions()), 0)
+
+    def test_exit_trigger_monitoring(self):
+        # Create position with tight SL and TP
+        pos = self.trader.execute_trade(
+            symbol="BTCUSD",
+            side="buy",
+            size=0.1,
+            sl_price=50000.0,
+            tp1_price=60000.0,
+            tp2_price=65000.0,
+        )
+        pid = pos["position_id"]
+
+        # Modify position entry to simulate price reaching TP1
+        for p in self.trader.positions:
+            if p["id"] == pid:
+                p["tp1_price"] = 1.0  # Mark price is definitely > 1.0, triggering TP
+                break
+
+        exits = self.trader.check_open_positions_for_exits()
+        self.assertEqual(len(exits), 1)
+        self.assertEqual(exits[0]["position_id"], pid)
+        self.assertIn("TAKE PROFIT", exits[0]["exit_reason"])
+        self.assertEqual(len(self.trader.get_open_positions()), 0)
+
+    def test_subscribers_and_mode_toggle(self):
+        self.trader.add_subscriber(12345)
+        self.assertIn(12345, self.trader.subscribers)
+        self.trader.remove_subscriber(12345)
+        self.assertNotIn(12345, self.trader.subscribers)
+
+        # Before switching to live, credentials must be set
+        self.trader.delta_client.set_credentials("test_key", "test_secret")
+        self.trader.set_mode("live")
+        self.assertEqual(self.trader.mode, "live")
+        self.trader.set_mode("paper")
+        self.assertEqual(self.trader.mode, "paper")
+
+        self.trader.set_enabled(True)
+        self.assertTrue(self.trader.enabled)
+        self.trader.set_enabled(False)
+        self.assertFalse(self.trader.enabled)
+
+    def test_account_summary(self):
+        summary = self.trader.get_account_summary()
+        self.assertEqual(summary["mode"], "paper")
+        self.assertEqual(summary["balance"], 10000.0)
+        self.assertIn("win_rate_pct", summary)
+
 
 if __name__ == "__main__":
     unittest.main()
+
