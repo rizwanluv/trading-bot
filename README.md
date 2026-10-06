@@ -71,7 +71,9 @@ An advanced algorithmic trading and market intelligence Telegram bot powered by 
 ### 🤖 Trading & Delta Exchange Commands
 | Command | Description |
 |---|---|
-| `/autotrade [on\|off]` | Turn ON/OFF Gautam Jha automated trading engine |
+| `/starttrade` (or `/tradeon`) | **START** Gautam Jha automated trading engine 🟢 |
+| `/stoptrade` (or `/tradeoff`) | **STOP** / pause automated trading bot 🔴 |
+| `/autotrade [on\|off]` | Control automated strategy execution and view status dashboard |
 | `/mode [paper\|live]` | Switch between Paper trading ($10,000 demo) and Live Delta execution |
 | `/trade <SYM> <buy\|sell> [size]` | Execute manual trade with auto SL and TP (e.g. `/trade BTC buy 0.01`) |
 | `/positions` | List open positions with live mark price and unrealized PnL |
@@ -80,8 +82,17 @@ An advanced algorithmic trading and market intelligence Telegram bot powered by 
 | `/balance` | Check virtual balance / Delta Exchange wallet balances |
 | `/orders` | View working orders on Delta Exchange |
 | `/cancelorders [SYM]` | Cancel open orders on Delta Exchange |
-| `/setkeys <KEY> <SECRET>` | Configure Delta Exchange API credentials securely |
+| `/setkey <API_KEY>` | Set Delta Exchange API Key |
+| `/setsecret <API_SECRET>` | Set Delta Exchange API Secret |
+| `/setkeys <KEY> <SECRET>` | Configure both Delta Exchange API Key & Secret at once |
 | `/keys` | View Delta API connection status and masked key |
+
+### 🔔 Automatic Market Alerts
+| Command | Description |
+|---|---|
+| `/alertson` | **TURN ON** automatic alerts for BTC & Gold (5m & 15m) 🟢 |
+| `/alertsoff` | **TURN OFF** automatic market alerts 🔴 |
+| `/autoalert [on\|off]` | Toggle automatic candle & liquidity alerts |
 
 ### 🪙 Bitcoin (BTC) Shortcuts
 | Command | Description |

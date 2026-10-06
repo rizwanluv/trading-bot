@@ -331,7 +331,8 @@ class TestBotCommands(unittest.TestCase):
             "/price", "/levels", "/analysis", "/gj", "/liquidity",
             "/alert", "/alerts", "/delalert", "/clearalerts",
             "/entry", "/scan", "/watch", "/unwatch", "/watchers",
-            "/autotrade", "/trade", "/positions", "/closeposition", "/balance", "/mode", "/setkeys", "/keys",
+            "/autotrade", "/starttrade", "/stoptrade", "/trade", "/positions", "/closeposition", "/balance", "/mode",
+            "/alertson", "/alertsoff", "/setkey", "/setsecret", "/setkeys", "/keys",
             "/list", "/help", "/start", "/reset"
         ]
         for cmd in expected_cmds:
@@ -344,12 +345,19 @@ class TestBotCommands(unittest.TestCase):
             keys_cmd,
             mode_cmd,
             autotrade_cmd,
+            start_trade_cmd,
+            stop_trade_cmd,
+            auto_alert_on_cmd,
+            auto_alert_off_cmd,
+            set_key_cmd,
+            set_secret_cmd,
             balance_cmd,
             positions_cmd,
             set_keys_cmd,
             trade_cmd,
             close_all_cmd,
             auto_trader,
+            alert_manager,
         )
 
         mock_update = MagicMock()
@@ -366,34 +374,55 @@ class TestBotCommands(unittest.TestCase):
         asyncio.run(mode_cmd(mock_update, mock_ctx))
         self.assertIn("Current Trading Mode", mock_update.message.reply_text.call_args[0][0])
 
-        # 3. /autotrade
-        mock_ctx.args = ["on"]
-        asyncio.run(autotrade_cmd(mock_update, mock_ctx))
+        # 3. /starttrade (Trading Start Automatic ON)
+        mock_ctx.args = []
+        asyncio.run(start_trade_cmd(mock_update, mock_ctx))
         self.assertTrue(auto_trader.enabled)
-        self.assertIn("Automated Trading Bot is now ACTIVE", mock_update.message.reply_text.call_args[0][0])
+        self.assertIn("AUTOMATIC TRADING ENGINE: STARTED", mock_update.message.reply_text.call_args[0][0])
 
-        # 4. /balance
+        # 4. /stoptrade (Trading Stop Automatic OFF)
+        asyncio.run(stop_trade_cmd(mock_update, mock_ctx))
+        self.assertFalse(auto_trader.enabled)
+        self.assertIn("AUTOMATIC TRADING ENGINE: STOPPED", mock_update.message.reply_text.call_args[0][0])
+
+        # 5. /alertson (Automatic Alerts ON)
+        asyncio.run(auto_alert_on_cmd(mock_update, mock_ctx))
+        watchers = alert_manager.get_chat_entry_watchers(555)
+        self.assertGreaterEqual(len(watchers), 2)
+        self.assertIn("AUTOMATIC ALERTS: TURNED ON", mock_update.message.reply_text.call_args[0][0])
+
+        # 6. /alertsoff (Automatic Alerts OFF)
+        asyncio.run(auto_alert_off_cmd(mock_update, mock_ctx))
+        watchers_after = alert_manager.get_chat_entry_watchers(555)
+        self.assertEqual(len(watchers_after), 0)
+        self.assertIn("AUTOMATIC ALERTS: TURNED OFF", mock_update.message.reply_text.call_args[0][0])
+
+        # 7. /setkey and /setsecret
+        mock_ctx.args = ["ovRwsM4ZGWkK2JI67yOIiTdu2BWnhg"]
+        asyncio.run(set_key_cmd(mock_update, mock_ctx))
+        self.assertIn("Delta Exchange API Key Saved", mock_update.message.reply_text.call_args[0][0])
+
+        mock_ctx.args = ["dummy_secret_12345"]
+        asyncio.run(set_secret_cmd(mock_update, mock_ctx))
+        self.assertIn("Delta Exchange API Secret Saved", mock_update.message.reply_text.call_args[0][0])
+
+        # 8. /balance
         mock_ctx.args = []
         asyncio.run(balance_cmd(mock_update, mock_ctx))
         self.assertIn("Paper Trading Account Balance", mock_update.message.reply_text.call_args[0][0])
 
-        # 5. /trade BTC buy
+        # 9. /trade BTC buy
         mock_ctx.args = ["BTC", "buy", "0.01"]
         asyncio.run(trade_cmd(mock_update, mock_ctx))
         self.assertIn("TRADE EXECUTED", mock_update.message.reply_text.call_args[0][0])
 
-        # 6. /positions
+        # 10. /positions
         asyncio.run(positions_cmd(mock_update, mock_ctx))
         self.assertIn("Active Paper Positions", mock_update.message.reply_text.call_args[0][0])
 
-        # 7. /closeall
+        # 11. /closeall
         asyncio.run(close_all_cmd(mock_update, mock_ctx))
         self.assertIn("Closed", mock_update.message.reply_text.call_args[0][0])
-
-        # 8. /autotrade off
-        mock_ctx.args = ["off"]
-        asyncio.run(autotrade_cmd(mock_update, mock_ctx))
-        self.assertFalse(auto_trader.enabled)
 
 
 

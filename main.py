@@ -279,19 +279,25 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = (
         "📜 <b>ALL BOT COMMANDS:</b>\n\n"
         "🤖 <b>Automated & Manual Trading:</b>\n"
-        "• <code>/autotrade on [symbol] [live|paper]</code> — Turn ON automated trading\n"
-        "• <code>/autotrade off [symbol]</code> — Turn OFF automated trading\n"
-        "• <code>/autotrade status</code> — View auto-trading engine dashboard\n"
+        "• <code>/starttrade</code> (or <code>/tradeon</code>) — <b>START</b> automated trading bot 🟢\n"
+        "• <code>/stoptrade</code> (or <code>/tradeoff</code>) — <b>STOP</b> / pause automated trading 🔴\n"
+        "• <code>/autotrade [on|off]</code> — Automated bot control & performance\n"
         "• <code>/trade &lt;SYMBOL&gt; &lt;BUY/SELL&gt; [SIZE]</code> — Execute order with auto SL/TP\n"
         "• <code>/positions</code> — View active open positions & unrealized PnL\n"
-        "• <code>/closeposition &lt;SYMBOL&gt;</code> (or <code>/closeall</code>) — Close position at market\n"
+        "• <code>/closeposition &lt;ID&gt;</code> (or <code>/closeall</code>) — Close position at market\n"
         "• <code>/balance</code> — View Delta Exchange wallet & paper balance\n"
         "• <code>/mode [live|paper]</code> — Switch between Live & Paper trading\n\n"
         "🔑 <b>Delta Exchange API Keys:</b>\n"
-        "• <code>/setkeys &lt;KEY&gt; &lt;SECRET&gt;</code> — Connect Delta Exchange API credentials\n"
+        "• <code>/setkey &lt;KEY&gt;</code> — Set Delta Exchange API Key\n"
+        "• <code>/setsecret &lt;SECRET&gt;</code> — Set Delta Exchange API Secret\n"
+        "• <code>/setkeys &lt;KEY&gt; &lt;SECRET&gt;</code> — Connect Delta credentials\n"
         "• <code>/keys</code> — Check API key connection & permissions\n"
         "• <code>/orders</code> — View active open orders on Delta\n"
         "• <code>/cancelorders [SYMBOL]</code> — Cancel working orders\n\n"
+        "🔔 <b>Automatic Market Alerts:</b>\n"
+        "• <code>/alertson</code> — <b>TURN ON</b> automatic alerts for BTC & Gold 🟢\n"
+        "• <code>/alertsoff</code> — <b>TURN OFF</b> automatic market alerts 🔴\n"
+        "• <code>/autoalert [on|off]</code> — Automatic alerts toggle\n\n"
         "🥇 <b>Gold (XAU/USD) Shortcuts:</b>\n"
         "• <code>/gold</code> (or <code>/xau</code>, <code>/xauusd</code>) — Live Gold ticker & 24h stats\n"
         "• <code>/goldlevels</code> (or <code>/xaulevels</code>) — Gold Automatic Level Analysis\n"
@@ -310,12 +316,12 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "📊 <b>Level & Liquidity Analysis:</b>\n"
         "• <code>/levels [SYMBOL]</code> (or <code>/analysis</code>) — S/R, Pivots, Fibs, DO\n"
         "• <code>/gj [SYMBOL]</code> (or <code>/liquidity</code>) — Gautam Jha Price Action\n\n"
-        "🚨 <b>Price Alerts:</b>\n"
+        "🚨 <b>Custom Price Alerts:</b>\n"
         "• <code>/alert [SYMBOL] &lt;PRICE&gt;</code> — Set price alert (e.g. <code>/alert gold 4180</code>)\n"
         "• <code>/alerts</code> — List your active price alerts\n"
         "• <code>/delalert &lt;ID&gt;</code> — Remove an alert by ID\n"
         "• <code>/clearalerts</code> — Clear all your active price alerts\n\n"
-        "🎯 <b>1m, 5m, 15m Candle Entry Alerts:</b>\n"
+        "🎯 <b>Candle Scanner & Watchers:</b>\n"
         "• <code>/entry [SYMBOL]</code> (or <code>/scan</code>) — Scan 1m, 5m, 15m candles\n"
         "• <code>/watch [SYMBOL] [tfs]</code> — Turn ON automated candle alerts\n"
         "• <code>/unwatch [SYMBOL]</code> — Turn OFF automated candle alerts\n"
@@ -591,15 +597,95 @@ async def set_alert_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
+async def auto_alert_on_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Enable automatic market alerts for BTC and Gold (/alertson, /autoalert on)."""
+    chat_id = update.effective_chat.id
+    # Add watchers for BTCUSD and XAUTUSD on 5m and 15m
+    alert_manager.add_entry_watcher(chat_id, "BTCUSD", ["5m", "15m"])
+    alert_manager.add_entry_watcher(chat_id, "XAUTUSD", ["5m", "15m"])
+
+    msg = (
+        "🔔 <b>AUTOMATIC ALERTS: TURNED ON!</b> 🟢\n\n"
+        "Now automatically scanning every candle close for:\n"
+        "• 🪙 <b>Bitcoin (#BTCUSD)</b> — 5m & 15m timeframes\n"
+        "• 🥇 <b>Gold (#XAUTUSD)</b> — 5m & 15m timeframes\n\n"
+        "🎯 <b>What's Monitored:</b>\n"
+        "• Gautam Jha Daily Open (DO) color flip reversals & continuations\n"
+        "• Previous Day High (PDH) & Low (PDL) sweeps\n"
+        "• Multi-timeframe Pin Bars, Hammers, Shooting Stars & Engulfing setups\n"
+        "• Complete trade plans: Entry, Stop Loss, TP1 (1:1.5), TP2 (1:2.5+)\n\n"
+        "⚡ <i>You will receive instant notifications whenever high-probability setups form!</i>\n\n"
+        "🛑 <i>To turn off anytime: <code>/alertsoff</code> or <code>/autoalert off</code></i>"
+    )
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def auto_alert_off_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Disable automatic market alerts (/alertsoff, /autoalert off)."""
+    chat_id = update.effective_chat.id
+    count = alert_manager.remove_entry_watcher(chat_id)
+    msg = (
+        "🔕 <b>AUTOMATIC ALERTS: TURNED OFF.</b> 🔴\n\n"
+        "All automatic candle and setup scanners have been paused for this chat.\n\n"
+        "💡 <i>Your custom price alerts (if any) remain saved.</i>\n"
+        "To turn automatic alerts back on anytime, type <code>/alertson</code>."
+    )
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def auto_alert_toggle_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Command handler for /autoalert or /autoalerts [on|off]."""
+    args = ctx.args or []
+    if not args:
+        chat_id = update.effective_chat.id
+        watchers = alert_manager.get_chat_entry_watchers(chat_id)
+        if watchers:
+            tfs_list = [f"#{w['symbol']} ({', '.join([tf.upper() for tf in w['timeframes']])})" for w in watchers]
+            await update.message.reply_text(
+                "🔔 <b>Automatic Alerts: ACTIVE 🟢</b>\n\n"
+                "Currently monitoring:\n" + "\n".join(f"• {t}" for t in tfs_list) +
+                "\n\n<b>Controls:</b>\n"
+                "• <code>/alertsoff</code> — Turn alerts OFF\n"
+                "• <code>/alertson</code> — Turn alerts ON",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            await update.message.reply_text(
+                "🔕 <b>Automatic Alerts: OFF 🔴</b>\n\n"
+                "To turn automatic candle and liquidity alerts ON:\n"
+                "• Type <code>/alertson</code> or <code>/autoalert on</code>",
+                parse_mode=ParseMode.HTML,
+            )
+        return
+
+    sub = args[0].lower().strip()
+    if sub in ("on", "start", "enable", "1", "true"):
+        await auto_alert_on_cmd(update, ctx)
+    elif sub in ("off", "stop", "disable", "0", "false"):
+        await auto_alert_off_cmd(update, ctx)
+    else:
+        await update.message.reply_text("Usage: <code>/autoalert on</code> or <code>/autoalert off</code>", parse_mode=ParseMode.HTML)
+
+
 async def list_alerts_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """List active price alerts."""
+    """List active price alerts or toggle automatic alerts on/off."""
+    if ctx.args:
+        sub = ctx.args[0].lower().strip()
+        if sub in ("on", "start", "enable", "1"):
+            await auto_alert_on_cmd(update, ctx)
+            return
+        elif sub in ("off", "stop", "disable", "0"):
+            await auto_alert_off_cmd(update, ctx)
+            return
+
     chat_id = update.effective_chat.id
     alerts = alert_manager.get_chat_alerts(chat_id)
 
     if not alerts:
         await update.message.reply_text(
             "📭 <b>You have no active price alerts.</b>\n\n"
-            "Set one with <code>/alert &lt;PRICE&gt;</code> or <code>/alert &lt;SYMBOL&gt; &lt;PRICE&gt;</code>.",
+            "• Set one with: <code>/alert &lt;PRICE&gt;</code> or <code>/alert &lt;SYMBOL&gt; &lt;PRICE&gt;</code>\n"
+            "• Turn on automatic candle alerts: <code>/alertson</code>",
             parse_mode=ParseMode.HTML,
         )
         return
@@ -858,14 +944,22 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ==================== Trading & Delta Exchange Commands ====================
 
-def save_delta_keys_to_env(api_key: str, api_secret: str, base_url: Optional[str] = None, env_path: str = ".env") -> bool:
+def save_delta_credentials(
+    api_key: Optional[str] = None,
+    api_secret: Optional[str] = None,
+    base_url: Optional[str] = None,
+    env_path: str = ".env",
+) -> bool:
     """Save Delta Exchange credentials to .env file and update current process environment."""
-    os.environ["DELTA_API_KEY"] = api_key
-    os.environ["DELTA_API_SECRET"] = api_secret
+    if api_key:
+        os.environ["DELTA_API_KEY"] = api_key
+        delta_client.api_key = api_key
+    if api_secret:
+        os.environ["DELTA_API_SECRET"] = api_secret
+        delta_client.api_secret = api_secret
     if base_url:
         os.environ["DELTA_BASE_URL"] = base_url
-
-    delta_client.set_credentials(api_key, api_secret, base_url)
+        delta_client.base_url = base_url.rstrip("/")
 
     lines = []
     if os.path.exists(env_path):
@@ -879,10 +973,10 @@ def save_delta_keys_to_env(api_key: str, api_secret: str, base_url: Optional[str
     new_lines = []
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith("DELTA_API_KEY="):
+        if api_key and stripped.startswith("DELTA_API_KEY="):
             new_lines.append(f"DELTA_API_KEY={api_key}\n")
             keys_set.add("DELTA_API_KEY")
-        elif stripped.startswith("DELTA_API_SECRET="):
+        elif api_secret and stripped.startswith("DELTA_API_SECRET="):
             new_lines.append(f"DELTA_API_SECRET={api_secret}\n")
             keys_set.add("DELTA_API_SECRET")
         elif base_url and stripped.startswith("DELTA_BASE_URL="):
@@ -891,9 +985,9 @@ def save_delta_keys_to_env(api_key: str, api_secret: str, base_url: Optional[str
         else:
             new_lines.append(line)
 
-    if "DELTA_API_KEY" not in keys_set:
+    if api_key and "DELTA_API_KEY" not in keys_set:
         new_lines.append(f"DELTA_API_KEY={api_key}\n")
-    if "DELTA_API_SECRET" not in keys_set:
+    if api_secret and "DELTA_API_SECRET" not in keys_set:
         new_lines.append(f"DELTA_API_SECRET={api_secret}\n")
     if base_url and "DELTA_BASE_URL" not in keys_set:
         new_lines.append(f"DELTA_BASE_URL={base_url}\n")
@@ -907,6 +1001,78 @@ def save_delta_keys_to_env(api_key: str, api_secret: str, base_url: Optional[str
         return False
 
 
+def save_delta_keys_to_env(api_key: str, api_secret: str, base_url: Optional[str] = None, env_path: str = ".env") -> bool:
+    """Backward compatibility wrapper."""
+    return save_delta_credentials(api_key=api_key, api_secret=api_secret, base_url=base_url, env_path=env_path)
+
+
+async def set_key_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Set Delta Exchange API Key (/setkey <API_KEY>)."""
+    args = ctx.args or []
+    if not args:
+        masked = delta_client.get_masked_key()
+        await update.message.reply_text(
+            "🔑 <b>Delta Exchange API Key</b>\n\n"
+            f"<b>Current Key:</b> <code>{masked}</code>\n\n"
+            "<b>Usage:</b>\n"
+            "<code>/setkey &lt;API_KEY&gt;</code>\n\n"
+            "<b>Example:</b>\n"
+            "<code>/setkey ovRwsM4ZGWkK2JI67yOIiTdu2BWnhg</code>\n\n"
+            "💡 <i>To set your secret as well: <code>/setsecret &lt;SECRET&gt;</code></i>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    api_key = args[0].strip()
+    save_delta_credentials(api_key=api_key)
+    masked = delta_client.get_masked_key()
+
+    has_secret = bool(delta_client.api_secret)
+    secret_note = "🟢 Configured" if has_secret else "⚠️ Not Set (Required for live execution: <code>/setsecret &lt;SECRET&gt;</code>)"
+
+    await update.message.reply_text(
+        "✅ <b>Delta Exchange API Key Saved!</b>\n\n"
+        f"• <b>API Key:</b> <code>{masked}</code>\n"
+        f"• <b>API Secret:</b> {secret_note}\n"
+        f"• <b>Base URL:</b> <code>{delta_client.base_url}</code>\n\n"
+        + ("🚀 <b>Ready for live trading! Use <code>/mode live</code> and <code>/starttrade</code></b>" if has_secret else
+           "💡 <i>Next step: Send your API Secret using <code>/setsecret &lt;API_SECRET&gt;</code> to enable live trading!</i>"),
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def set_secret_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Set Delta Exchange API Secret (/setsecret <API_SECRET>)."""
+    args = ctx.args or []
+    if not args:
+        has_secret = bool(delta_client.api_secret)
+        await update.message.reply_text(
+            "🔐 <b>Delta Exchange API Secret</b>\n\n"
+            f"<b>Status:</b> {'Configured [Protected] 🟢' if has_secret else 'Not Set ⚠️'}\n\n"
+            "<b>Usage:</b>\n"
+            "<code>/setsecret &lt;API_SECRET&gt;</code>\n\n"
+            "🔒 <i>Your secret is stored securely in local <code>.env</code> file.</i>\n"
+            "<i>(Tip: delete your Telegram message after sending to protect your secret)</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    api_secret = args[0].strip()
+    save_delta_credentials(api_secret=api_secret)
+
+    await update.message.reply_text(
+        "✅ <b>Delta Exchange API Secret Saved!</b>\n\n"
+        f"• <b>API Key:</b> <code>{delta_client.get_masked_key()}</code>\n"
+        f"• <b>API Secret:</b> Configured & Active 🟢\n"
+        f"• <b>Connection Status:</b> {'Ready for Live Trading ⚡' if delta_client.is_configured() else 'API Key needed: /setkey <KEY>'}\n\n"
+        "🎯 <b>Next Steps:</b>\n"
+        "• <code>/balance</code> — Check live wallet balance\n"
+        "• <code>/mode live</code> — Switch to live execution\n"
+        "• <code>/starttrade</code> — Start automatic trading engine",
+        parse_mode=ParseMode.HTML,
+    )
+
+
 async def set_keys_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Set Delta Exchange API Key and Secret (/setkeys <API_KEY> <API_SECRET>)."""
     args = ctx.args or []
@@ -916,7 +1082,8 @@ async def set_keys_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "🔑 <b>Delta Exchange API Key Setup</b>\n\n"
             f"<b>Status:</b> {('Configured (' + masked + ')') if delta_client.is_configured() else 'Not Configured ⚠️'}\n\n"
             "<b>Usage:</b>\n"
-            "<code>/setkeys &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>\n\n"
+            "• <code>/setkeys &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>\n"
+            "• Or set individually: <code>/setkey &lt;KEY&gt;</code> & <code>/setsecret &lt;SECRET&gt;</code>\n\n"
             "<b>Example:</b>\n"
             "<code>/setkeys d_key_123456789 secret_abcdef123456789</code>\n\n"
             "💡 <b>How to get keys:</b>\n"
@@ -946,7 +1113,7 @@ async def set_keys_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "🎯 <b>Next Steps:</b>\n"
             "• Use <code>/balance</code> to view wallet balance\n"
             "• Use <code>/mode live</code> to switch to live trading\n"
-            "• Use <code>/autotrade on</code> to start automated trading\n"
+            "• Use <code>/starttrade</code> to start automated trading\n"
             "• Use <code>/trade BTC buy</code> for manual execution",
             parse_mode=ParseMode.HTML,
         )
@@ -1032,26 +1199,84 @@ async def mode_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def start_trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Start automatic trading engine (/starttrade, /tradeon, /startbot, /autotrade on)."""
+    chat_id = update.effective_chat.id
+    if auto_trader.mode == "live" and not delta_client.is_configured():
+        await update.message.reply_text(
+            "⚠️ <b>Delta Exchange API keys are not set for LIVE mode!</b>\n\n"
+            "Please configure your keys first using:\n"
+            "<code>/setkey &lt;API_KEY&gt;</code> and <code>/setsecret &lt;API_SECRET&gt;</code>\n"
+            "(or <code>/setkeys &lt;KEY&gt; &lt;SECRET&gt;</code>)\n\n"
+            "Or switch to safe paper trading with $10,000 demo funds:\n"
+            "<code>/mode paper</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    auto_trader.set_enabled(True)
+    auto_trader.add_subscriber(chat_id)
+
+    mode_badge = (
+        "🎮 <b>PAPER SIMULATION</b> ($10,000 demo capital, zero risk)"
+        if auto_trader.mode == "paper"
+        else "⚡ <b>LIVE DELTA EXCHANGE</b> (Real account execution)"
+    )
+
+    msg = (
+        "🟢 <b>AUTOMATIC TRADING ENGINE: STARTED!</b> 🚀\n\n"
+        f"• <b>Status:</b> 🟢 <b>ACTIVE / RUNNING</b>\n"
+        f"• <b>Execution Mode:</b> {mode_badge}\n"
+        f"• <b>Account Balance:</b> <code>${auto_trader.balance:,.2f}</code>\n"
+        "• <b>Scanned Markets:</b> 🪙 Bitcoin (#BTCUSD) & 🥇 Gold (#XAUTUSD)\n"
+        "• <b>Timeframes:</b> 5m & 15m\n"
+        "• <b>Strategy Rules:</b>\n"
+        "  - Gautam Jha Daily Open (DO) color flip reactions\n"
+        "  - Previous Day High (PDH) & Low (PDL) sweeps\n"
+        "  - Momentum Break-and-Go & Level Continuations\n"
+        "  - Automatic Stop Loss (SL) & dual Take Profit (TP1 1:1.5, TP2 1:2.5+)\n\n"
+        "🔔 <i>You will receive instant alerts whenever trades open or exit.</i>\n\n"
+        "🛑 <i>To stop automatic trading anytime: <code>/stoptrade</code> or <code>/autotrade off</code></i>"
+    )
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def stop_trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Stop automatic trading engine (/stoptrade, /tradeoff, /stopbot, /autotrade off)."""
+    auto_trader.set_enabled(False)
+    open_count = len(auto_trader.get_open_positions())
+    msg = (
+        "🔴 <b>AUTOMATIC TRADING ENGINE: STOPPED & PAUSED.</b> 🛑\n\n"
+        "No new automated trades will be entered.\n\n"
+        f"• <b>Active Positions:</b> {open_count}\n"
+        f"• <b>Balance:</b> <code>${auto_trader.balance:,.2f}</code> ({auto_trader.mode.upper()} mode)\n\n"
+        "💡 <i>Existing open positions remain managed and will exit when SL or TP is reached.</i>\n"
+        "To view or close positions manually: <code>/positions</code> or <code>/closeall</code>.\n"
+        "To restart automatic trading: <code>/starttrade</code> or <code>/autotrade on</code>."
+    )
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
 async def autotrade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Enable or disable automated strategy execution (/autotrade [on|off])."""
-    chat_id = update.effective_chat.id
     args = ctx.args or []
     if not args:
-        status_str = "🟢 <b>ACTIVE / RUNNING</b>" if auto_trader.enabled else "🔴 <b>DISABLED</b>"
+        chat_id = update.effective_chat.id
+        status_str = "🟢 <b>ACTIVE / RUNNING</b>" if auto_trader.enabled else "🔴 <b>DISABLED / PAUSED</b>"
         mode_str = auto_trader.mode.upper()
         summary = auto_trader.get_account_summary()
         await update.message.reply_text(
             f"🤖 <b>Gautam Jha Automated Trading Engine</b>\n\n"
             f"• <b>Status:</b> {status_str}\n"
             f"• <b>Mode:</b> <code>{mode_str}</code>\n"
-            f"• <b>Subscribed for Alerts:</b> {'Yes' if chat_id in auto_trader.subscribers else 'No'}\n"
+            f"• <b>Subscribed for Alerts:</b> {'Yes 🟢' if chat_id in auto_trader.subscribers else 'No'}\n"
             f"• <b>Open Positions:</b> {summary['open_positions_count']}\n"
             f"• <b>Balance:</b> <code>${summary['balance']:,.2f}</code>\n"
             f"• <b>Win Rate:</b> {summary['win_rate_pct']}%\n"
             f"• <b>Total Trades:</b> {summary['total_trades']}\n\n"
             "<b>Controls:</b>\n"
-            "• <code>/autotrade on</code> — Turn ON automated bot & alerts\n"
-            "• <code>/autotrade off</code> — Pause automated trading\n"
+            "• <code>/starttrade</code> (or <code>/autotrade on</code>) — Start auto trading\n"
+            "• <code>/stoptrade</code> (or <code>/autotrade off</code>) — Stop auto trading\n"
             "• <code>/mode paper</code> / <code>/mode live</code> — Switch mode",
             parse_mode=ParseMode.HTML,
         )
@@ -1059,37 +1284,11 @@ async def autotrade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     subcmd = args[0].lower().strip()
     if subcmd in ("on", "start", "enable", "1", "true"):
-        if auto_trader.mode == "live" and not delta_client.is_configured():
-            await update.message.reply_text(
-                "⚠️ Delta Exchange API keys are not set. Run <code>/setkeys &lt;KEY&gt; &lt;SECRET&gt;</code> first, or switch to <code>/mode paper</code>.",
-                parse_mode=ParseMode.HTML,
-            )
-            return
-
-        auto_trader.set_enabled(True)
-        auto_trader.add_subscriber(chat_id)
-        await update.message.reply_text(
-            "🟢 <b>Automated Trading Bot is now ACTIVE!</b>\n\n"
-            f"• <b>Mode:</b> <code>{auto_trader.mode.upper()}</code>\n"
-            "• <b>Scanned Markets:</b> BTCUSD (#BTC), XAUTUSD (#GOLD)\n"
-            "• <b>Strategy:</b> Gautam Jha Price-Action & Liquidity Rules\n"
-            "  - Daily Open (DO) color flip reversals & continuations\n"
-            "  - Previous Day High (PDH) & Low (PDL) sweeps\n"
-            "  - 5m & 15m candle pattern confirmations\n"
-            "  - Automated Stop Loss & Take Profit (TP1 1:1.5, TP2 1:2.5)\n\n"
-            "🔔 <i>You will receive instant notifications when trades are opened or closed.</i>\n"
-            "To pause at any time, run <code>/autotrade off</code>.",
-            parse_mode=ParseMode.HTML,
-        )
+        await start_trade_cmd(update, ctx)
     elif subcmd in ("off", "stop", "disable", "0", "false"):
-        auto_trader.set_enabled(False)
-        await update.message.reply_text(
-            "🔴 <b>Automated Trading Bot has been PAUSED.</b>\n\n"
-            "No new automated trades will be entered. Existing positions remain managed until closed.",
-            parse_mode=ParseMode.HTML,
-        )
+        await stop_trade_cmd(update, ctx)
     else:
-        await update.message.reply_text("Usage: <code>/autotrade on</code> or <code>/autotrade off</code>", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("Usage: <code>/starttrade</code> or <code>/stoptrade</code>", parse_mode=ParseMode.HTML)
 
 
 async def trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1605,6 +1804,13 @@ def main():
 
     # Delta Exchange & Automated Trading Commands
     app.add_handler(CommandHandler("autotrade", autotrade_cmd))
+    app.add_handler(CommandHandler("starttrade", start_trade_cmd))
+    app.add_handler(CommandHandler("stoptrade", stop_trade_cmd))
+    app.add_handler(CommandHandler("tradeon", start_trade_cmd))
+    app.add_handler(CommandHandler("tradeoff", stop_trade_cmd))
+    app.add_handler(CommandHandler("startbot", start_trade_cmd))
+    app.add_handler(CommandHandler("stopbot", stop_trade_cmd))
+    app.add_handler(CommandHandler("trading", autotrade_cmd))
     app.add_handler(CommandHandler("mode", mode_cmd))
     app.add_handler(CommandHandler("trade", trade_cmd))
     app.add_handler(CommandHandler("positions", positions_cmd))
@@ -1613,6 +1819,8 @@ def main():
     app.add_handler(CommandHandler("balance", balance_cmd))
     app.add_handler(CommandHandler("orders", orders_cmd))
     app.add_handler(CommandHandler("cancelorders", cancel_orders_cmd))
+    app.add_handler(CommandHandler("setkey", set_key_cmd))
+    app.add_handler(CommandHandler("setsecret", set_secret_cmd))
     app.add_handler(CommandHandler("setkeys", set_keys_cmd))
     app.add_handler(CommandHandler("keys", keys_cmd))
 
@@ -1646,6 +1854,10 @@ def main():
     app.add_handler(CommandHandler("analysis", levels_cmd))
     app.add_handler(CommandHandler("gj", gj_cmd))
     app.add_handler(CommandHandler("liquidity", gj_cmd))
+    app.add_handler(CommandHandler("alertson", auto_alert_on_cmd))
+    app.add_handler(CommandHandler("alertsoff", auto_alert_off_cmd))
+    app.add_handler(CommandHandler("autoalert", auto_alert_toggle_cmd))
+    app.add_handler(CommandHandler("autoalerts", auto_alert_toggle_cmd))
     app.add_handler(CommandHandler("alert", set_alert_cmd))
     app.add_handler(CommandHandler("alerts", list_alerts_cmd))
     app.add_handler(CommandHandler("delalert", delete_alert_cmd))
