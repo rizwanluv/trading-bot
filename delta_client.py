@@ -4,6 +4,7 @@ Supports Delta Exchange India (https://api.india.delta.exchange) and Global (htt
 """
 import os
 import time
+import email.utils
 import hmac
 import hashlib
 import json
@@ -16,6 +17,26 @@ logger = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "https://api.india.delta.exchange"
 
 
+def _load_env_fallback():
+    """Load credentials from .env if environment variables are not pre-set."""
+    if not os.environ.get("DELTA_API_KEY") and os.path.exists(".env"):
+        try:
+            with open(".env", "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip('"').strip("'")
+                        if k and k not in os.environ:
+                            os.environ[k] = v
+        except Exception:
+            pass
+
+
+_load_env_fallback()
+
+
 class DeltaClient:
     """Authenticated client for Delta Exchange REST API v2."""
 
@@ -25,11 +46,13 @@ class DeltaClient:
         api_secret: Optional[str] = None,
         base_url: Optional[str] = None,
     ):
+        _load_env_fallback()
         self.api_key = api_key or os.environ.get("DELTA_API_KEY", "")
         self.api_secret = api_secret or os.environ.get("DELTA_API_SECRET", "")
         self.base_url = (base_url or os.environ.get("DELTA_BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
         self._products_cache: Dict[str, Dict[str, Any]] = {}
         self._products_cache_time: float = 0.0
+        self._server_time_offset: float = 0.0
 
         # Fallback known product mapping for Delta Exchange India
         self._fallback_products = {
@@ -50,6 +73,33 @@ class DeltaClient:
         if base_url:
             self.base_url = base_url.rstrip("/")
 
+    def set_base_url(self, base_url: str):
+        """Set Delta Exchange base URL (e.g. India vs Global)."""
+        self.base_url = base_url.strip().rstrip("/")
+        self._products_cache.clear()
+        self.sync_server_time()
+
+    def sync_server_time(self) -> float:
+        """Fetch current Delta Exchange server time and update internal clock offset."""
+        try:
+            r = requests.get(
+                f"{self.base_url}/v2/products",
+                params={"page_size": 1, "_cb": str(int(time.time()))},
+                timeout=5,
+            )
+            date_header = r.headers.get("date") or r.headers.get("Date")
+            if date_header:
+                server_ts = email.utils.parsedate_to_datetime(date_header).timestamp()
+                diff = server_ts - time.time()
+                # Delta allows a ±5-second window. Only apply if drift exceeds 3 seconds.
+                if abs(diff) > 3.0:
+                    self._server_time_offset = diff
+                else:
+                    self._server_time_offset = 0.0
+        except Exception as e:
+            logger.debug(f"Could not synchronize server time: {e}")
+        return self._server_time_offset
+
     def get_masked_key(self) -> str:
         """Return masked API key for safe display in Telegram."""
         if not self.api_key:
@@ -64,8 +114,9 @@ class DeltaClient:
         """
         Generate HMAC-SHA256 signature according to Delta Exchange specification:
         signature_data = method + timestamp + path + query_string + payload
+        Timestamp is automatically synchronized with Delta Exchange server time.
         """
-        timestamp = str(int(time.time()))
+        timestamp = str(int(time.time() + self._server_time_offset))
         if isinstance(payload, (dict, list)):
             payload_str = json.dumps(payload, separators=(",", ":"))
         else:
@@ -100,8 +151,9 @@ class DeltaClient:
         data: Optional[Dict[str, Any]] = None,
         auth_required: bool = True,
         timeout: int = 15,
+        _is_retry: bool = False,
     ) -> Dict[str, Any]:
-        """Execute HTTP request to Delta Exchange API."""
+        """Execute HTTP request to Delta Exchange API with automatic server clock synchronization."""
         if auth_required and not self.is_configured():
             raise ValueError("Delta API key and secret are not configured.")
 
@@ -139,9 +191,25 @@ class DeltaClient:
         except requests.exceptions.HTTPError as e:
             try:
                 err_data = r.json()
-                err_msg = err_data.get("error", str(e))
-                if isinstance(err_msg, dict):
-                    err_msg = err_msg.get("code") or err_msg.get("message") or str(err_msg)
+                err_dict = err_data.get("error", {})
+                # Auto-heal clock drift if server reports expired_signature
+                if isinstance(err_dict, dict) and err_dict.get("code") == "expired_signature":
+                    server_time = err_dict.get("context", {}).get("server_time")
+                    if server_time and not _is_retry:
+                        self._server_time_offset = float(server_time) - time.time()
+                        return self._request(
+                            method=method,
+                            path=path,
+                            params=params,
+                            data=data,
+                            auth_required=auth_required,
+                            timeout=timeout,
+                            _is_retry=True,
+                        )
+                if isinstance(err_dict, dict):
+                    err_msg = err_dict.get("code") or err_dict.get("message") or str(err_dict)
+                else:
+                    err_msg = str(err_dict or err_data)
             except Exception:
                 err_msg = r.text if hasattr(r, "text") else str(e)
             raise RuntimeError(f"Delta API HTTP {r.status_code}: {err_msg}")
@@ -209,13 +277,36 @@ class DeltaClient:
     # ==================== Authenticated Methods ====================
 
     def test_connection(self) -> Dict[str, Any]:
-        """Test API credentials by fetching wallet balances."""
-        res = self._request("GET", "/v2/wallet/balances", auth_required=True)
-        return {
-            "success": True,
-            "message": "Delta Exchange API credentials successfully validated!",
-            "balances": res.get("result", []),
-        }
+        """Test API credentials by fetching wallet balances safely."""
+        if not self.is_configured():
+            return {
+                "success": False,
+                "error": "not_configured",
+                "message": "Delta Exchange API Key and Secret are not configured.",
+                "base_url": self.base_url,
+                "masked_key": self.get_masked_key(),
+            }
+
+        try:
+            self.sync_server_time()
+            res = self._request("GET", "/v2/wallet/balances", auth_required=True)
+            balances = res.get("result", [])
+            return {
+                "success": True,
+                "message": "Delta Exchange API credentials successfully validated!",
+                "balances": balances,
+                "base_url": self.base_url,
+                "masked_key": self.get_masked_key(),
+            }
+        except Exception as e:
+            err_str = str(e)
+            return {
+                "success": False,
+                "error": err_str,
+                "message": f"Delta Exchange connection test failed: {err_str}",
+                "base_url": self.base_url,
+                "masked_key": self.get_masked_key(),
+            }
 
     def get_wallet_balances(self) -> List[Dict[str, Any]]:
         """Retrieve account wallet balances."""

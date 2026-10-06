@@ -397,14 +397,17 @@ class TestBotCommands(unittest.TestCase):
         self.assertEqual(len(watchers_after), 0)
         self.assertIn("AUTOMATIC ALERTS: TURNED OFF", mock_update.message.reply_text.call_args[0][0])
 
-        # 7. /setkey and /setsecret
-        mock_ctx.args = ["ovRwsM4ZGWkK2JI67yOIiTdu2BWnhg"]
-        asyncio.run(set_key_cmd(mock_update, mock_ctx))
-        self.assertIn("Delta Exchange API Key Saved", mock_update.message.reply_text.call_args[0][0])
+        # 7. /setkey and /setsecret (mocked to prevent overwriting real .env)
+        from unittest.mock import patch
+        with patch("main.save_delta_credentials") as mock_save:
+            mock_ctx.args = ["ovRwsM4ZGWkK2JI67yOIiTdu2BWnhg"]
+            asyncio.run(set_key_cmd(mock_update, mock_ctx))
+            self.assertIn("Delta Exchange API Key Saved", mock_update.message.reply_text.call_args[0][0])
+            self.assertTrue(mock_save.called)
 
-        mock_ctx.args = ["dummy_secret_12345"]
-        asyncio.run(set_secret_cmd(mock_update, mock_ctx))
-        self.assertIn("Delta Exchange API Secret Saved", mock_update.message.reply_text.call_args[0][0])
+            mock_ctx.args = ["dummy_secret_12345"]
+            asyncio.run(set_secret_cmd(mock_update, mock_ctx))
+            self.assertIn("Delta Exchange API Secret Saved", mock_update.message.reply_text.call_args[0][0])
 
         # 8. /balance
         mock_ctx.args = []
@@ -574,6 +577,48 @@ class TestAutoTrader(unittest.TestCase):
         self.assertEqual(summary["mode"], "paper")
         self.assertEqual(summary["balance"], 10000.0)
         self.assertIn("win_rate_pct", summary)
+
+
+class TestChatRoutingAndAliases(unittest.TestCase):
+    def test_chat_plain_text_routing(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from main import chat, set_base_url_cmd, delta_client
+
+        mock_update = MagicMock()
+        mock_update.effective_chat.id = 777
+        mock_update.message.reply_text = AsyncMock()
+        mock_ctx = MagicMock()
+
+        # 1. Plain text "keys check"
+        mock_update.message.text = "keys check"
+        asyncio.run(chat(mock_update, mock_ctx))
+        self.assertIn("Delta Exchange API Status", mock_update.message.reply_text.call_args[0][0])
+
+        # 2. Plain text "start trade"
+        mock_update.message.text = "start trade"
+        asyncio.run(chat(mock_update, mock_ctx))
+        self.assertIn("AUTOMATIC TRADING ENGINE: STARTED", mock_update.message.reply_text.call_args[0][0])
+
+        # 3. Plain text "alerts on"
+        mock_update.message.text = "alerts on"
+        asyncio.run(chat(mock_update, mock_ctx))
+        self.assertIn("AUTOMATIC ALERTS: TURNED ON", mock_update.message.reply_text.call_args[0][0])
+
+        # 4. Pasted API credentials in chat
+        with patch("main.save_delta_credentials") as mock_save, patch("main.keys_cmd") as mock_keys:
+            mock_update.message.text = "delta new api test_key_12345 api secret test_secret_67890"
+            asyncio.run(chat(mock_update, mock_ctx))
+            self.assertTrue(mock_save.called)
+            self.assertTrue(mock_keys.called)
+
+        # 5. /setbaseurl
+        mock_ctx.args = ["global"]
+        asyncio.run(set_base_url_cmd(mock_update, mock_ctx))
+        self.assertEqual(delta_client.base_url, "https://api.delta.exchange")
+        mock_ctx.args = ["india"]
+        asyncio.run(set_base_url_cmd(mock_update, mock_ctx))
+        self.assertEqual(delta_client.base_url, "https://api.india.delta.exchange")
 
 
 if __name__ == "__main__":

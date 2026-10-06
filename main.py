@@ -11,6 +11,7 @@ Features:
 """
 import os
 import sys
+import re
 import asyncio
 import logging
 import requests
@@ -291,7 +292,8 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <code>/setkey &lt;KEY&gt;</code> — Set Delta Exchange API Key\n"
         "• <code>/setsecret &lt;SECRET&gt;</code> — Set Delta Exchange API Secret\n"
         "• <code>/setkeys &lt;KEY&gt; &lt;SECRET&gt;</code> — Connect Delta credentials\n"
-        "• <code>/keys</code> — Check API key connection & permissions\n"
+        "• <code>/keys</code> (or <code>/checkkeys</code>) — Check & verify API connection live\n"
+        "• <code>/setbaseurl [india|global]</code> — Switch Delta India vs Global\n"
         "• <code>/orders</code> — View active open orders on Delta\n"
         "• <code>/cancelorders [SYMBOL]</code> — Cancel working orders\n\n"
         "🔔 <b>Automatic Market Alerts:</b>\n"
@@ -859,10 +861,84 @@ def _detect_symbol_from_text(text: Optional[str], default: str = DEFAULT_SYMBOL)
 
 
 async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Chat with AI assistant with live market context injected."""
+    """Chat with AI assistant with live market context injected, and route plain-text quick commands."""
     chat_id = update.effective_chat.id
     text = update.message.text
     if not text:
+        return
+
+    clean_text = text.strip()
+    lower_text = clean_text.lower()
+
+    # 1. Automatic detection of pasted Delta API credentials
+    # e.g. "delta new api 17sY... api secret 0SeM..."
+    match_key = re.search(r'(?:api[_\s-]*key|delta(?:\s+new)?\s+api)[:\s]+([A-Za-z0-9_-]{8,})', clean_text, re.IGNORECASE)
+    match_sec = re.search(r'(?:api[_\s-]*secret|secret)[:\s]+([A-Za-z0-9_-]{15,})', clean_text, re.IGNORECASE)
+    if match_key and match_sec:
+        k = match_key.group(1).strip()
+        s = match_sec.group(1).strip()
+        save_delta_credentials(api_key=k, api_secret=s)
+        await update.message.reply_text(
+            "🔑 <b>Delta API credentials detected and saved!</b>\nTesting connection now...",
+            parse_mode=ParseMode.HTML,
+        )
+        await keys_cmd(update, ctx)
+        return
+
+    # 2. Plain-text command routing (without leading '/')
+    # Keys / connection checks
+    if lower_text in (
+        "keys check", "check keys", "check key", "keys", "key",
+        "test keys", "test key", "key test", "check api", "check api key",
+        "api status", "delta keys", "delta key", "verify keys", "keys status"
+    ) or lower_text.startswith("keys check") or lower_text.startswith("check key") or lower_text.startswith("test key"):
+        await keys_cmd(update, ctx)
+        return
+
+    # Start / Stop Trading commands
+    if lower_text in (
+        "start trade", "start trading", "start bot", "trade on", "start autotrade",
+        "start auto trade", "trading start", "trade start", "trading on", "autotrade on"
+    ):
+        await start_trade_cmd(update, ctx)
+        return
+    if lower_text in (
+        "stop trade", "stop trading", "stop bot", "trade off", "stop autotrade",
+        "stop auto trade", "trading stop", "trade stop", "trading off", "autotrade off"
+    ):
+        await stop_trade_cmd(update, ctx)
+        return
+
+    # Alerts toggle
+    if lower_text in (
+        "alerts on", "alert on", "auto alert on", "auto alerts on",
+        "turn on alerts", "enable alerts", "alerts start"
+    ):
+        await auto_alert_on_cmd(update, ctx)
+        return
+    if lower_text in (
+        "alerts off", "alert off", "auto alert off", "auto alerts off",
+        "turn off alerts", "disable alerts", "alerts stop"
+    ):
+        await auto_alert_off_cmd(update, ctx)
+        return
+
+    # Balance / Positions
+    if lower_text in ("balance", "my balance", "check balance", "wallet", "wallet balance"):
+        await balance_cmd(update, ctx)
+        return
+    if lower_text in ("positions", "my positions", "open positions", "position"):
+        await positions_cmd(update, ctx)
+        return
+
+    # Mode switch
+    if lower_text in ("mode paper", "paper mode", "paper trading"):
+        ctx.args = ["paper"]
+        await mode_cmd(update, ctx)
+        return
+    if lower_text in ("mode live", "live mode", "live trading"):
+        ctx.args = ["live"]
+        await mode_cmd(update, ctx)
         return
 
     # Detect symbol from text if mentioned, else default
@@ -1124,26 +1200,128 @@ async def set_keys_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def set_base_url_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Set or switch Delta Exchange base URL (/setbaseurl [india|global|<URL>])."""
+    args = ctx.args or []
+    if not args:
+        await update.message.reply_text(
+            "🌐 <b>Delta Exchange Base URL Configuration</b>\n\n"
+            f"• <b>Current URL:</b> <code>{delta_client.base_url}</code>\n\n"
+            "<b>Usage:</b>\n"
+            "• <code>/setbaseurl india</code> — Delta India (https://api.india.delta.exchange)\n"
+            "• <code>/setbaseurl global</code> — Delta Global (https://api.delta.exchange)\n"
+            "• <code>/setbaseurl &lt;URL&gt;</code> — Custom API endpoint",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    arg = args[0].strip().lower()
+    if arg in ("india", "in", "ind"):
+        new_url = "https://api.india.delta.exchange"
+    elif arg in ("global", "com", "world", "int", "international"):
+        new_url = "https://api.delta.exchange"
+    elif arg.startswith("http://") or arg.startswith("https://"):
+        new_url = args[0].strip()
+    else:
+        new_url = f"https://{args[0].strip()}"
+
+    delta_client.set_base_url(new_url)
+    save_delta_credentials(base_url=new_url)
+
+    await update.message.reply_text(
+        f"✅ <b>Delta Exchange URL updated:</b> <code>{new_url}</code>\n\n"
+        "Run <code>/keys</code> or <code>/checkkeys</code> to test connection.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
 async def keys_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """View Delta Exchange API connection status (/keys)."""
+    """View Delta Exchange API connection status & perform live handshake (/keys, /checkkeys, /testkeys)."""
     is_cfg = delta_client.is_configured()
     masked = delta_client.get_masked_key()
     mode = auto_trader.mode.upper()
     at_status = "🟢 ACTIVE" if auto_trader.enabled else "🔴 OFF"
-    status_badge = "🟢 CONNECTED" if is_cfg else "🔴 NOT CONFIGURED"
 
-    msg = (
-        "🔐 <b>Delta Exchange API Status</b>\n\n"
-        f"• <b>Connection:</b> {status_badge}\n"
-        f"• <b>API Key:</b> <code>{masked}</code>\n"
-        f"• <b>Base URL:</b> <code>{delta_client.base_url}</code>\n"
-        f"• <b>Trading Mode:</b> <code>{mode}</code>\n"
-        f"• <b>Auto-Trading:</b> {at_status}\n\n"
-        "💡 <i>To configure or update your keys:</i>\n"
-        "<code>/setkeys &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>\n\n"
-        "💡 <i>To toggle paper vs live mode:</i>\n"
-        "<code>/mode paper</code> or <code>/mode live</code>"
-    )
+    if not is_cfg:
+        msg = (
+            "🔐 <b>Delta Exchange API Status: 🔴 NOT CONFIGURED</b>\n\n"
+            f"• <b>API Key:</b> <code>{masked}</code>\n"
+            f"• <b>Base URL:</b> <code>{delta_client.base_url}</code>\n"
+            f"• <b>Trading Mode:</b> <code>{mode}</code> (Paper Trading is active)\n"
+            f"• <b>Auto-Trading:</b> {at_status}\n\n"
+            "🔑 <b>How to set your Delta Exchange API keys:</b>\n"
+            "• Use command: <code>/setkeys &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>\n"
+            "• Or individual commands:\n"
+            "  - <code>/setkey &lt;KEY&gt;</code>\n"
+            "  - <code>/setsecret &lt;SECRET&gt;</code>\n\n"
+            "💡 <i>Tip: You can also paste your keys directly into the chat:</i>\n"
+            "<code>delta new api YOUR_KEY api secret YOUR_SECRET</code>"
+        )
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        return
+
+    # Perform live connection check safely in a thread (Python 3.8+ compatible)
+    loop = asyncio.get_event_loop()
+    test_res = await loop.run_in_executor(None, delta_client.test_connection)
+
+    if test_res.get("success"):
+        balances = test_res.get("balances", [])
+        bal_lines = []
+        for b in balances[:5]:
+            asset = b.get("asset_symbol", "USD")
+            amt = float(b.get("balance", 0.0))
+            avail = float(b.get("available_balance", amt))
+            if amt > 0:
+                bal_lines.append(f"  • <b>{asset}:</b> {amt:.4f} (Avail: {avail:.4f})")
+        bal_text = "\n".join(bal_lines) if bal_lines else "  • 0.00 USD (Deposit funds on Delta to trade live)"
+
+        drift = getattr(delta_client, "_server_time_offset", 0.0)
+        msg = (
+            "🔐 <b>Delta Exchange API Status: 🟢 CONNECTED & VERIFIED</b>\n\n"
+            f"• <b>API Key:</b> <code>{masked}</code>\n"
+            f"• <b>Base URL:</b> <code>{delta_client.base_url}</code>\n"
+            f"• <b>Clock Sync:</b> <code>{drift:+.2f}s</code> (Auto-synchronized)\n"
+            f"• <b>Trading Mode:</b> <code>{mode}</code>\n"
+            f"• <b>Auto-Trading:</b> {at_status}\n\n"
+            f"💰 <b>Live Balances:</b>\n{bal_text}\n\n"
+            "🎯 <b>Ready Commands:</b>\n"
+            "• <code>/starttrade</code> — Start automatic trading bot\n"
+            "• <code>/stoptrade</code> — Pause automatic trading\n"
+            "• <code>/mode live</code> — Switch to live orders\n"
+            "• <code>/mode paper</code> — Switch back to paper mode ($10,000 demo)\n"
+            "• <code>/balance</code> — Refresh live balance"
+        )
+    else:
+        err_msg = test_res.get("error", "Unknown connection error")
+        hint = ""
+        if "invalid_api_key" in err_msg.lower():
+            hint = (
+                "\n\n⚠️ <b>Troubleshooting Delta 'invalid_api_key':</b>\n"
+                "1. <b>Platform Mismatch:</b> If your account is on Delta Global (.com), run:\n"
+                "   <code>/setbaseurl global</code>\n"
+                "   If your account is on Delta India (.exchange), run:\n"
+                "   <code>/setbaseurl india</code>\n"
+                "2. <b>IP Whitelist:</b> If you set IP restrictions when creating the key on Delta, requests from this bot will be rejected. Make sure IP restriction is disabled.\n"
+                "3. <b>Permissions:</b> Verify in Delta settings that <b>Read</b> and <b>Trade</b> permissions are checked.\n"
+                "4. <b>Re-enter Keys:</b> Update keys anytime with:\n"
+                "   <code>/setkeys &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>"
+            )
+        elif "expired_signature" in err_msg.lower():
+            drift = getattr(delta_client, "_server_time_offset", 0.0)
+            hint = (
+                f"\n\n⚠️ <b>Clock Drift:</b> Synchronized offset ({drift:+.2f}s). Run <code>/checkkeys</code> again to retry."
+            )
+
+        msg = (
+            "🔐 <b>Delta Exchange API Status: 🔴 CONNECTION FAILED</b>\n\n"
+            f"• <b>API Key:</b> <code>{masked}</code>\n"
+            f"• <b>Base URL:</b> <code>{delta_client.base_url}</code>\n"
+            f"• <b>Error:</b> <code>{err_msg}</code>"
+            f"{hint}\n\n"
+            "💡 <b>To update your API keys:</b>\n"
+            "<code>/setkeys &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>"
+        )
+
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
@@ -1823,6 +2001,12 @@ def main():
     app.add_handler(CommandHandler("setsecret", set_secret_cmd))
     app.add_handler(CommandHandler("setkeys", set_keys_cmd))
     app.add_handler(CommandHandler("keys", keys_cmd))
+    app.add_handler(CommandHandler("checkkeys", keys_cmd))
+    app.add_handler(CommandHandler("checkkey", keys_cmd))
+    app.add_handler(CommandHandler("testkeys", keys_cmd))
+    app.add_handler(CommandHandler("testkey", keys_cmd))
+    app.add_handler(CommandHandler("key", keys_cmd))
+    app.add_handler(CommandHandler("setbaseurl", set_base_url_cmd))
 
     # BTC Shortcuts
     app.add_handler(CommandHandler("btc", btc_cmd))
