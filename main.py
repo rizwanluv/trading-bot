@@ -24,7 +24,7 @@ from telegram.ext import (
     ContextTypes, filters,
 )
 
-MODEL = "gemini-2.5-flash"  # check AI Studio for the current model name
+MODEL = "gemini-3.6-flash"  # check AI Studio for the current model name
 DEFAULT_SYMBOL = "XAUTUSD"
 DELTA_API = "https://api.india.delta.exchange/v2/tickers"  # use api.delta.exchange for global
 
