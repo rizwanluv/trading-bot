@@ -54,7 +54,7 @@ def setup_providers():
 
         providers["Claude"] = ask_claude
 
-    if os.getenv("GEMINI_API_KEY"):
+    if os.getenv("AQ.Ab8RN6Ixz0Zy3PRY52JIaYnhixast7Qd0kCYsFB3dKjdxG7Utw"):
         from google import genai
         from google.genai import types
         gem = genai.Client()
@@ -93,7 +93,7 @@ def setup_providers():
 
         providers["OpenAI"] = ask_openai
 
-    if os.getenv("GROQ_API_KEY"):
+    if os.getenv("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"):
         from openai import OpenAI
         groq = OpenAI(
             api_key=os.environ["GROQ_API_KEY"],
