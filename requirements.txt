@@ -1,5 +1,2 @@
-anthropic
-google-genai
-openai
 python-telegram-bot
 requests
