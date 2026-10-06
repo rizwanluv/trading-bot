@@ -49,6 +49,7 @@ from market_data import (
     SECONDARY_SYMBOL,
     POPULAR_SYMBOLS,
     resolve_symbol,
+    get_symbol_display_name,
     get_market_overview,
     get_ticker,
     get_level_analysis,
@@ -253,18 +254,17 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "🤖 <b>Welcome to Gemini Trading Assistant!</b>\n\n"
         "Your intelligent assistant combining Delta Exchange market intelligence, automatic level "
         "analysis, price alerts, multi-timeframe candle scanner, and <b>Gautam Jha Price-Action & Liquidity strategy</b> "
-        "for <b>Bitcoin (BTC)</b> and <b>Gold (XAU)</b>.\n\n"
-        "🔥 <b>Key Features:</b>\n"
-        "• <b>Market Overview:</b> <code>/price</code> (Live BTC & Gold overview)\n"
-        "• <b>Bitcoin (BTC):</b> <code>/btc</code>, <code>/btclevels</code>, <code>/btcgj</code>, <code>/btcentry</code>\n"
-        "• <b>Gold (XAU):</b> <code>/gold</code>, <code>/goldlevels</code>, <code>/goldgj</code>, <code>/goldentry</code>\n"
-        "• <b>Price Alerts:</b> <code>/alert btc 85000</code> or <code>/alert gold 4180</code>\n"
-        "• <b>Candle Entry Scan:</b> <code>/entry btc</code> or <code>/entry gold</code> (1m, 5m, 15m)\n"
-        "• <b>Automated Entry Alerts:</b> <code>/btcwatch</code> or <code>/watch btc</code>\n"
+        "for <b>🥇 Gold (XAU/USD)</b> and <b>🪙 Bitcoin (BTC/USD)</b>.\n\n"
+        "🔥 <b>Key Shortcuts:</b>\n"
+        "• <b>🥇 Gold (XAU/USD):</b> <code>/gold</code> (or <code>/xau</code>, <code>/xauusd</code>), <code>/goldlevels</code>, <code>/goldgj</code>, <code>/goldentry</code>, <code>/goldwatch</code>\n"
+        "• <b>🪙 Bitcoin (BTC):</b> <code>/btc</code>, <code>/btclevels</code>, <code>/btcgj</code>, <code>/btcentry</code>, <code>/btcwatch</code>\n"
+        "• <b>🌐 Live Market Overview:</b> <code>/price</code> (Live Gold & BTC overview)\n"
+        "• <b>🚨 Price Alerts:</b> <code>/alert gold 4180</code> or <code>/alert btc 85000</code> (or <code>/alert 4180</code>)\n"
+        "• <b>🎯 Candle Entry Scan:</b> <code>/entry gold</code> or <code>/entry btc</code> (1m, 5m, 15m)\n"
         "• <b>📸 Chart Photo Scanner:</b> Send any chart photo/screenshot for instant Gautam Jha analysis!\n"
-        "• <b>Manage Alerts:</b> <code>/alerts</code>, <code>/delalert &lt;ID&gt;</code>, <code>/watchers</code>\n"
-        "• <b>AI Analysis:</b> Send any question to get precise trade plans grounded in live levels!\n\n"
-        "Type <code>/list</code> to view all commands or <code>/help</code> for full instructions."
+        "• <b>📋 Manage Alerts:</b> <code>/alerts</code>, <code>/delalert &lt;ID&gt;</code>, <code>/watchers</code>\n"
+        "• <b>💬 AI Analysis:</b> Ask any question to get precise trade plans grounded in live levels!\n\n"
+        "Type <code>/list</code> to view all commands or <code>/help</code> for detailed instructions."
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
@@ -273,26 +273,26 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Show all bot commands in a quick, clean reference list."""
     msg = (
         "📜 <b>ALL BOT COMMANDS:</b>\n\n"
+        "🥇 <b>Gold (XAU/USD) Shortcuts:</b>\n"
+        "• <code>/gold</code> (or <code>/xau</code>, <code>/xauusd</code>) — Live Gold ticker & 24h stats\n"
+        "• <code>/goldlevels</code> (or <code>/xaulevels</code>) — Gold Automatic Level Analysis\n"
+        "• <code>/goldgj</code> (or <code>/xaugj</code>) — Gold Gautam Jha Liquidity (DO, PDH, PDL sweeps)\n"
+        "• <code>/goldentry</code> (or <code>/xauentry</code>) — Gold 1m, 5m, 15m candle entry scan\n"
+        "• <code>/goldwatch</code> (or <code>/xauwatch</code>) — Turn ON automated candle alerts for Gold\n\n"
         "🪙 <b>Bitcoin (BTC) Shortcuts:</b>\n"
         "• <code>/btc</code> — Live BTC ticker & 24h stats\n"
         "• <code>/btclevels</code> — BTC Automatic Level Analysis (Pivots, Fibs, S/R)\n"
-        "• <code>/btcgj</code> — BTC Gautam Jha Liquidity (DO, PDH, PDL, sweeps)\n"
+        "• <code>/btcgj</code> — BTC Gautam Jha Liquidity (DO, PDH, PDL sweeps)\n"
         "• <code>/btcentry</code> — BTC 1m, 5m, 15m candle entry scan\n"
         "• <code>/btcwatch</code> — Turn ON automated candle alerts for BTC\n\n"
-        "🥇 <b>Gold (XAU) Shortcuts:</b>\n"
-        "• <code>/gold</code> (or <code>/xau</code>) — Live Gold ticker & stats\n"
-        "• <code>/goldlevels</code> — Gold Automatic Level Analysis\n"
-        "• <code>/goldgj</code> — Gold Gautam Jha Liquidity\n"
-        "• <code>/goldentry</code> — Gold 1m, 5m, 15m candle entry scan\n"
-        "• <code>/goldwatch</code> — Turn ON automated candle alerts for Gold\n\n"
         "💹 <b>Market Data & Any Symbol:</b>\n"
-        "• <code>/price</code> — Live overview of BTC & Gold\n"
+        "• <code>/price</code> — Live overview of Gold & BTC\n"
         "• <code>/price [SYMBOL]</code> — Live ticker for any coin (e.g. <code>/price ETH</code>)\n\n"
         "📊 <b>Level & Liquidity Analysis:</b>\n"
         "• <code>/levels [SYMBOL]</code> (or <code>/analysis</code>) — S/R, Pivots, Fibs, DO\n"
         "• <code>/gj [SYMBOL]</code> (or <code>/liquidity</code>) — Gautam Jha Price Action\n\n"
         "🚨 <b>Price Alerts:</b>\n"
-        "• <code>/alert [SYMBOL] &lt;PRICE&gt;</code> — Set price alert (e.g. <code>/alert btc 85000</code>)\n"
+        "• <code>/alert [SYMBOL] &lt;PRICE&gt;</code> — Set price alert (e.g. <code>/alert gold 4180</code>)\n"
         "• <code>/alerts</code> — List your active price alerts\n"
         "• <code>/delalert &lt;ID&gt;</code> — Remove an alert by ID\n"
         "• <code>/clearalerts</code> — Clear all your active price alerts\n\n"
@@ -317,26 +317,26 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Help command with usage examples."""
     msg = (
         "📖 <b>Trading Assistant Commands & Guide:</b>\n\n"
+        "🥇 <b>Gold (XAU/USD) Shortcuts:</b>\n"
+        "• <code>/gold</code> (or <code>/xau</code>, <code>/xauusd</code>) — Live Gold ticker\n"
+        "• <code>/goldlevels</code> (or <code>/xaulevels</code>) — Gold key levels (Pivots, Fibs, S/R)\n"
+        "• <code>/goldgj</code> (or <code>/xaugj</code>) — Gold Gautam Jha Liquidity (DO, PDH, PDL sweeps)\n"
+        "• <code>/goldentry</code> (or <code>/xauentry</code>) — Gold 1m, 5m, 15m candle entry scan\n"
+        "• <code>/goldwatch</code> (or <code>/xauwatch</code>) — Automated candle alerts for Gold\n\n"
         "🪙 <b>Bitcoin (BTC) Shortcuts:</b>\n"
         "• <code>/btc</code> — Live BTC ticker & 24h stats\n"
         "• <code>/btclevels</code> — BTC key levels (Pivots, Fibs, S/R)\n"
         "• <code>/btcgj</code> — BTC Gautam Jha Liquidity (DO, PDH, PDL)\n"
         "• <code>/btcentry</code> — BTC 1m, 5m, 15m candle entry scan\n"
         "• <code>/btcwatch</code> — Automated candle alerts for BTC\n\n"
-        "🥇 <b>Gold (XAU) Shortcuts:</b>\n"
-        "• <code>/gold</code> (or <code>/xau</code>) — Live Gold ticker\n"
-        "• <code>/goldlevels</code> — Gold key levels\n"
-        "• <code>/goldgj</code> — Gold Gautam Jha Liquidity\n"
-        "• <code>/goldentry</code> — Gold 1m, 5m, 15m candle entry scan\n"
-        "• <code>/goldwatch</code> — Automated candle alerts for Gold\n\n"
         "💹 <b>Market Data & Any Symbol:</b>\n"
-        "• <code>/price</code> — Live comparison overview (BTC & Gold)\n"
+        "• <code>/price</code> — Live comparison overview (Gold & BTC)\n"
         "• <code>/price [SYMBOL]</code> — Live ticker (e.g. <code>/price ETH</code>)\n"
         "• <code>/levels [SYMBOL]</code> — S/R, Pivots, Fibs for any coin\n"
         "• <code>/gj [SYMBOL]</code> — Gautam Jha analysis for any coin\n\n"
         "🚨 <b>Price Alerts:</b>\n"
         "• <code>/alert [SYMBOL] &lt;PRICE&gt;</code> — Set price alert\n"
-        "  <i>Examples: <code>/alert btc 85000</code> | <code>/alert gold 4180</code> | <code>/alert 85000</code></i>\n"
+        "  <i>Examples: <code>/alert gold 4180</code> | <code>/alert btc 85000</code> | <code>/alert 4180</code></i>\n"
         "• <code>/alerts</code> — List your active price alerts\n"
         "• <code>/delalert &lt;ID&gt;</code> — Delete alert by ID\n"
         "• <code>/clearalerts</code> — Clear all price alerts\n\n"
@@ -369,17 +369,25 @@ async def price_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         chg = mark - t["open"] if t["open"] > 0 else 0.0
         chg_pct = (chg / t["open"] * 100.0) if t["open"] > 0 else 0.0
         sign = "+" if chg >= 0 else ""
+        color_emoji = "🟢" if chg >= 0 else "🔴"
 
-        name = "Bitcoin (BTC)" if "BTC" in symbol else ("Gold (XAU)" if "XAU" in symbol else symbol)
+        name = get_symbol_display_name(symbol)
+        if "XAU" in symbol or "GOLD" in symbol:
+            shortcuts_str = "💡 <i>Shortcuts: <code>/goldlevels</code> | <code>/goldgj</code> | <code>/goldentry</code> | <code>/goldwatch</code></i>"
+        elif "BTC" in symbol:
+            shortcuts_str = "💡 <i>Shortcuts: <code>/btclevels</code> | <code>/btcgj</code> | <code>/btcentry</code> | <code>/btcwatch</code></i>"
+        else:
+            shortcuts_str = f"💡 <i>Shortcuts: <code>/levels {symbol}</code> | <code>/gj {symbol}</code> | <code>/entry {symbol}</code></i>"
+
         msg = (
-            f"🪙 <b>{name}</b> (<code>#{t['symbol']}</code>) <b>Live Ticker</b>\n\n"
+            f"<b>{name}</b> (<code>#{t['symbol']}</code>) <b>Live Ticker</b>\n\n"
             f"💵 <b>Price:</b> <code>${mark:,.2f}</code>\n"
-            f"📊 <b>24h Change:</b> <code>{sign}{chg:,.2f} ({sign}{chg_pct:.2f}%)</code>\n"
+            f"📊 <b>24h Change:</b> {color_emoji} <code>{sign}{chg:,.2f} ({sign}{chg_pct:.2f}%)</code>\n"
             f"🔺 <b>24h High:</b> <code>${t['high']:,.2f}</code>\n"
             f"🔻 <b>24h Low:</b> <code>${t['low']:,.2f}</code>\n"
             f"🚪 <b>24h Open:</b> <code>${t['open']:,.2f}</code>\n"
             f"📦 <b>24h Volume:</b> <code>{t['volume']:,.0f}</code>\n\n"
-            f"💡 <i>Shortcuts: <code>/levels {symbol}</code> | <code>/gj {symbol}</code> | <code>/entry {symbol}</code></i>"
+            f"{shortcuts_str}"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
     except Exception as e:
@@ -726,17 +734,17 @@ def _detect_symbol_from_text(text: Optional[str], default: str = DEFAULT_SYMBOL)
     """Helper to detect symbol mentioned in a chat message or image caption."""
     if not text:
         return default
-    upper = text.upper()
-    if "GOLD" in upper or "XAU" in upper:
+    upper = text.upper().replace("/", "")
+    if "GOLD" in upper or "XAU" in upper or "XAUT" in upper:
         return "XAUTUSD"
-    if "BTC" in upper or "BITCOIN" in upper:
+    if "BTC" in upper or "BITCOIN" in upper or "XBT" in upper:
         return "BTCUSD"
     if "ETH" in upper or "ETHEREUM" in upper:
         return "ETHUSD"
     if "SOL" in upper or "SOLANA" in upper:
         return "SOLUSD"
     for word in text.split():
-        clean_word = word.strip("$#,!?.").upper()
+        clean_word = word.strip("$#,!?.").upper().replace("/", "")
         if clean_word.endswith("USD") and len(clean_word) >= 5:
             return resolve_symbol(clean_word)
     return default
@@ -971,10 +979,19 @@ def main():
     # Gold Shortcuts
     app.add_handler(CommandHandler("gold", gold_cmd))
     app.add_handler(CommandHandler("xau", gold_cmd))
+    app.add_handler(CommandHandler("xauusd", gold_cmd))
     app.add_handler(CommandHandler("goldlevels", gold_levels_cmd))
+    app.add_handler(CommandHandler("xaulevels", gold_levels_cmd))
+    app.add_handler(CommandHandler("xauusdlevels", gold_levels_cmd))
     app.add_handler(CommandHandler("goldgj", gold_gj_cmd))
+    app.add_handler(CommandHandler("xaugj", gold_gj_cmd))
+    app.add_handler(CommandHandler("xauusdgj", gold_gj_cmd))
     app.add_handler(CommandHandler("goldentry", gold_entry_cmd))
+    app.add_handler(CommandHandler("xauentry", gold_entry_cmd))
+    app.add_handler(CommandHandler("xauusdentry", gold_entry_cmd))
     app.add_handler(CommandHandler("goldwatch", gold_watch_cmd))
+    app.add_handler(CommandHandler("xauwatch", gold_watch_cmd))
+    app.add_handler(CommandHandler("xauusdwatch", gold_watch_cmd))
 
     # General Market Commands
     app.add_handler(CommandHandler("price", price_cmd))

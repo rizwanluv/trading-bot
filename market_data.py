@@ -12,41 +12,71 @@ SECONDARY_SYMBOL = "XAUTUSD"
 POPULAR_SYMBOLS = ["BTCUSD", "XAUTUSD"]
 
 SYMBOL_ALIASES = {
+    # Bitcoin aliases
     "BTC": "BTCUSD",
     "BITCOIN": "BTCUSD",
     "BTCUSD": "BTCUSD",
     "BTCUSDT": "BTCUSD",
+    "XBT": "BTCUSD",
+    "XBTUSD": "BTCUSD",
+    # Gold aliases (canonical contract on Delta Exchange India is Tether Gold: XAUTUSD)
     "XAU": "XAUTUSD",
+    "XAUUSD": "XAUTUSD",
     "XAUT": "XAUTUSD",
-    "GOLD": "XAUTUSD",
     "XAUTUSD": "XAUTUSD",
+    "GOLD": "XAUTUSD",
+    "GOLDUSD": "XAUTUSD",
+    "PAXG": "XAUTUSD",
+    "PAXGUSD": "XAUTUSD",
+    # Ethereum aliases
     "ETH": "ETHUSD",
     "ETHEREUM": "ETHUSD",
     "ETHUSD": "ETHUSD",
+    "ETHUSDT": "ETHUSD",
+    # Solana aliases
     "SOL": "SOLUSD",
     "SOLANA": "SOLUSD",
     "SOLUSD": "SOLUSD",
+    "SOLUSDT": "SOLUSD",
 }
 
 
 def resolve_symbol(symbol: Optional[str] = None, default: str = DEFAULT_SYMBOL) -> str:
-    """Normalize user input symbol to canonical Delta Exchange symbol (e.g. BTC -> BTCUSD, GOLD -> XAUTUSD)."""
+    """Normalize user input symbol to canonical Delta Exchange symbol (e.g. BTC -> BTCUSD, XAUUSD / GOLD -> XAUTUSD)."""
     if not symbol:
         return default
-    cleaned = symbol.strip().upper().replace("$", "").replace("#", "")
+    cleaned = symbol.strip().upper().replace("$", "").replace("#", "").replace("/", "")
     if cleaned in SYMBOL_ALIASES:
         return SYMBOL_ALIASES[cleaned]
+    if "XAU" in cleaned or "GOLD" in cleaned:
+        return "XAUTUSD"
+    if "BTC" in cleaned or "BITCOIN" in cleaned:
+        return "BTCUSD"
     if cleaned.endswith("USD"):
         return cleaned
     return f"{cleaned}USD"
 
 
+def get_symbol_display_name(symbol: str) -> str:
+    """Return user-friendly display name with matching emoji."""
+    sym = resolve_symbol(symbol)
+    if "XAU" in sym or "GOLD" in sym:
+        return "🥇 Gold (XAU/USD)"
+    elif "BTC" in sym:
+        return "🪙 Bitcoin (BTC/USD)"
+    elif "ETH" in sym:
+        return "🔷 Ethereum (ETH/USD)"
+    elif "SOL" in sym:
+        return "🟣 Solana (SOL/USD)"
+    return f"#{sym}"
+
+
 def get_market_overview(symbols: Optional[List[str]] = None) -> str:
-    """Return a live market overview comparing Bitcoin (BTC) and Gold (XAU)."""
+    """Return a live market overview comparing Gold (XAU) and Bitcoin (BTC)."""
     if not symbols:
         symbols = POPULAR_SYMBOLS
 
-    lines = ["🪙 <b>MARKET OVERVIEW (Live):</b>\n"]
+    lines = ["🌐 <b>LIVE MARKET OVERVIEW:</b>\n"]
     for sym in symbols:
         try:
             t = get_ticker(sym)
@@ -56,7 +86,7 @@ def get_market_overview(symbols: Optional[List[str]] = None) -> str:
             sign = "+" if chg >= 0 else ""
             color_emoji = "🟢" if chg >= 0 else "🔴"
 
-            name = "Bitcoin (BTC)" if "BTC" in sym else ("Gold (XAU)" if "XAU" in sym else sym)
+            name = get_symbol_display_name(sym)
             lines.append(
                 f"{color_emoji} <b>{name}</b> (<code>#{t['symbol']}</code>)\n"
                 f"• <b>Price:</b> <code>${mark:,.2f}</code> ({sign}{chg_pct:.2f}%)\n"
@@ -67,9 +97,8 @@ def get_market_overview(symbols: Optional[List[str]] = None) -> str:
 
     lines.append(
         "💡 <i>Quick shortcuts:</i>\n"
-        "• <code>/btc</code> — Live BTC ticker | <code>/btclevels</code> — BTC key levels\n"
-        "• <code>/btcgj</code> — BTC liquidity | <code>/btcentry</code> — BTC candle setups\n"
-        "• <code>/gold</code> — Live Gold ticker | <code>/goldlevels</code> — Gold levels"
+        "• <b>Gold:</b> <code>/gold</code> | <code>/goldlevels</code> | <code>/goldgj</code> | <code>/goldentry</code>\n"
+        "• <b>BTC:</b> <code>/btc</code> | <code>/btclevels</code> | <code>/btcgj</code> | <code>/btcentry</code>"
     )
     return "\n".join(lines)
 
@@ -275,6 +304,7 @@ def get_level_analysis(symbol: str = DEFAULT_SYMBOL) -> Dict[str, Any]:
 def format_level_analysis_message(analysis: Dict[str, Any]) -> str:
     """Format level analysis dict into a clean Telegram HTML message."""
     sym = analysis["symbol"]
+    name = get_symbol_display_name(sym)
     mark = analysis["mark_price"]
     chg = analysis["change_pct"]
     chg_sign = "+" if chg >= 0 else ""
@@ -288,8 +318,15 @@ def format_level_analysis_message(analysis: Dict[str, Any]) -> str:
     pdl_tag = " ⚡<i>(Swept)</i>" if gj.get("pdl_swept") else ""
     color_emoji = "🟢" if gj.get("daily_candle_color") == "GREEN" else "🔴"
 
+    if "XAU" in sym or "GOLD" in sym:
+        shortcuts_hint = "💡 <i>Shortcuts: <code>/goldgj</code> | <code>/goldentry</code> | <code>/goldwatch</code></i>"
+    elif "BTC" in sym:
+        shortcuts_hint = "💡 <i>Shortcuts: <code>/btcgj</code> | <code>/btcentry</code> | <code>/btcwatch</code></i>"
+    else:
+        shortcuts_hint = f"💡 <i>Use <code>/entry {sym}</code> for candle entries or <code>/gj {sym}</code> for Gautam Jha price-action analysis.</i>"
+
     msg = (
-        f"📊 <b>AUTOMATIC LEVEL ANALYSIS: #{sym}</b>\n\n"
+        f"📊 <b>AUTOMATIC LEVEL ANALYSIS: {name}</b> (<code>#{sym}</code>)\n\n"
         f"💵 <b>Current Price:</b> <code>${mark:,.2f}</code> ({chg_sign}{chg:.2f}%)\n"
         f"📈 <b>24h Range:</b> <code>${analysis['low_24h']:,.2f}</code> — <code>${analysis['high_24h']:,.2f}</code>\n"
         f"🧭 <b>Range Position:</b> {analysis['range_bar']}\n"
@@ -314,7 +351,7 @@ def format_level_analysis_message(analysis: Dict[str, Any]) -> str:
         f"• <b>61.8% (Golden):</b> <code>${fibs['61.8%']:,.2f}</code>\n"
         f"• <b>50.0% (Equilibrium):</b> <code>${fibs['50.0%']:,.2f}</code>\n"
         f"• <b>38.2%:</b> <code>${fibs['38.2%']:,.2f}</code>\n\n"
-        f"💡 <i>Use <code>/entry {sym}</code> for candle entries or <code>/gj {sym}</code> for Gautam Jha price-action analysis.</i>"
+        f"{shortcuts_hint}"
     )
     return msg
 
@@ -359,6 +396,7 @@ def get_gautam_jha_analysis(symbol: str = DEFAULT_SYMBOL) -> Dict[str, Any]:
 def format_gautam_jha_message(analysis: Dict[str, Any]) -> str:
     """Format Gautam Jha analysis into structured Telegram HTML message."""
     sym = analysis["symbol"]
+    name = get_symbol_display_name(sym)
     mark = analysis["mark_price"]
     gj = analysis["gautam_jha"]
     do = gj["daily_open"]
@@ -369,12 +407,12 @@ def format_gautam_jha_message(analysis: Dict[str, Any]) -> str:
     pdl_swept_str = "Swept ⚡ (Liquidity grabbed)" if gj["pdl_swept"] else "Untouched"
 
     lines = [
-        f"🎯 <b>GAUTAM JHA PRICE-ACTION ANALYSIS: #{sym}</b>\n",
+        f"🎯 <b>GAUTAM JHA PRICE-ACTION ANALYSIS: {name}</b> (<code>#{sym}</code>)\n",
         f"📊 <b>Chart Context:</b>",
-        f"• <b>Instrument:</b> #{sym}",
+        f"• <b>Instrument:</b> {name} (<code>#{sym}</code>)",
         f"• <b>Current Price:</b> <code>${mark:,.2f}</code>",
-        f"• <b>Location vs DO:</b> {color_emoji} {gj['dist_do_pct']:+.2f}% from Daily Open",
-        f"• <b>Daily Candle:</b> {color_emoji} <b>{gj['daily_candle_color']}</b>\n",
+        f"• <b>Location vs DO:</b> {color_emoji} {gj.get('dist_do_pct', 0):+.2f}% from Daily Open",
+        f"• <b>Daily Candle:</b> {color_emoji} <b>{gj.get('daily_candle_color')}</b>\n",
         f"💧 <b>Key Liquidity Levels:</b>",
         f"• <b>Daily Open (DO):</b> <code>${do:,.2f}</code> (Major algo flip level)",
         f"• <b>Previous Day High (PDH):</b> <code>${pdh:,.2f}</code> [{pdh_swept_str}]",
@@ -660,7 +698,8 @@ def get_multi_timeframe_entry(symbol: str = DEFAULT_SYMBOL, timeframes: Optional
 def format_entry_analysis_message(multi_data: Dict[str, Any]) -> str:
     """Format 1m, 5m, 15m candle entry analysis into Telegram HTML message."""
     sym = multi_data["symbol"]
-    lines = [f"🎯 <b>CANDLE ENTRY SCANNER: #{sym}</b>\n<i>(Analyzing 1m, 5m, 15m timeframes)</i>\n"]
+    name = get_symbol_display_name(sym)
+    lines = [f"🎯 <b>CANDLE ENTRY SCANNER: {name}</b> (<code>#{sym}</code>)\n<i>(Analyzing 1m, 5m, 15m timeframes)</i>\n"]
 
     for tf in ["1m", "5m", "15m"]:
         data = multi_data["timeframes"].get(tf)
@@ -699,7 +738,11 @@ def format_entry_analysis_message(multi_data: Dict[str, Any]) -> str:
 
         lines.append("")
 
-    lines.append("🔔 <i>To get automatic alerts when a setup forms:</i>")
-    lines.append(f"<code>/watch {sym}</code>")
+    if "XAU" in sym or "GOLD" in sym:
+        lines.append("🔔 <i>To get automatic alerts when a setup forms:</i>\n<code>/goldwatch</code> (or <code>/watch gold</code>)")
+    elif "BTC" in sym:
+        lines.append("🔔 <i>To get automatic alerts when a setup forms:</i>\n<code>/btcwatch</code> (or <code>/watch btc</code>)")
+    else:
+        lines.append(f"🔔 <i>To get automatic alerts when a setup forms:</i>\n<code>/watch {sym}</code>")
 
     return "\n".join(lines)

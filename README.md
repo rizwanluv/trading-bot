@@ -54,14 +54,14 @@ An advanced algorithmic trading and market intelligence Telegram bot powered by 
 | `/btcentry` | Bitcoin 1m, 5m, 15m candle entry scan |
 | `/btcwatch` | Enable automated candle alerts for Bitcoin |
 
-### 🥇 Gold (XAU) Shortcuts
+### 🥇 Gold (XAU/USD) Shortcuts
 | Command | Description |
 |---|---|
-| `/gold` or `/xau` | Live Gold ticker & 24h stats |
-| `/goldlevels` | Gold Level Analysis |
-| `/goldgj` | Gold Gautam Jha Liquidity |
-| `/goldentry` | Gold 1m, 5m, 15m candle entry scan |
-| `/goldwatch` | Enable automated candle alerts for Gold |
+| `/gold`, `/xau`, `/xauusd` | Live Gold ticker & 24h stats |
+| `/goldlevels`, `/xaulevels` | Gold Level Analysis (Pivots, Fibs, S/R, DO) |
+| `/goldgj`, `/xaugj` | Gold Gautam Jha Liquidity (DO, PDH, PDL sweeps) |
+| `/goldentry`, `/xauentry` | Gold 1m, 5m, 15m candle entry scan |
+| `/goldwatch`, `/xauwatch` | Enable automated candle alerts for Gold |
 
 ### 💹 General Market & Commands
 | Command | Description |

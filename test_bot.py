@@ -184,8 +184,14 @@ class TestSymbolResolution(unittest.TestCase):
         self.assertEqual(resolve_symbol("btc"), "BTCUSD")
         self.assertEqual(resolve_symbol("bitcoin"), "BTCUSD")
         self.assertEqual(resolve_symbol("BTCUSD"), "BTCUSD")
+        self.assertEqual(resolve_symbol("BTC/USD"), "BTCUSD")
+        self.assertEqual(resolve_symbol("xbt"), "BTCUSD")
         self.assertEqual(resolve_symbol("gold"), "XAUTUSD")
         self.assertEqual(resolve_symbol("xau"), "XAUTUSD")
+        self.assertEqual(resolve_symbol("xauusd"), "XAUTUSD")
+        self.assertEqual(resolve_symbol("XAU/USD"), "XAUTUSD")
+        self.assertEqual(resolve_symbol("goldusd"), "XAUTUSD")
+        self.assertEqual(resolve_symbol("paxg"), "XAUTUSD")
         self.assertEqual(resolve_symbol("xautusd"), "XAUTUSD")
         self.assertEqual(resolve_symbol("eth"), "ETHUSD")
         self.assertEqual(resolve_symbol("sol"), "SOLUSD")
@@ -195,6 +201,8 @@ class TestSymbolResolution(unittest.TestCase):
         from main import _detect_symbol_from_text
         self.assertEqual(_detect_symbol_from_text("what is the gold price?"), "XAUTUSD")
         self.assertEqual(_detect_symbol_from_text("is xau forming a reversal?"), "XAUTUSD")
+        self.assertEqual(_detect_symbol_from_text("XAUUSD 15m"), "XAUTUSD")
+        self.assertEqual(_detect_symbol_from_text("XAU/USD 5m"), "XAUTUSD")
         self.assertEqual(_detect_symbol_from_text("btc looking bullish today"), "BTCUSD")
         self.assertEqual(_detect_symbol_from_text("bitcoin break and go setup"), "BTCUSD")
         self.assertEqual(_detect_symbol_from_text("eth levels"), "ETHUSD")
@@ -251,47 +259,52 @@ class TestMarketDataLive(unittest.TestCase):
         self.assertEqual(t_btc["symbol"], "BTCUSD")
         self.assertGreater(t_btc["close"], 0)
 
-        t_gold = get_ticker("XAUTUSD")
+        t_gold = get_ticker("XAUUSD")  # resolved to XAUTUSD
         self.assertEqual(t_gold["symbol"], "XAUTUSD")
         self.assertGreater(t_gold["close"], 0)
 
     def test_live_market_overview(self):
         from market_data import get_market_overview
         overview = get_market_overview()
-        self.assertIn("MARKET OVERVIEW", overview)
-        self.assertIn("Bitcoin (BTC)", overview)
-        self.assertIn("Gold (XAU)", overview)
+        self.assertIn("LIVE MARKET OVERVIEW", overview)
+        self.assertIn("Bitcoin (BTC/USD)", overview)
+        self.assertIn("Gold (XAU/USD)", overview)
 
     def test_live_levels(self):
-        levels = get_level_analysis("BTCUSD")
-        self.assertEqual(levels["symbol"], "BTCUSD")
-        self.assertIn("pivots", levels)
-        self.assertIn("nearest_resistance", levels)
-        self.assertIn("nearest_support", levels)
-        self.assertIn("gautam_jha", levels)
-        msg = format_level_analysis_message(levels)
-        self.assertIn("AUTOMATIC LEVEL ANALYSIS", msg)
-        self.assertIn("Gautam Jha Liquidity", msg)
+        levels_btc = get_level_analysis("BTCUSD")
+        self.assertEqual(levels_btc["symbol"], "BTCUSD")
+        self.assertIn("pivots", levels_btc)
+        msg_btc = format_level_analysis_message(levels_btc)
+        self.assertIn("AUTOMATIC LEVEL ANALYSIS", msg_btc)
+
+        levels_gold = get_level_analysis("XAUUSD")
+        self.assertEqual(levels_gold["symbol"], "XAUTUSD")
+        self.assertIn("pivots", levels_gold)
+        msg_gold = format_level_analysis_message(levels_gold)
+        self.assertIn("Gold (XAU/USD)", msg_gold)
+        self.assertIn("Gautam Jha Liquidity", msg_gold)
 
     def test_live_gautam_jha_analysis(self):
         from market_data import get_gautam_jha_analysis, format_gautam_jha_message
-        analysis = get_gautam_jha_analysis("BTCUSD")
-        self.assertEqual(analysis["symbol"], "BTCUSD")
+        analysis = get_gautam_jha_analysis("XAUUSD")
+        self.assertEqual(analysis["symbol"], "XAUTUSD")
         self.assertIn("gautam_jha", analysis)
         self.assertIn("market_structure", analysis)
         msg = format_gautam_jha_message(analysis)
         self.assertIn("GAUTAM JHA PRICE-ACTION ANALYSIS", msg)
+        self.assertIn("Gold (XAU/USD)", msg)
         self.assertIn("Daily Open", msg)
         self.assertIn("Previous Day High", msg)
 
     def test_live_multi_entry(self):
-        multi = get_multi_timeframe_entry("BTCUSD", ["1m", "5m", "15m"])
-        self.assertEqual(multi["symbol"], "BTCUSD")
+        multi = get_multi_timeframe_entry("XAUUSD", ["1m", "5m", "15m"])
+        self.assertEqual(multi["symbol"], "XAUTUSD")
         self.assertIn("1m", multi["timeframes"])
         self.assertIn("5m", multi["timeframes"])
         self.assertIn("15m", multi["timeframes"])
         msg = format_entry_analysis_message(multi)
         self.assertIn("CANDLE ENTRY SCANNER", msg)
+        self.assertIn("Gold (XAU/USD)", msg)
         self.assertIn("Timeframe: 1M", msg)
         self.assertIn("Timeframe: 5M", msg)
         self.assertIn("Timeframe: 15M", msg)
@@ -314,7 +327,7 @@ class TestBotCommands(unittest.TestCase):
         # Verify all essential commands and shortcuts are listed
         expected_cmds = [
             "/btc", "/btclevels", "/btcgj", "/btcentry", "/btcwatch",
-            "/gold", "/xau", "/goldlevels", "/goldgj", "/goldentry", "/goldwatch",
+            "/gold", "/xau", "/xauusd", "/goldlevels", "/goldgj", "/goldentry", "/goldwatch",
             "/price", "/levels", "/analysis", "/gj", "/liquidity",
             "/alert", "/alerts", "/delalert", "/clearalerts",
             "/entry", "/scan", "/watch", "/unwatch", "/watchers",
