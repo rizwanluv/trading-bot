@@ -845,19 +845,20 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Start command intro."""
     msg = (
         "🤖 <b>Welcome to Gemini Trading Assistant & Auto-Trade Bot!</b>\n\n"
-        "Your intelligent institutional algorithmic assistant powered by Delta Exchange live data, "
-        "<b>18-Agent Institutional Desk Analysis</b>, automatic level analysis, price alerts, "
-        "multi-timeframe candle scanner, <b>Gautam Jha Liquidity strategy</b>, and "
-        "<b>Automated Order Execution</b> for <b>🥇 Gold (XAU/USD)</b> and <b>🪙 Bitcoin (BTC/USD)</b>.\n\n"
-        "🏛️ <b>6 Master Unified Command Hubs (1 Command, Multiple Working Types):</b>\n"
-        "• <code>/btc [action]</code> — 11-in-1 Bitcoin Hub (price, levels, gj, entry, watch, book, news, confluence, analyze, trade)\n"
-        "• <code>/gold [action]</code> — 11-in-1 Gold Hub (price, levels, gj, entry, watch, book, news, confluence, analyze, trade)\n"
-        "• <code>/trade [action]</code> — Master Trading Hub (dashboard, on, off, live, paper, pos, close, bal, manual trade)\n"
-        "• <code>/alert [action]</code> — Master Alerts Hub (on, off, list, del, clear, price alert, watch)\n"
-        "• <code>/analyze [sym]</code> — 18-Agent Categorized Institutional Desk Analysis\n"
-        "• <code>/keys [action]</code> — API & Bot Config Hub (check, set, base, gemini, model)\n"
-        "• 📸 <b>Send Chart Screenshot:</b> 18-Agent Institutional Multimodal Vision Analysis!\n\n"
-        "Type <code>/list</code> to view all commands or <code>/help</code> for detailed guides."
+        "Institutional algorithmic trading with live Delta Exchange integration, "
+        "<b>AI Battlefield Debate Arbiter</b>, <b>18-Agent Desk Analysis</b>, "
+        "and <b>Automated Order Execution</b> with dynamic risk management.\n\n"
+        "🏛️ <b>Essential Unified Commands (1 Command — Multiple Working Types):</b>\n"
+        "• <code>/status</code> — Master dashboard (killzones, positions, risk, desk health)\n"
+        "• <code>/trade</code> — Master Trading Hub (<code>on</code>, <code>off</code>, <code>size</code>, <code>pos</code>, <code>close</code>, <code>bal</code>)\n"
+        "• <code>/battle</code> — AI Bull vs Bear debate & Arbiter verdict (<code>trade</code>, <code>on/off</code>)\n"
+        "• <code>/btc</code> — 11-in-1 Bitcoin Hub (price, levels, gj, entry, analyze, trade)\n"
+        "• <code>/gold</code> — 11-in-1 Gold Hub (price, levels, gj, entry, analyze, trade)\n"
+        "• <code>/alert</code> — Master Alerts Hub (price alerts, candle watch, list)\n"
+        "• <code>/backup</code> — State backup hub (immediate dispatch, <code>set &lt;ID&gt;</code>, status)\n"
+        "• <code>/analyze</code> — 18-Agent Institutional Desk Analysis\n"
+        "• <code>/keys</code> — API & model credentials hub\n\n"
+        "Type <code>/help</code> or <code>/menu</code> for quick usage guides."
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
@@ -922,30 +923,29 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = (
         "📖 <b>Trading Assistant & Auto-Trade Guide:</b>\n\n"
         "<b>1. Master Unified Commands (Recommended):</b>\n"
-        "• <code>/btc</code> — All-in-one Bitcoin hub (run with <code>price</code>, <code>levels</code>, <code>gj</code>, <code>book</code>, <code>news</code>, <code>confluence</code>, <code>analyze</code>, <code>buy</code>, <code>sell</code>)\n"
+        "• <code>/status</code> — Institutional dashboard (killzones, positions, balance, risk)\n"
+        "• <code>/trade</code> — Trading control hub (<code>on</code>, <code>off</code>, <code>size</code>, <code>pos</code>, <code>close</code>, <code>bal</code>, <code>live/paper</code>)\n"
+        "• <code>/battle</code> — AI Bull vs Bear debate & Arbiter verdict (<code>trade</code>, <code>on/off</code>, <code>minconf</code>)\n"
+        "• <code>/backup</code> — State backup hub (immediate dispatch, <code>set &lt;ID&gt;</code>, <code>status</code>)\n"
+        "• <code>/btc</code> — All-in-one Bitcoin hub (price, levels, gj, entry, watch, analyze, buy, sell)\n"
         "• <code>/gold</code> — All-in-one Gold hub (same 11 working modes)\n"
-        "• <code>/trade</code> — Trading control hub (<code>on</code>, <code>off</code>, <code>live</code>, <code>paper</code>, <code>pos</code>, <code>close</code>, <code>bal</code>, <code>learn</code>)\n"
-        "• <code>/alert</code> — Alerts hub (<code>on</code>, <code>off</code>, <code>list</code>, <code>del</code>, <code>clear</code>, <code>watch</code>, or <code>&lt;price&gt;</code>)\n"
+        "• <code>/alert</code> — Alerts hub (price alerts, candle watch, list, del, clear)\n"
         "• <code>/analyze [sym] [tf]</code> — 18-Agent Institutional Desk analysis\n"
-        "• <code>/keys</code> — Bot configuration (<code>check</code>, <code>set</code>, <code>base</code>, <code>gemini</code>, <code>model</code>)\n\n"
-        "<b>2. 18-Agent Institutional Desk System:</b>\n"
-        "• Sends chart or text through 18 specialized agents in 6 categories:\n"
-        "  1. Price Action Core (Gautam Jha DO, Order Blocks, FVGs, Breakers)\n"
-        "  2. Liquidity & Sessions (PDH/PDL sweeps, session ranges, round numbers)\n"
-        "  3. Market Context (Higher TF bias, Multi-TF alignment, Correlated markets)\n"
-        "  4. News & Sentiment (US high-impact news, market sentiment)\n"
-        "  5. Momentum & Strength (Volume characteristics, institutional intent)\n"
-        "  6. Decision Layer (Strict Confluence Score /10 & Risk Manager veto)\n\n"
-        "<b>3. Automated & Manual Trading:</b>\n"
+        "• <code>/keys</code> — Bot configuration (<code>check</code>, <code>set</code>, <code>base</code>, <code>gemini</code>, <code>model</code>)\n"
+        "• <code>/learn</code> — Self-learning performance, rules & AI reflection\n\n"
+        "<b>2. Automated & Manual Trading:</b>\n"
         "• <code>/trade on</code> — Start automated trading bot 🟢\n"
         "• <code>/trade off</code> — Pause automated trading bot 🔴\n"
-        "• <code>/trade btc buy 1</code> — Buy Bitcoin with automatic Stop Loss & Take Profit\n"
+        "• <code>/trade size 0.05</code> — Set auto lot size\n"
+        "• <code>/trade btc buy 1</code> — Buy Bitcoin with auto Stop Loss & Take Profit\n"
         "• <code>/trade pos</code> — View live positions & unrealized PnL\n"
         "• <code>/trade close all</code> — Close all positions immediately\n\n"
-        "<b>4. Delta Exchange API Setup:</b>\n"
-        "• <code>/keys set &lt;API_KEY&gt; &lt;API_SECRET&gt;</code> — Connect Delta credentials\n"
-        "• <code>/keys check</code> — Verify connection live & display wallet balance\n"
-        "• <code>/keys base [india|global]</code> — Switch Delta India (.exchange) vs Global (.com)\n\n"
+        "<b>3. AI Battlefield Arbiter:</b>\n"
+        "• <code>/battle</code> — Bull vs Bear debate + Arbiter verdict on 15m\n"
+        "• <code>/battle trade</code> — Debate and execute on Delta Exchange\n\n"
+        "<b>4. State Backups:</b>\n"
+        "• <code>/backup set &lt;CHANNEL_ID&gt;</code> — Set backup Telegram channel\n"
+        "• <code>/backup</code> — Send instant backup to channel\n\n"
         "<b>5. Chart Screenshot Upload:</b>\n"
         "• Upload any chart screenshot with caption (e.g. <code>BTC 15m</code>) for instant 18-agent categorized analysis!"
     )
@@ -3055,8 +3055,19 @@ async def set_backup_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def backup_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
-    Manually trigger instant database & state stores backup to Telegram (/backup).
+    Manually trigger instant database & state stores backup to Telegram (/backup [set <ID>|status]).
     """
+    args = ctx.args or []
+    if args:
+        sub = args[0].lower().strip()
+        if sub in ("set", "channel"):
+            ctx.args = args[1:]
+            await set_backup_cmd(update, ctx)
+            return
+        elif sub in ("status", "check", "info"):
+            await backup_status_cmd(update, ctx)
+            return
+
     await update.message.reply_text("💾 <i>Creating hot database snapshot and state archive...</i>", parse_mode=ParseMode.HTML)
     try:
         from backup import send_database_backup_to_telegram, _get_backup_chat_id
