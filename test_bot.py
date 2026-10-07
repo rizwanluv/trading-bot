@@ -637,6 +637,171 @@ class TestChatRoutingAndAliases(unittest.TestCase):
         self.assertIn("Google Gemini Model Updated", mock_update.message.reply_text.call_args[0][0])
 
 
+class TestSelfLearningEngine(unittest.TestCase):
+    def setUp(self):
+        self.tmp_store = "test_learning_store.json"
+        if os.path.exists(self.tmp_store):
+            os.remove(self.tmp_store)
+
+    def tearDown(self):
+        if os.path.exists(self.tmp_store):
+            os.remove(self.tmp_store)
+
+    def test_setup_metrics_calculations(self):
+        from self_learning import SetupMetrics
+        m = SetupMetrics("GJ_Reversal_PDH")
+        self.assertEqual(m.win_rate, 0.0)
+        self.assertEqual(m.profit_factor, 1.0)
+        self.assertEqual(m.score, 1.0)
+
+        # Record win
+        m.total_trades = 5
+        m.wins = 4
+        m.losses = 1
+        m.gross_profit = 400.0
+        m.gross_loss = 100.0
+        self.assertEqual(m.win_rate, 80.0)
+        self.assertEqual(m.profit_factor, 4.0)
+        self.assertGreater(m.score, 1.0)
+
+    def test_learning_engine_recording_and_suppression(self):
+        from self_learning import LearningEngine
+        engine = LearningEngine(store_file=self.tmp_store)
+        engine.settings["min_trades_for_adaptation"] = 3
+
+        # Record 3 consecutive losses on GJ_Break_And_Go
+        for i in range(3):
+            engine.record_trade_outcome({
+                "symbol": "BTCUSD",
+                "strategy": "Gautam Jha Break and Go",
+                "pnl": -50.0,
+                "is_win": False,
+                "exit_reason": "Stop Loss Triggered",
+            })
+
+        # Check suppression
+        setup_m = engine.setups.get("GJ_Break_And_Go")
+        self.assertIsNotNone(setup_m)
+        self.assertEqual(setup_m.status, "SUPPRESSED")
+        self.assertEqual(setup_m.win_rate, 0.0)
+
+        # can_execute should now return False for suppressed setup!
+        can_run, reason = engine.can_execute("Gautam Jha Break and Go", "BTCUSD")
+        self.assertFalse(can_run)
+        self.assertIn("suppressed", reason.lower())
+
+        # Unsuppress setup
+        self.assertTrue(engine.unsuppress_setup("Gautam Jha Break and Go"))
+        self.assertEqual(engine.setups["GJ_Break_And_Go"].status, "ACTIVE")
+
+    def test_learning_engine_prioritization(self):
+        from self_learning import LearningEngine
+        engine = LearningEngine(store_file=self.tmp_store)
+        engine.settings["min_trades_for_adaptation"] = 3
+
+        # Record 4 wins and 1 loss on GJ_Reversal_PDL
+        for i in range(4):
+            engine.record_trade_outcome({
+                "symbol": "BTCUSD",
+                "strategy": "Gautam Jha Reversal at PDL",
+                "pnl": 120.0,
+                "is_win": True,
+                "exit_reason": "Take Profit (TP1 Hit)",
+            })
+        engine.record_trade_outcome({
+            "symbol": "BTCUSD",
+            "strategy": "Gautam Jha Reversal at PDL",
+            "pnl": -30.0,
+            "is_win": False,
+            "exit_reason": "Stop Loss Triggered",
+        })
+
+        setup_m = engine.setups.get("GJ_Reversal_PDL")
+        self.assertIsNotNone(setup_m)
+        self.assertEqual(setup_m.status, "PRIORITIZED")
+        self.assertGreater(setup_m.weight_multiplier, 1.0)
+
+        params = engine.get_adapted_parameters("Gautam Jha Reversal at PDL", "BTCUSD", default_size=1.0)
+        self.assertGreater(params["recommended_size"], 1.0)
+
+    def test_zero_token_report_and_token_capped_ai_insight(self):
+        from self_learning import LearningEngine
+        engine = LearningEngine(store_file=self.tmp_store)
+
+        engine.record_trade_outcome({
+            "symbol": "XAUTUSD",
+            "strategy": "15m Pin Bar",
+            "pnl": 150.0,
+            "is_win": True,
+            "exit_reason": "Take Profit (TP2 Hit)",
+        })
+
+        # Local report consumes 0 tokens
+        summary = engine.get_learning_summary()
+        self.assertEqual(summary["tokens_consumed"], 0)
+        html = engine.format_html_report()
+        self.assertIn("SELF-LEARNING STRATEGY ENGINE", html)
+        self.assertIn("0 AI Tokens Used", html)
+
+        # AI insight uses minimal tokens with cache
+        mock_ai_called = []
+        def mock_caller(prompt, max_tokens=250):
+            mock_ai_called.append(prompt)
+            self.assertLessEqual(max_tokens, 250)
+            return "1. Exploit Pin Bar. 2. London session edge. 3. Respect stops."
+
+        insight1 = engine.generate_ai_insight(mock_caller)
+        self.assertIn("Exploit Pin Bar", insight1)
+        self.assertEqual(len(mock_ai_called), 1)
+
+        # Second call hits cache (0 additional tokens)
+        insight2 = engine.generate_ai_insight(mock_caller)
+        self.assertIn("Cached insight", insight2)
+        self.assertEqual(len(mock_ai_called), 1)
+
+    def test_autotrader_learning_integration(self):
+        from auto_trader import AutoTrader
+        from self_learning import LearningEngine
+
+        engine = LearningEngine(store_file=self.tmp_store)
+        trader = AutoTrader(store_file="test_autotrade_store.json", learning_engine=engine)
+
+        # Execute and close a trade
+        pos = trader.execute_trade("BTCUSD", "BUY", size=0.01)
+        closed = trader.close_position(pos["id"], reason="TAKE PROFIT (TP1 Hit)", exit_price=pos["entry_price"] + 500)
+        self.assertTrue(closed["is_win"])
+
+        # Check that learning engine recorded it
+        self.assertEqual(engine.overall.total_trades, 1)
+        self.assertEqual(engine.overall.wins, 1)
+
+        # Clean up test store
+        if os.path.exists("test_autotrade_store.json"):
+            os.remove("test_autotrade_store.json")
+
+    def test_learn_commands_in_chat(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from main import chat, learn_cmd
+
+        mock_update = MagicMock()
+        mock_update.effective_chat.id = 777
+        mock_update.message.reply_text = AsyncMock()
+        mock_ctx = MagicMock()
+
+        # Plain text "self learning"
+        mock_update.message.text = "self learning and self improve its own"
+        asyncio.run(chat(mock_update, mock_ctx))
+        call_text = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("SELF-LEARNING STRATEGY ENGINE", call_text)
+
+        # /learn reset
+        mock_ctx.args = ["reset"]
+        asyncio.run(learn_cmd(mock_update, mock_ctx))
+        call_text = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Self-Learning Memory Reset", call_text)
+
+
 if __name__ == "__main__":
     unittest.main()
 

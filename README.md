@@ -16,7 +16,22 @@ An advanced algorithmic trading and market intelligence Telegram bot powered by 
   - Automatically attaches Stop Loss (SL) and dual Take-Profit targets (TP1 1:1.5, TP2 1:2.5+).
   - Background exit monitor actively watches live prices and executes profit taking and stop loss exits with instant Telegram notifications.
 
-### 2. 🔑 Delta Exchange API Key Authentication (`/setkeys`, `/keys`)
+### 2. 🧠 Autonomous Self-Learning & Auto-Improvement (`/learn`, `/insights`)
+- **Zero-Token Local Intelligence:**
+  - 100% of continuous performance tracking, setup scoring, auto-suppression, and drawdown cooling algorithms run locally at **0 LLM API tokens**.
+  - Persistently tracks metrics across setups, symbols (BTC/XAU), and trading sessions (Asia, London, New York).
+- **Capital Protection & Auto-Suppression:**
+  - Automatically identifies underperforming setups (`< 40%` win rate) and suppresses them from executing, preventing repeated losses.
+- **Dynamic Setup Prioritization:**
+  - Automatically boosts position size (`1.2x - 1.3x`) on high-probability winning patterns (`> 60%` win rate with positive edge).
+- **Adaptive Drawdown Cooldown:**
+  - Temporarily halts trading on a symbol after 3 consecutive losses to avoid tilt or adverse chop regimes.
+- **Adaptive Stop-Loss Buffers:**
+  - Expands SL breathing room if market volatility is prematurely tagging stops before target runs.
+- **Ultra-Token-Efficient AI Synthesis (`/learn ai`):**
+  - On-demand quantitative reflection compressed into `< 100` prompt tokens and capped at `250` output tokens with 15-minute caching to eliminate unnecessary token usage.
+
+### 3. 🔑 Delta Exchange API Key Authentication (`/setkeys`, `/keys`)
 - Secure HMAC-SHA256 signature generation (`METHOD + TIMESTAMP + PATH + QUERY + PAYLOAD`).
 - Simple setup directly in Telegram via `/setkeys <API_KEY> <API_SECRET>`.
 - Automatically persists to local `.env` file (protected from Git by `.gitignore`).
@@ -87,7 +102,15 @@ An advanced algorithmic trading and market intelligence Telegram bot powered by 
 | `/setkeys <KEY> <SECRET>` | Configure both Delta Exchange API Key & Secret at once |
 | `/keys` | View Delta API connection status and masked key |
 
-### 🧠 Google Gemini AI & Model Commands
+### 🧠 Self-Learning & Optimization Commands
+| Command | Description |
+|---|---|
+| `/learn` | View self-learning dashboard, win-rates & setup calibrations (0 tokens) 🟢 |
+| `/learn ai` | Ultra-compact quantitative AI review (&lt;250 tokens) |
+| `/learn reset` | Reset learning memory and recalibrate from scratch |
+| `/insights` | Quick summary of strategy improvements & calibrations |
+
+### 🤖 Google Gemini AI & Model Commands
 | Command | Description |
 |---|---|
 | `/model [MODEL]` | View or switch Gemini model (e.g. `/model gemini-2.5-flash`, `/model pro`) |

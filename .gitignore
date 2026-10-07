@@ -5,5 +5,7 @@ alerts_store.json
 test_alerts*.json
 autotrade_store.json
 test_trader*.json
+learning_store.json
+test_learning*.json
 .env
 attachments/

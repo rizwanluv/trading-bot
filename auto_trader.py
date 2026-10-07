@@ -9,6 +9,7 @@ import logging
 from typing import Dict, Any, List, Optional, Tuple
 from delta_client import DeltaClient
 from market_data import get_ticker, resolve_symbol, get_multi_timeframe_entry, get_gautam_jha_analysis
+from self_learning import LearningEngine
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +23,11 @@ class AutoTrader:
         delta_client: Optional[DeltaClient] = None,
         mode: Optional[str] = None,
         default_size: Optional[float] = None,
+        learning_engine: Optional[LearningEngine] = None,
     ):
         self.store_file = store_file
         self.delta_client = delta_client or DeltaClient()
+        self.learning_engine = learning_engine or LearningEngine()
         self.data: Dict[str, Any] = {
             "enabled": False,
             "mode": (mode or os.environ.get("TRADING_MODE", "paper")).lower(),
@@ -43,6 +46,10 @@ class AutoTrader:
             self.data["mode"] = mode.lower()
         if default_size is not None:
             self.data["default_size"] = float(default_size)
+
+        # Bootstrap self-learning engine if it has no trades but history is present
+        if self.data.get("history") and self.learning_engine.overall.total_trades == 0:
+            self.learning_engine.bootstrap_from_history(self.data["history"])
 
     def load(self):
         """Load state from disk."""
@@ -364,6 +371,12 @@ class AutoTrader:
         del self.data["positions"][found_key]
         self.save()
 
+        # Update self-learning engine (0 tokens, deterministic local optimization)
+        try:
+            self.learning_engine.record_trade_outcome(history_item)
+        except Exception as e:
+            logger.error(f"Error updating self-learning engine on trade close: {e}")
+
         return history_item
 
     def close_all_positions(self, reason: str = "Manual Close All") -> List[Dict[str, Any]]:
@@ -410,14 +423,37 @@ class AutoTrader:
                 tp2 = setup.get("tp2")
                 desc = f"Gautam Jha {setup.get('type')}"
 
-                return self.execute_trade(
-                    symbol=sym,
-                    side=side,
-                    sl_price=sl,
-                    tp1_price=tp1,
-                    tp2_price=tp2,
-                    strategy=desc,
-                )
+                # Self-learning gate check
+                can_run, reason = self.learning_engine.can_execute(desc, sym)
+                if not can_run:
+                    logger.info(f"Self-Learning Filter skipped {sym} ({desc}): {reason}")
+                else:
+                    adapted_params = self.learning_engine.get_adapted_parameters(
+                        desc, sym, default_size=float(self.data.get("default_size", 1.0))
+                    )
+                    adapted_size = adapted_params.get("recommended_size", self.data.get("default_size", 1.0))
+                    sl_mult = adapted_params.get("sl_buffer_multiplier", 1.0)
+                    if sl is not None and sl_mult > 1.0:
+                        try:
+                            ticker = get_ticker(sym)
+                            mark = float(ticker["mark_price"] or ticker["close"])
+                            dist = abs(mark - sl)
+                            if side in ("buy", "long"):
+                                sl = round(mark - (dist * sl_mult), 2)
+                            else:
+                                sl = round(mark + (dist * sl_mult), 2)
+                        except Exception:
+                            pass
+
+                    return self.execute_trade(
+                        symbol=sym,
+                        side=side,
+                        size=adapted_size,
+                        sl_price=sl,
+                        tp1_price=tp1,
+                        tp2_price=tp2,
+                        strategy=desc,
+                    )
         except Exception as e:
             logger.warning(f"Error checking GJ setup for {sym}: {e}")
 
@@ -437,10 +473,36 @@ class AutoTrader:
                         continue
 
                     desc = f"{tf.upper()} {tf_data.get('pattern', 'Candle Setup')}"
+
+                    # Self-learning gate check
+                    can_run, reason = self.learning_engine.can_execute(desc, sym)
+                    if not can_run:
+                        logger.info(f"Self-Learning Filter skipped {sym} ({desc}): {reason}")
+                        continue
+
+                    adapted_params = self.learning_engine.get_adapted_parameters(
+                        desc, sym, default_size=float(self.data.get("default_size", 1.0))
+                    )
+                    adapted_size = adapted_params.get("recommended_size", self.data.get("default_size", 1.0))
+                    sl_mult = adapted_params.get("sl_buffer_multiplier", 1.0)
+                    sl = tp_plan.get("sl")
+                    if sl is not None and sl_mult > 1.0:
+                        try:
+                            ticker = get_ticker(sym)
+                            mark = float(ticker["mark_price"] or ticker["close"])
+                            dist = abs(mark - sl)
+                            if side in ("buy", "long"):
+                                sl = round(mark - (dist * sl_mult), 2)
+                            else:
+                                sl = round(mark + (dist * sl_mult), 2)
+                        except Exception:
+                            pass
+
                     return self.execute_trade(
                         symbol=sym,
                         side=side,
-                        sl_price=tp_plan.get("sl"),
+                        size=adapted_size,
+                        sl_price=sl,
                         tp1_price=tp_plan.get("tp1"),
                         tp2_price=tp_plan.get("tp2"),
                         strategy=desc,
@@ -552,6 +614,7 @@ class AutoTrader:
             "total_realized_pnl": stats.get("total_pnl", 0.0),
             "delta_configured": self.delta_client.is_configured(),
             "masked_key": self.delta_client.get_masked_key(),
+            "learning": self.learning_engine.get_learning_summary(),
         }
 
     def get_account_summary(self) -> Dict[str, Any]:
@@ -585,3 +648,16 @@ class AutoTrader:
                 pos_copy["unrealized_pnl_pct"] = 0.0
             results.append(pos_copy)
         return results
+
+    def get_learning_report(self) -> str:
+        """Get formatted HTML report from self-learning engine (0 tokens)."""
+        return self.learning_engine.format_html_report()
+
+    def get_learning_ai_insight(self, gemini_caller) -> str:
+        """Get compact AI insight on strategy performance (< 250 tokens)."""
+        return self.learning_engine.generate_ai_insight(gemini_caller)
+
+    def reset_learning(self):
+        """Reset self-learning state."""
+        self.learning_engine.reset()
+

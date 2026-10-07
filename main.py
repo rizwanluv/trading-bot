@@ -351,6 +351,66 @@ def generate_ai_vision_reply(prompt_text: str, image_bytes: bytes, mime_type: st
     return f"Error contacting Gemini Vision API ({active_model}): {last_err}"
 
 
+def generate_compact_ai_insight(prompt_text: str, max_tokens: int = 250) -> str:
+    """
+    Generate ultra-concise AI strategic insights strictly capping tokens to minimize API consumption.
+    Consumes minimal tokens (<100 input prompt) and caps output at max_tokens (default 250).
+    """
+    api_key = os.environ.get("GEMINI_API_KEY")
+    active_model = get_gemini_model()
+    if not api_key:
+        return "⚠️ <b>GEMINI_API_KEY is not set.</b> Connect your key with <code>/setgemini &lt;KEY&gt;</code> to enable AI insights."
+
+    candidate_models = [active_model] + [m for m in SUPPORTED_GEMINI_MODELS if m != active_model]
+    system_instruction = (
+        "You are an elite quantitative trading researcher. "
+        "Provide ultra-concise, sharp (<70 words total) bulleted insights. No filler words."
+    )
+
+    if HAS_GENAI_SDK:
+        for m_name in candidate_models:
+            try:
+                client = genai.Client(api_key=api_key)
+                reply = client.models.generate_content(
+                    model=m_name,
+                    contents=prompt_text,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        max_output_tokens=max_tokens,
+                    ),
+                )
+                if reply.text:
+                    if m_name != active_model:
+                        save_gemini_credentials(model=m_name)
+                    return reply.text
+            except Exception as e:
+                logger.warning(f"SDK compact insight failed with {m_name}: {e}")
+
+    # REST fallback
+    for m_name in candidate_models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:generateContent?key={api_key}"
+            payload = {
+                "contents": [{"parts": [{"text": prompt_text}]}],
+                "systemInstruction": {"parts": [{"text": system_instruction}]},
+                "generationConfig": {"maxOutputTokens": max_tokens},
+            }
+            r = requests.post(url, json=payload, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts:
+                        if m_name != active_model:
+                            save_gemini_credentials(model=m_name)
+                        return parts[0].get("text", "")
+        except Exception as e:
+            logger.warning(f"REST compact insight failed with {m_name}: {e}")
+
+    return "⚠️ Unable to contact Gemini API for AI insight."
+
+
 # ==================== Command Handlers ====================
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -388,6 +448,11 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <code>/closeposition &lt;ID&gt;</code> (or <code>/closeall</code>) — Close position at market\n"
         "• <code>/balance</code> — View Delta Exchange wallet & paper balance\n"
         "• <code>/mode [live|paper]</code> — Switch between Live & Paper trading\n\n"
+        "🧠 <b>Self-Learning & Optimization:</b>\n"
+        "• <code>/learn</code> — Strategy performance & dynamic weights (0 tokens) 🟢\n"
+        "• <code>/learn ai</code> — Compact quantitative AI review (&lt;250 tokens)\n"
+        "• <code>/insights</code> — View learned strategy insights\n"
+        "• <code>/learn reset</code> — Reset learned weights & history\n\n"
         "🔑 <b>Delta Exchange API Keys:</b>\n"
         "• <code>/setkey &lt;KEY&gt;</code> — Set Delta Exchange API Key\n"
         "• <code>/setsecret &lt;SECRET&gt;</code> — Set Delta Exchange API Secret\n"
@@ -484,7 +549,12 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <code>/alert [SYMBOL] &lt;PRICE&gt;</code> — Custom price alerts\n"
         "• <code>/entry [SYMBOL]</code> — 1m, 5m, 15m candle setups\n"
         "• <code>/watch [SYMBOL]</code> — Automated background candle alerts\n"
-        "• <b>📸 Send Chart Screenshot</b> — Gautam Jha AI vision analysis"
+        "• <b>📸 Send Chart Screenshot</b> — Gautam Jha AI vision analysis\n\n"
+        "<b>7. 🧠 Self-Learning & Auto-Improvement (0 Tokens):</b>\n"
+        "• <code>/learn</code> — Self-learning dashboard & setup calibrations (0 tokens)\n"
+        "• <code>/learn ai</code> — Ultra-compact quantitative AI review (&lt;250 tokens)\n"
+        "• <code>/insights</code> — View learned strategy insights\n"
+        "• <code>/learn reset</code> — Reset learning memory"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
@@ -1059,6 +1129,22 @@ async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if lower_text in ("positions", "my positions", "open positions", "position"):
         await positions_cmd(update, ctx)
+        return
+
+    # Self-learning & self-improvement queries
+    if lower_text in (
+        "learn", "learning", "self learn", "self learning", "self improve",
+        "how to improve", "learning stats", "learning report", "learning engine",
+        "strategy report", "insights", "self improvement", "bot learning",
+        "self learning and self improve", "self learning and self improve its own",
+    ) or "self learn" in lower_text or "self improve" in lower_text or "learning report" in lower_text:
+        ctx.args = []
+        await learn_cmd(update, ctx)
+        return
+
+    if lower_text in ("learn ai", "ai insights", "ai insight", "strategy ai", "ai improve", "ai learning"):
+        ctx.args = ["ai"]
+        await learn_cmd(update, ctx)
         return
 
     # Mode switch
@@ -1689,6 +1775,51 @@ async def autotrade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: <code>/starttrade</code> or <code>/stoptrade</code>", parse_mode=ParseMode.HTML)
 
 
+async def learn_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Self-learning and self-improving strategy dashboard (/learn [ai|reset|unsuppress <SETUP>]).
+    Displays real-time performance, dynamic setup weights, auto-suppression, and drawdown controls (0 tokens).
+    """
+    args = ctx.args or []
+    if args:
+        subcmd = args[0].lower().strip()
+        if subcmd == "ai":
+            await update.message.reply_text("🤖 Generating token-efficient AI strategic reflection...", parse_mode=ParseMode.HTML)
+            insight = auto_trader.get_learning_ai_insight(generate_compact_ai_insight)
+            await update.message.reply_text(insight, parse_mode=ParseMode.HTML)
+            return
+        elif subcmd == "reset":
+            auto_trader.reset_learning()
+            await update.message.reply_text(
+                "🔄 <b>Self-Learning Memory Reset!</b>\nAll learned weights, streaks, and setup statuses have been reset to default baseline.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        elif subcmd in ("unsuppress", "enable", "restore") and len(args) > 1:
+            target_setup = " ".join(args[1:])
+            ok = auto_trader.learning_engine.unsuppress_setup(target_setup)
+            if ok:
+                await update.message.reply_text(
+                    f"✅ Setup <b>{target_setup}</b> has been unsuppressed and restored to ACTIVE status.",
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                await update.message.reply_text(
+                    f"⚠️ Setup <b>{target_setup}</b> not found in learning registry.",
+                    parse_mode=ParseMode.HTML,
+                )
+            return
+
+    # Default: 0-token instant local analytics
+    report = auto_trader.get_learning_report()
+    await update.message.reply_text(report, parse_mode=ParseMode.HTML)
+
+
+async def insights_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """View self-learning strategy insights (/insights)."""
+    await learn_cmd(update, ctx)
+
+
 async def trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Execute a manual trade (/trade <SYMBOL> <buy|sell> [size])."""
     args = ctx.args or []
@@ -2217,6 +2348,12 @@ def main():
     app.add_handler(CommandHandler("balance", balance_cmd))
     app.add_handler(CommandHandler("orders", orders_cmd))
     app.add_handler(CommandHandler("cancelorders", cancel_orders_cmd))
+    app.add_handler(CommandHandler("learn", learn_cmd))
+    app.add_handler(CommandHandler("learning", learn_cmd))
+    app.add_handler(CommandHandler("selflearn", learn_cmd))
+    app.add_handler(CommandHandler("selflearning", learn_cmd))
+    app.add_handler(CommandHandler("insights", insights_cmd))
+    app.add_handler(CommandHandler("insight", insights_cmd))
     app.add_handler(CommandHandler("setkey", set_key_cmd))
     app.add_handler(CommandHandler("setsecret", set_secret_cmd))
     app.add_handler(CommandHandler("setkeys", set_keys_cmd))
