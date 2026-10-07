@@ -421,6 +421,30 @@ class TestBotCommands(unittest.TestCase):
         asyncio.run(balance_cmd(mock_update, mock_ctx))
         self.assertIn("Paper Trading Account Balance", mock_update.message.reply_text.call_args[0][0])
 
+        # 8a. /balance set 50000
+        mock_ctx.args = ["set", "50000"]
+        asyncio.run(balance_cmd(mock_update, mock_ctx))
+        self.assertIn("PAPER TRADING BALANCE CONFIGURED", mock_update.message.reply_text.call_args[0][0])
+        self.assertEqual(auto_trader.balance, 50000.0)
+
+        # 8b. /balance 35000
+        mock_ctx.args = ["35000"]
+        asyncio.run(balance_cmd(mock_update, mock_ctx))
+        self.assertIn("PAPER TRADING BALANCE CONFIGURED", mock_update.message.reply_text.call_args[0][0])
+        self.assertEqual(auto_trader.balance, 35000.0)
+
+        # 8c. /trade bal set 40000
+        mock_ctx.args = ["bal", "set", "40000"]
+        asyncio.run(trade_cmd(mock_update, mock_ctx))
+        self.assertIn("PAPER TRADING BALANCE CONFIGURED", mock_update.message.reply_text.call_args[0][0])
+        self.assertEqual(auto_trader.balance, 40000.0)
+
+        # 8d. /balance reset
+        mock_ctx.args = ["reset"]
+        asyncio.run(balance_cmd(mock_update, mock_ctx))
+        self.assertIn("PAPER TRADING BALANCE CONFIGURED", mock_update.message.reply_text.call_args[0][0])
+        self.assertEqual(auto_trader.balance, 10000.0)
+
         # 9. /trade BTC buy
         auto_trader.close_all_positions()
         mock_ctx.args = ["BTC", "buy", "0.01"]
@@ -585,6 +609,25 @@ class TestAutoTrader(unittest.TestCase):
         self.assertEqual(summary["mode"], "paper")
         self.assertEqual(summary["balance"], 10000.0)
         self.assertIn("win_rate_pct", summary)
+
+    def test_set_and_reset_paper_balance(self):
+        new_bal = self.trader.set_paper_balance(25000.50)
+        self.assertEqual(new_bal, 25000.50)
+        self.assertEqual(self.trader.balance, 25000.50)
+
+        # Persistence check
+        from auto_trader import AutoTrader
+        reloaded = AutoTrader(store_file=self.test_store, mode="paper")
+        self.assertEqual(reloaded.balance, 25000.50)
+
+        # Reset check
+        reset_bal = self.trader.reset_paper_balance()
+        self.assertEqual(reset_bal, 10000.0)
+        self.assertEqual(self.trader.balance, 10000.0)
+
+        # Negative balance validation
+        with self.assertRaises(ValueError):
+            self.trader.set_paper_balance(-500.0)
 
 
 class TestChatRoutingAndAliases(unittest.TestCase):

@@ -153,6 +153,22 @@ class AutoTrader:
         self.data["paper_balance"] = round(float(val), 2)
         self.save()
 
+    def set_paper_balance(self, amount: float) -> float:
+        """
+        Manually configure and update the paper trading capital balance.
+        Saves updated balance to persistent state store.
+        """
+        val = float(amount)
+        if val < 0:
+            raise ValueError("Paper balance cannot be negative.")
+        self.data["paper_balance"] = round(val, 2)
+        self.save()
+        return self.data["paper_balance"]
+
+    def reset_paper_balance(self, default_amount: float = 10000.0) -> float:
+        """Reset paper balance back to initial capital (default $10,000.00)."""
+        return self.set_paper_balance(default_amount)
+
     @property
     def subscribers(self) -> List[int]:
         return self.data.setdefault("subscribers", [])

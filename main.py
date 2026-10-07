@@ -842,74 +842,84 @@ def format_symbol_hub_overview(symbol: str) -> str:
 # ==================== Command Handlers ====================
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Start command intro."""
+    """Start command intro with modern aesthetic."""
     msg = (
-        "🤖 <b>Welcome to Gemini Trading Assistant & Auto-Trade Bot!</b>\n\n"
-        "Institutional algorithmic trading with live Delta Exchange integration, "
-        "<b>AI Battlefield Debate Arbiter</b>, <b>18-Agent Desk Analysis</b>, "
-        "and <b>Automated Order Execution</b> with dynamic risk management.\n\n"
-        "🏛️ <b>Essential Unified Commands (1 Command — Multiple Working Types):</b>\n"
-        "• <code>/status</code> — Master dashboard (killzones, positions, risk, desk health)\n"
-        "• <code>/trade</code> — Master Trading Hub (<code>on</code>, <code>off</code>, <code>size</code>, <code>pos</code>, <code>close</code>, <code>bal</code>)\n"
-        "• <code>/battle</code> — AI Bull vs Bear debate & Arbiter verdict (<code>trade</code>, <code>on/off</code>)\n"
-        "• <code>/btc</code> — 11-in-1 Bitcoin Hub (price, levels, gj, entry, analyze, trade)\n"
-        "• <code>/gold</code> — 11-in-1 Gold Hub (price, levels, gj, entry, analyze, trade)\n"
-        "• <code>/alert</code> — Master Alerts Hub (price alerts, candle watch, list)\n"
-        "• <code>/backup</code> — State backup hub (immediate dispatch, <code>set &lt;ID&gt;</code>, status)\n"
-        "• <code>/analyze</code> — 18-Agent Institutional Desk Analysis\n"
-        "• <code>/keys</code> — API & model credentials hub\n\n"
-        "Type <code>/help</code> or <code>/menu</code> for quick usage guides."
+        "💎 <b>QUANTUM TRADING DESK — BOT ACTIVE</b> 🏛️\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Institutional algorithmic execution powered by <b>Delta Exchange</b>, "
+        "<b>AI Battlefield Arbiter</b>, <b>18-Agent Market Vision</b>, "
+        "and <b>Autonomous Self-Learning</b>.\n\n"
+        "⚡ <b>CORE UNIFIED COMMAND HUBS:</b>\n"
+        "• <code>/status</code> ── Institutional Command Center Dashboard\n"
+        "• <code>/trade</code> ── Master Execution Hub (<code>on</code>, <code>off</code>, <code>size</code>, <code>pos</code>, <code>bal</code>)\n"
+        "• <code>/battle</code> ── AI Bull vs Bear Debate & Judge Arbiter\n"
+        "• <code>/btc</code> ── 11-in-1 Bitcoin Multi-Action Hub\n"
+        "• <code>/gold</code> ── 11-in-1 Gold Multi-Action Hub\n"
+        "• <code>/balance set &lt;VAL&gt;</code> ── Configure Paper Demo Capital\n"
+        "• <code>/analyze</code> ── 18-Agent Institutional Desk Scan\n"
+        "• <code>/alert</code> ── High-Frequency Price & Candle Alerts\n"
+        "• <code>/backup</code> ── Automated State Archive & Backup Hub\n"
+        "• <code>/keys</code> ── API Credentials & Exchange Config\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📜 <i>Type <code>/list</code> to open the stylish command catalog or <code>/help</code> for detailed guides!</i>"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
 async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Show all bot commands in a quick, clean reference list featuring unified hubs."""
+    """Show all bot commands in a modern, stylish institutional catalog."""
     msg = (
-        "📜 <b>UNIFIED COMMAND HUBS:</b>\n"
-        "<i>(Minimum Commands — Maximum Working Types!)</i>\n\n"
-        "🏛️ <b>Master Institutional Dashboard:</b>\n"
-        "• <code>/status</code> (or <code>/dashboard</code>, <code>/dash</code>) — Live Killzones, positions, risk & desk health\n\n"
-        "🪙 <b>Bitcoin & Gold Hubs:</b>\n"
-        "• <code>/btc</code> — Bitcoin Hub (price, levels, gj, entry, watch, book, news, confluence, buy, sell)\n"
-        "• <code>/gold</code> (or <code>/xau</code>) — Gold Hub (same 11 working modes)\n\n"
-        "💼 <b>Trading & Execution Hub (/trade):</b>\n"
-        "• <code>/trade on</code> | <code>/trade off</code> — Start / stop automated bot 🟢🔴\n"
-        "• <code>/trade size &lt;VAL&gt;</code> | <code>/size &lt;VAL&gt;</code> — Set auto lot size (e.g. <code>0.05</code>) 🎯\n"
-        "• <code>/trade size &lt;SYM&gt; &lt;VAL&gt;</code> — Pair lot override | <code>reset</code>\n"
-        "• <code>/trade be [on|off]</code> — Breakeven SL on TP1 🛡️ | <code>/trade trail</code> — Trailing SL\n"
-        "• <code>/trade live</code> | <code>/trade paper</code> — Switch execution mode\n"
-        "• <code>/trade pos</code> | <code>/trade bal</code> | <code>/trade close [id|all]</code>\n"
-        "• <code>/trade amd [sym]</code> | <code>/trade confluence [sym]</code>\n"
-        "• <code>/trade &lt;sym&gt; &lt;buy|sell&gt; [sz]</code> — Manual market order\n"
-        "• <code>/trade battle [sym]</code> — AI Bull vs Bear debate arbiter ⚔️\n"
-        "• <code>/trade backup</code> — Instant state backup to channel 💾\n"
-        "• <code>/trade learn</code> — Self-learning performance\n\n"
-        "⚔️ <b>AI Battlefield Arbiter (/battlefield or /battle):</b>\n"
-        "• <code>/battlefield [sym]</code> — Bull vs Bear debate & Arbiter verdict\n"
-        "• <code>/battlefield trade [sym]</code> — Debate + auto-execution on Delta\n"
-        "• <code>/battlefield [on|off]</code> — Toggle debate gate | <code>/battlefield minconf &lt;N&gt;</code>\n\n"
-        "💾 <b>Automated Backups (/backup or /setbackup):</b>\n"
-        "• <code>/setbackup &lt;CHANNEL_ID&gt;</code> — Bind dedicated Telegram backup channel\n"
-        "• <code>/backup</code> — Immediately bundle SQLite DB & state stores to channel\n"
-        "• <code>/backupstatus</code> — View destination channel & schedule\n\n"
-        "🔔 <b>Alerts Hub (/alert):</b>\n"
-        "• <code>/alert on</code> | <code>/alert off</code> — Toggle auto alerts | <code>/alert list</code> | <code>/alert clear</code> | <code>/alert del &lt;ID&gt;</code>\n"
-        "• <code>/alert &lt;price&gt;</code> | <code>/alert &lt;sym&gt; &lt;price&gt;</code> | <code>/alert watch &lt;sym&gt;</code>\n\n"
-        "⚡ <b>Specialized Scanners:</b>\n"
-        "• <code>/amd [sym]</code> (or <code>/scalp</code>) — 1m/5m/15m Multi-TF Scalper | <code>/analyze [sym]</code> — 18-Agent Desk\n"
-        "• <code>/rules</code> | <code>/memory</code> | <code>/reflect</code> — Cognitive Memory & Rules\n"
-        "• <code>/keys</code> — API keys, base URL & model config (check, set, base, gemini, model)\n\n"
-        "💡 <b>All Direct Commands & Shortcuts:</b>\n"
-        "• <code>/btc /btclevels /btcgj /btcentry /btcwatch</code>\n"
-        "• <code>/gold /xau /xauusd /goldlevels /goldgj /goldentry /goldwatch</code>\n"
-        "• <code>/price /levels /analysis /gj /liquidity</code>\n"
-        "• <code>/alert /alerts /delalert /clearalerts</code>\n"
-        "• <code>/entry /scan /watch /unwatch /watchers</code>\n"
-        "• <code>/autotrade /starttrade /stoptrade /trade /positions /closeposition /balance /mode</code>\n"
-        "• <code>/alertson /alertsoff /setkey /setsecret /setkeys /keys</code>\n"
-        "• <code>/battlefield /battle /debate /setbackup /backupchannel /backup /backupstatus</code>\n"
-        "• <code>/learn /rules /memory /reflect /confluence /orderbook /news /amd /list /help /start /reset</code>"
+        "⚡ <b>QUANTUM TRADING DESK — COMMAND SUITE</b> 🏛️\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "💎 <b>1. MASTER UNIFIED COMMAND HUBS:</b>\n"
+        "• <code>/status</code> ── Master Dashboard (Killzones, Positions, PnL, Health)\n"
+        "• <code>/trade</code> ── Portfolio & Execution Control (on, off, size, pos, bal)\n"
+        "• <code>/battle</code> ── AI Bull vs Bear Debate Arbiter (trade, on/off, minconf)\n"
+        "• <code>/btc</code> ── 11-in-1 Bitcoin Terminal (levels, gj, entry, book, trade)\n"
+        "• <code>/gold</code> ── 11-in-1 Gold Terminal (levels, gj, entry, book, trade)\n"
+        "• <code>/analyze</code> ── 18-Agent Institutional Multi-Timeframe Desk\n"
+        "• <code>/alert</code> ── High-Precision Price & Candle Watch Alerts\n"
+        "• <code>/backup</code> ── Hot Database & State Archive Dispatcher\n"
+        "• <code>/learn</code> ── Self-Learning Desk & Procedural Rule Adaptation\n"
+        "• <code>/keys</code> ── Delta Exchange API & Google Gemini Configuration\n\n"
+        "💼 <b>2. TRADING & CAPITAL CONTROLS:</b>\n"
+        "• <code>/trade on</code> | <code>/trade off</code> ── Start / pause automated bot 🟢🔴\n"
+        "• <code>/trade size &lt;VAL&gt;</code> ── Set auto lot size (e.g. <code>0.05</code>) 🎯\n"
+        "• <code>/balance set &lt;AMT&gt;</code> ── Set paper demo balance (e.g. <code>25000</code>) 💵\n"
+        "• <code>/balance reset</code> ── Reset paper capital back to $10,000.00\n"
+        "• <code>/trade be on</code> ── Lock in Breakeven Stop-Loss at TP1 🛡️\n"
+        "• <code>/trade trail on</code> ── Dynamic trailing stop-loss protection ⚡\n"
+        "• <code>/trade live</code> | <code>/trade paper</code> ── Toggle real vs simulated execution\n"
+        "• <code>/trade pos</code> ── Live open positions & unrealized PnL 📈\n"
+        "• <code>/trade close all</code> ── Instant emergency market liquidation 🛑\n"
+        "• <code>/trade battle btc</code> ── AI Arbiter debate + auto execution ⚔️\n\n"
+        "🪙 <b>3. 11-IN-1 ASSET SHORTCUTS:</b>\n"
+        "• <b>Bitcoin:</b> <code>/btc</code> · <code>/btclevels</code> · <code>/btcgj</code> · <code>/btcentry</code> · <code>/btcwatch</code>\n"
+        "• <b>Gold:</b> <code>/gold</code> · <code>/xau</code> · <code>/xauusd</code> · <code>/goldlevels</code> · <code>/goldgj</code> · <code>/goldentry</code> · <code>/goldwatch</code>\n\n"
+        "📊 <b>4. MARKET INTELLIGENCE & SCANNERS:</b>\n"
+        "• <code>/price</code> ── Live market ticker & 24h change\n"
+        "• <code>/levels</code> ── Automatic S/R, Daily Pivots & Fibonacci retracements\n"
+        "• <code>/gj</code> | <code>/liquidity</code> ── Gautam Jha Daily Open & PDH/PDL sweeps\n"
+        "• <code>/entry</code> | <code>/scan</code> ── 1m/5m/15m multi-timeframe pattern detection\n"
+        "• <code>/amd</code> ── Accumulation, Manipulation, Distribution scalp engine\n"
+        "• <code>/orderbook</code> ── Delta L2 depth, imbalance ratio & whale walls\n"
+        "• <code>/news</code> ── Breaking macro headlines & sentiment scoring\n"
+        "• <code>/analysis</code> ── Full multi-agent technical breakdown\n\n"
+        "🔔 <b>5. ALERT NOTIFICATION ENGINE:</b>\n"
+        "• <code>/alert &lt;price&gt;</code> ── Add target price threshold alert\n"
+        "• <code>/watch &lt;sym&gt;</code> | <code>/unwatch</code> ── Automated candle entry watcher\n"
+        "• <code>/alerts</code> | <code>/watchers</code> ── View active price & candle alerts\n"
+        "• <code>/delalert &lt;ID&gt;</code> | <code>/clearalerts</code> ── Remove alert triggers\n"
+        "• <code>/alertson</code> | <code>/alertsoff</code> ── Global alert broadcast toggle\n\n"
+        "💾 <b>6. CONFIGURATION, BACKUPS & UTILITIES:</b>\n"
+        "• <code>/setkeys &lt;KEY&gt; &lt;SECRET&gt;</code> | <code>/setkey</code> | <code>/setsecret</code> ── Delta keys\n"
+        "• <code>/setbackup &lt;CHANNEL_ID&gt;</code> | <code>/backupchannel</code> ── Bind backup channel\n"
+        "• <code>/backupstatus</code> ── Backup schedule & channel status\n"
+        "• <code>/rules</code> | <code>/memory</code> | <code>/reflect</code> ── Autonomous cognitive reflection\n"
+        "• <code>/autotrade</code> | <code>/starttrade</code> | <code>/stoptrade</code> | <code>/positions</code> | <code>/closeposition</code>\n"
+        "• <code>/balance</code> | <code>/mode</code> | <code>/help</code> | <code>/start</code> | <code>/reset</code> | <code>/list</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "✨ <i>Tip: Run <code>/help</code> for detailed workflows or click any command above!</i>"
     )
     try:
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
@@ -3295,6 +3305,7 @@ async def trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             await close_all_cmd(update, ctx)
     elif sub in ("bal", "balance", "wallet"):
+        ctx.args = rest
         await balance_cmd(update, ctx)
     elif sub in ("learn", "learning", "insights"):
         ctx.args = rest
@@ -3651,7 +3662,43 @@ async def close_all_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def balance_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """View account balances and equity (/balance)."""
+    """View account balances or manually set paper trading balance (/balance [set <VAL>|reset])."""
+    args = ctx.args or []
+    if args:
+        first = args[0].lower().strip()
+        target_val = None
+        if first in ("set", "change", "update", "put") and len(args) > 1:
+            raw = args[1].replace("$", "").replace(",", "").strip()
+            try:
+                target_val = float(raw)
+            except ValueError:
+                pass
+        elif first in ("reset", "default"):
+            target_val = 10000.0
+        else:
+            raw = first.replace("$", "").replace(",", "").strip()
+            try:
+                target_val = float(raw)
+            except ValueError:
+                pass
+
+        if target_val is not None:
+            try:
+                new_bal = auto_trader.set_paper_balance(target_val)
+                msg = (
+                    "💎 <b>PAPER TRADING BALANCE CONFIGURED!</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"💵 <b>New Balance:</b> <code>${new_bal:,.2f}</code>\n"
+                    f"⚙️ <b>Execution Mode:</b> <code>{auto_trader.mode.upper()}</code>\n"
+                    f"🛡️ <b>Capital State:</b> Persisted to disk. Position sizing algorithms will adapt to this balance.\n\n"
+                    "💡 <i>Tip: Run <code>/balance</code> to inspect account status or <code>/trade bal set &lt;VAL&gt;</code> to modify again.</i>"
+                )
+                await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+                return
+            except Exception as e:
+                await update.message.reply_text(f"⚠️ Error setting balance: {e}")
+                return
+
     summary = auto_trader.get_account_summary()
 
     if auto_trader.mode == "live":
@@ -3665,13 +3712,16 @@ async def balance_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         bal_res = delta_client.get_wallet_balances()
         if bal_res.get("success"):
             balances = bal_res.get("result", [])
-            lines = ["⚡ <b>Delta Exchange Wallet Balances (LIVE)</b>\n"]
+            lines = [
+                "⚡ <b>DELTA EXCHANGE WALLET (LIVE)</b>",
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ]
             if balances:
                 for b in balances:
                     asset = b.get("asset_symbol", "USDT")
                     bal = float(b.get("balance", 0))
                     avail = float(b.get("available_balance", 0))
-                    lines.append(f"• <b>{asset}:</b> {bal:,.4f} (Avail: {avail:,.4f})")
+                    lines.append(f"• <b>{asset}:</b> <code>{bal:,.4f}</code> (Avail: <code>{avail:,.4f}</code>)")
             else:
                 lines.append("• No balances returned.")
             await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
@@ -3683,16 +3733,21 @@ async def balance_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Paper mode
     pnl = summary["total_realized_pnl"]
+    pnl_sign = "+" if pnl >= 0 else ""
     pnl_emoji = "🟢" if pnl >= 0 else "🔴"
     msg = (
-        f"🎮 <b>Paper Trading Account Balance</b>\n\n"
-        f"• <b>Cash Balance:</b> <code>${summary['balance']:,.2f}</code>\n"
-        f"• <b>Initial Balance:</b> <code>${summary['initial_balance']:,.2f}</code>\n"
-        f"• <b>Estimated Equity:</b> <code>${summary['equity']:,.2f}</code>\n"
-        f"• <b>Total Realized PnL:</b> {pnl_emoji} <b>${pnl:+,.2f}</b>\n"
-        f"• <b>Open Positions:</b> {summary['open_positions_count']}\n"
-        f"• <b>Win Rate:</b> {summary['win_rate_pct']}%\n"
-        f"• <b>Total Trades:</b> {summary['total_trades']}\n\n"
+        "💎 <b>Paper Trading Account Balance</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💵 <b>Cash Balance:</b> <code>${summary['balance']:,.2f}</code>\n"
+        f"🏛️ <b>Initial Capital:</b> <code>${summary['initial_balance']:,.2f}</code>\n"
+        f"📈 <b>Estimated Equity:</b> <code>${summary['equity']:,.2f}</code>\n"
+        f"💰 <b>Realized PnL:</b> {pnl_emoji} <b>{pnl_sign}${pnl:,.2f}</b>\n"
+        f"📊 <b>Active Positions:</b> <code>{summary['open_positions_count']}/{summary.get('max_open_positions', 5)}</code>\n"
+        f"🎯 <b>Historical Win Rate:</b> <code>{summary['win_rate_pct']}%</code> ({summary['total_trades']} trades)\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "⚡ <b>Commands to Change Paper Balance:</b>\n"
+        "• <code>/balance set &lt;VAL&gt;</code> ── Set custom demo balance (e.g. <code>/balance 25000</code>)\n"
+        "• <code>/balance reset</code> ── Reset capital back to default $10,000.00\n\n"
         "💡 <i>To trade with real funds on Delta Exchange:</i>\n"
         "1. <code>/setkeys &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>\n"
         "2. <code>/mode live</code>"
@@ -4026,6 +4081,10 @@ def main():
     app.add_handler(CommandHandler("closeposition", close_position_cmd))
     app.add_handler(CommandHandler("closeall", close_all_cmd))
     app.add_handler(CommandHandler("balance", balance_cmd))
+    app.add_handler(CommandHandler("bal", balance_cmd))
+    app.add_handler(CommandHandler("setbalance", balance_cmd))
+    app.add_handler(CommandHandler("paperbalance", balance_cmd))
+    app.add_handler(CommandHandler("paperbal", balance_cmd))
     app.add_handler(CommandHandler("orders", orders_cmd))
     app.add_handler(CommandHandler("cancelorders", cancel_orders_cmd))
     app.add_handler(CommandHandler("learn", learn_cmd))
