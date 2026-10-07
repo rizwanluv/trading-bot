@@ -17,6 +17,13 @@ An advanced algorithmic trading and market intelligence Telegram bot powered by 
   - 🔑 **API Connectivity:** Delta Exchange authenticated status & active Google Gemini AI model.
 
 ### 1. ⚡ Advanced Institutional Risk Management (`/trade be`, `/trade trail`)
+- **🎯 Auto-Trade Lot Size Configuration (`/trade size <VAL>`, `/size <VAL>`):**
+  - Configure the exact lot size for all auto-trading scanners (AMD Scalper, Master Confluence, Gautam Jha, Candle Entry) and manual trades.
+  - **Global Lot Size:** `/trade size 0.05` or `/size 0.05`.
+  - **Per-Symbol Overrides:** `/trade size BTC 0.01` or `/size GOLD 0.5`.
+  - **Strict Bot Following:** The bot strictly adheres to your configured lot size across all background auto-trading setups.
+  - **Plain Text / Chat Control:** Send `set lot size 0.05`, `btc size 0.01`, or `lot size` anytime in chat to inspect or change.
+  - **Clear Overrides:** `/trade size BTC reset` reverts back to the global lot size.
 - **🛡️ Auto-Breakeven Protection (`/trade be [on|off]`):**
   - When Take Profit 1 (TP1) is reached, Stop Loss is automatically shifted to Entry Price to lock in a **100% risk-free trade** while the runner continues towards TP2!
 - **⚡ Dynamic Trailing Stop-Loss (`/trade trail [on|off|pct]`):**

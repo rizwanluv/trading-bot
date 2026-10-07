@@ -38,12 +38,16 @@ class AutoTrader:
         self.delta_client = delta_client or DeltaClient()
         self.learning_engine = learning_engine or LearningEngine()
         self.confluence_engine = confluence_engine or ConfluenceEngine(learning_engine=self.learning_engine)
+        init_size = float(default_size or os.environ.get("DEFAULT_ORDER_SIZE", 1))
         self.data: Dict[str, Any] = {
             "enabled": False,
             "mode": (mode or os.environ.get("TRADING_MODE", "paper")).lower(),
             "symbols": ["BTCUSD", "XAUTUSD"],
             "timeframes": ["1m", "5m", "15m"],
-            "default_size": float(default_size or os.environ.get("DEFAULT_ORDER_SIZE", 1)),
+            "default_size": init_size,
+            "lot_size": init_size,
+            "symbol_lot_sizes": {},
+            "lot_size_mode": "custom",  # 'custom' strictly executes user's configured lot size
             "max_open_positions": 5,
             "risk_per_trade_pct": 0.015,  # 1.5% auto capital risk per trade
             "allow_multiple_per_symbol": False,
@@ -63,6 +67,14 @@ class AutoTrader:
             self.data["mode"] = mode.lower()
         if default_size is not None:
             self.data["default_size"] = float(default_size)
+            self.data["lot_size"] = float(default_size)
+            self.data["lot_size_mode"] = "custom"
+        if "lot_size" not in self.data:
+            self.data["lot_size"] = float(self.data.get("default_size", 1.0))
+        if "lot_size_mode" not in self.data:
+            self.data["lot_size_mode"] = "custom"
+        if "symbol_lot_sizes" not in self.data:
+            self.data["symbol_lot_sizes"] = {}
 
         # Bootstrap self-learning engine if it has no trades but history is present
         if self.data.get("history") and self.learning_engine.overall.total_trades == 0:
@@ -225,6 +237,64 @@ class AutoTrader:
             "trailing_pct": self.data.get("trailing_pct", 0.01),
         }
 
+    def set_lot_size(self, size: float, symbol: Optional[str] = None) -> float:
+        """
+        Set auto-trade lot size.
+        If symbol is provided, sets a per-symbol override (e.g. BTCUSD -> 0.01).
+        If symbol is None, sets the global default lot size.
+        """
+        val = max(0.0001, round(float(size), 4))
+        if symbol:
+            sym = resolve_symbol(symbol)
+            sym_sizes = self.data.setdefault("symbol_lot_sizes", {})
+            sym_sizes[sym] = val
+        else:
+            self.data["lot_size"] = val
+            self.data["default_size"] = val
+        self.data["lot_size_mode"] = "custom"
+        self.save()
+        return val
+
+    def get_lot_size(self, symbol: Optional[str] = None) -> float:
+        """Get configured lot size for a specific symbol or the global default."""
+        if symbol:
+            sym = resolve_symbol(symbol)
+            sym_sizes = self.data.get("symbol_lot_sizes", {})
+            if sym in sym_sizes:
+                return float(sym_sizes[sym])
+        return float(self.data.get("lot_size", self.data.get("default_size", 1.0)))
+
+    def get_effective_lot_size(self, symbol: str) -> float:
+        """Get effective active lot size to execute for the given symbol."""
+        return self.get_lot_size(symbol)
+
+    def set_lot_size_mode(self, mode: str) -> str:
+        """
+        Set lot size mode:
+        'custom': strictly follows user-configured lot size (default)
+        'risk_pct': dynamically calculates lot size from risk percentage and SL distance
+        """
+        clean = mode.lower().strip()
+        if clean in ("custom", "fixed"):
+            mode_val = "custom"
+        elif clean in ("risk_pct", "risk", "auto"):
+            mode_val = "risk_pct"
+        else:
+            raise ValueError("Lot size mode must be 'custom' or 'risk_pct'.")
+        self.data["lot_size_mode"] = mode_val
+        self.save()
+        return mode_val
+
+    def remove_symbol_lot_size(self, symbol: str) -> bool:
+        """Remove a per-symbol lot size override, reverting back to global lot size."""
+        sym = resolve_symbol(symbol)
+        sym_sizes = self.data.get("symbol_lot_sizes", {})
+        if sym in sym_sizes:
+            del sym_sizes[sym]
+            self.save()
+            return True
+        return False
+
     def calculate_risk_position_size(
         self,
         symbol: str,
@@ -315,9 +385,14 @@ class AutoTrader:
         if effective_tp2 is None:
             effective_tp2 = effective_tp1 * 1.01 if order_side == "buy" else effective_tp1 * 0.99
 
-        # Auto-calculate risk-managed order size if not explicitly provided
+        # Determine order size:
+        # If explicitly passed > 0, use provided size.
+        # Otherwise, if lot_size_mode is "custom" (default), use user's configured lot size.
+        # If lot_size_mode is "risk_pct", calculate dynamic risk-based size.
         if size is not None and float(size) > 0:
             order_size = float(size)
+        elif self.data.get("lot_size_mode", "custom") == "custom":
+            order_size = self.get_effective_lot_size(sym)
         else:
             order_size = self.calculate_risk_position_size(sym, mark_price, effective_sl)
 
@@ -527,10 +602,11 @@ class AutoTrader:
                 strat_desc = f"AMD Scalp ({amd_res.get('phase', 'DISTRIBUTION')} {plan['side'].upper()})"
                 can_run, lr_reason = self.learning_engine.can_execute(strat_desc, sym)
                 if can_run:
+                    base_sz = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else plan["suggested_size"]
                     adapted_params = self.learning_engine.get_adapted_parameters(
-                        strat_desc, sym, default_size=plan["suggested_size"]
+                        strat_desc, sym, default_size=base_sz
                     )
-                    final_size = adapted_params.get("recommended_size", plan["suggested_size"])
+                    final_size = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else adapted_params.get("recommended_size", plan["suggested_size"])
                     sl_mult = adapted_params.get("sl_buffer_multiplier", 1.0)
                     final_sl = plan["sl"]
                     if sl_mult > 1.0:
@@ -563,10 +639,11 @@ class AutoTrader:
                 plan = conf.get("trade_plan", {})
                 if plan:
                     desc = f"Master Confluence ({conf['confluence_score']}% {conf['bias_signal']})"
+                    c_size = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else plan["size"]
                     return self.execute_trade(
                         symbol=sym,
                         side=plan["side"],
-                        size=plan["size"],
+                        size=c_size,
                         sl_price=plan["sl"],
                         tp1_price=plan["tp1"],
                         tp2_price=plan["tp2"],
@@ -593,10 +670,11 @@ class AutoTrader:
                 if not can_run:
                     logger.info(f"Self-Learning Filter skipped {sym} ({desc}): {reason}")
                 else:
+                    base_sz = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else float(self.data.get("default_size", 1.0))
                     adapted_params = self.learning_engine.get_adapted_parameters(
-                        desc, sym, default_size=float(self.data.get("default_size", 1.0))
+                        desc, sym, default_size=base_sz
                     )
-                    adapted_size = adapted_params.get("recommended_size", self.data.get("default_size", 1.0))
+                    adapted_size = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else adapted_params.get("recommended_size", self.data.get("default_size", 1.0))
                     sl_mult = adapted_params.get("sl_buffer_multiplier", 1.0)
                     if sl is not None and sl_mult > 1.0:
                         try:
@@ -645,10 +723,11 @@ class AutoTrader:
                         logger.info(f"Self-Learning Filter skipped {sym} ({desc}): {reason}")
                         continue
 
+                    base_sz = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else float(self.data.get("default_size", 1.0))
                     adapted_params = self.learning_engine.get_adapted_parameters(
-                        desc, sym, default_size=float(self.data.get("default_size", 1.0))
+                        desc, sym, default_size=base_sz
                     )
-                    adapted_size = adapted_params.get("recommended_size", self.data.get("default_size", 1.0))
+                    adapted_size = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else adapted_params.get("recommended_size", self.data.get("default_size", 1.0))
                     sl_mult = adapted_params.get("sl_buffer_multiplier", 1.0)
                     sl = tp_plan.get("sl")
                     if sl is not None and sl_mult > 1.0:
@@ -809,6 +888,10 @@ class AutoTrader:
             "open_positions_count": len(self.data.get("positions", {})),
             "max_open_positions": int(self.data.get("max_open_positions", 5)),
             "risk_per_trade_pct": float(self.data.get("risk_per_trade_pct", 0.015)),
+            "lot_size": float(self.data.get("lot_size", self.data.get("default_size", 1.0))),
+            "default_size": float(self.data.get("default_size", 1.0)),
+            "lot_size_mode": self.data.get("lot_size_mode", "custom"),
+            "symbol_lot_sizes": dict(self.data.get("symbol_lot_sizes", {})),
             "allow_multiple_per_symbol": bool(self.data.get("allow_multiple_per_symbol", False)),
             "auto_breakeven": bool(self.data.get("auto_breakeven", False)),
             "trailing_sl": bool(self.data.get("trailing_sl", False)),
@@ -921,8 +1004,18 @@ class AutoTrader:
         trail_status = f"🟢 ACTIVE ({data.get('trailing_pct', 0.01)*100:.1f}%)" if data.get("trailing_sl") else "⚪ OFF"
         multi_status = "🟢 ALLOWED" if data["allow_multiple_per_symbol"] else "⚪ 1 PER PAIR"
 
+        lot_size = data.get("lot_size", 1.0)
+        lot_mode = data.get("lot_size_mode", "custom").upper()
+        sym_sizes = data.get("symbol_lot_sizes", {})
+        if sym_sizes:
+            overrides = ", ".join([f"{k}:{v}" for k, v in sym_sizes.items()])
+            lot_display = f"<code>{lot_size}</code> (Overrides: {overrides})"
+        else:
+            lot_display = f"<code>{lot_size}</code> (Global)"
+
         lines.extend([
             "🛡️ <b>RISK MANAGEMENT RULES:</b>",
+            f"• <b>Auto-Trade Lot Size:</b> {lot_display} [Mode: <code>{lot_mode}</code>]",
             f"• <b>Capital Risk / Trade:</b> <code>{risk_pct:.1f}%</code>",
             f"• <b>Breakeven SL on TP1:</b> {be_status} (Protects wins into risk-free trades)",
             f"• <b>Trailing Stop-Loss:</b> {trail_status}",
@@ -948,6 +1041,7 @@ class AutoTrader:
             "",
             "⚡ <b>QUICK ACTIONS:</b>",
             "• <code>/trade on</code> | <code>/trade off</code> — Toggle Bot",
+            "• <code>/trade size 0.05</code> | <code>/size btc 0.01</code> — Change Lot Size",
             "• <code>/trade be on</code> — Toggle Breakeven Protection",
             "• <code>/trade trail on</code> — Toggle Trailing Stop",
             "• <code>/btc</code> | <code>/gold</code> | <code>/amd</code> — Deep Hubs",
@@ -1031,10 +1125,11 @@ class AutoTrader:
             )
 
         strat_desc = f"AMD Scalp ({analysis.get('phase', 'DISTRIBUTION')} {plan['side'].upper()})"
+        amd_size = self.get_effective_lot_size(symbol) if self.data.get("lot_size_mode", "custom") == "custom" else plan["suggested_size"]
         trade = self.execute_trade(
             symbol=symbol,
             side=plan["side"],
-            size=plan["suggested_size"],
+            size=amd_size,
             sl_price=plan["sl"],
             tp1_price=plan["tp1"],
             tp2_price=plan["tp2"],

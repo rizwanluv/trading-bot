@@ -874,6 +874,8 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <code>/trade off</code> (or <code>stop</code>) — STOP / pause automated trading 🔴\n"
         "• <code>/trade be [on|off]</code> — Toggle Breakeven Stop-Loss on TP1 (Risk-Free Trades) 🛡️\n"
         "• <code>/trade trail [on|off|pct]</code> — Toggle Dynamic Trailing Stop-Loss ⚡\n"
+        "• <code>/trade size &lt;VAL&gt;</code> (or <code>/size &lt;VAL&gt;</code>) — Set Auto-Trade Lot Size (e.g. <code>/trade size 0.05</code>) 🎯\n"
+        "• <code>/trade size &lt;SYM&gt; &lt;VAL&gt;</code> — Set Pair Override (e.g. <code>/trade size BTC 0.01</code>)\n"
         "• <code>/trade live</code> | <code>/trade paper</code> — Switch execution mode\n"
         "• <code>/trade pos</code> — View active open positions & live PnL\n"
         "• <code>/trade close [id|all]</code> — Close position(s) at market\n"
@@ -1769,6 +1771,42 @@ async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if lower_text in ("trail off", "trailing off", "trailing stop off", "disable trailing", "disable trail"):
         ctx.args = ["trail", "off"]
+        await trade_cmd(update, ctx)
+        return
+
+    # Auto-Trade Lot Size queries and changes
+    if lower_text in ("lot size", "lotsize", "size", "check size", "check lot size", "trade size", "what size", "auto trade size", "auto trade lot size"):
+        ctx.args = ["size"]
+        await trade_cmd(update, ctx)
+        return
+
+    # Per-symbol lot size: "btc size 0.01", "gold lot size 0.5", "size btc 0.01", "lot size btc 0.01"
+    m_sym_size = re.match(r'^(?:set\s+)?(btc|bitcoin|gold|xau|eth|sol)\s+(?:lot\s*size|size|lot)\s*(?:to\s*|=)?\s*([0-9.]+)$', lower_text)
+    if m_sym_size:
+        ctx.args = ["size", m_sym_size.group(1), m_sym_size.group(2)]
+        await trade_cmd(update, ctx)
+        return
+
+    m_sym_size2 = re.match(r'^(?:set\s+)?(?:lot\s*size|size|lot)\s+(btc|bitcoin|gold|xau|eth|sol)\s*(?:to\s*|=)?\s*([0-9.]+)$', lower_text)
+    if m_sym_size2:
+        ctx.args = ["size", m_sym_size2.group(1), m_sym_size2.group(2)]
+        await trade_cmd(update, ctx)
+        return
+
+    # Global lot size: "set auto trade lot size 0.05", "set lot size 0.05", "lot size 0.05", "size 0.05", "lot 0.05"
+    m_global_size = re.match(r'^(?:set\s+)?(?:auto\s+trade\s+)?(?:lot\s*size|size|lot)\s*(?:to\s*|=)?\s*([0-9.]+)(?:\s*(?:lot|lots|units?))?$', lower_text)
+    if m_global_size:
+        ctx.args = ["size", m_global_size.group(1)]
+        await trade_cmd(update, ctx)
+        return
+
+    # Natural language with "lot size" (e.g. "set auto trade lot size and its manual change...", "auto trade lot size 0.02")
+    if "lot size" in lower_text or "auto trade lot" in lower_text:
+        num_match = re.search(r'\b([0-9]+(?:\.[0-9]+)?)\b', lower_text)
+        if num_match:
+            ctx.args = ["size", num_match.group(1)]
+        else:
+            ctx.args = ["size"]
         await trade_cmd(update, ctx)
         return
 
@@ -2873,6 +2911,12 @@ async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
+async def size_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Directly configure or check auto-trading lot size (/size, /lotsize [VAL] [SYMBOL])."""
+    ctx.args = ["size"] + (ctx.args or [])
+    await trade_cmd(update, ctx)
+
+
 async def trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
     Master Trading & Portfolio Multi-Working Hub.
@@ -2914,6 +2958,7 @@ async def trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "• <code>/trade off</code> (or <code>/trade stop</code>) — Stop / pause auto trading 🔴\n"
             "• <code>/trade be [on|off]</code> — Toggle Breakeven SL on TP1 🛡️\n"
             "• <code>/trade trail [on|off]</code> — Toggle Dynamic Trailing SL ⚡\n"
+            "• <code>/trade size &lt;VAL&gt;</code> — Set Auto-Trade Lot Size (e.g. <code>/trade size 0.05</code>) 🎯\n"
             "• <code>/trade amd [btc|gold]</code> — 1m/5m/15m AMD Scalp execution\n"
             "• <code>/trade maxpos &lt;N&gt;</code> — Set max concurrent positions (e.g. 5)\n"
             "• <code>/trade risk &lt;PCT&gt;</code> — Set capital risk per trade (e.g. 1.5%)\n"
@@ -3022,6 +3067,89 @@ async def trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             val = auto_trader.set_allow_multiple_per_symbol(True)
         status_text = "🟢 ENABLED (Multiple trades per symbol allowed)" if val else "🔴 DISABLED (1 trade per symbol limit)"
         await update.message.reply_text(f"🔄 Multi-Trade Per Symbol: <b>{status_text}</b>", parse_mode=ParseMode.HTML)
+    elif sub in ("size", "lotsize", "lot", "qty"):
+        # Auto-trade lot size configuration & overrides
+        if not rest:
+            cur_size = auto_trader.get_lot_size()
+            cur_mode = auto_trader.data.get("lot_size_mode", "custom").upper()
+            sym_overrides = auto_trader.data.get("symbol_lot_sizes", {})
+            sym_text = "\n".join([f"  • <b>{k}:</b> <code>{v}</code>" for k, v in sym_overrides.items()]) if sym_overrides else "  • <i>None (all symbols follow global size)</i>"
+
+            msg = (
+                "🎯 <b>AUTO-TRADE LOT SIZE CONFIGURATION</b>\n\n"
+                f"• <b>Global Lot Size:</b> <code>{cur_size}</code>\n"
+                f"• <b>Sizing Mode:</b> <code>{cur_mode}</code> (Bot strictly follows this lot size)\n"
+                f"• <b>Per-Symbol Overrides:</b>\n{sym_text}\n\n"
+                "⚡ <b>Commands to Change Lot Size:</b>\n"
+                "• <code>/trade size &lt;VAL&gt;</code> — Set global lot size (e.g. <code>/trade size 0.05</code>)\n"
+                "• <code>/trade size &lt;SYM&gt; &lt;VAL&gt;</code> — Set per-pair lot size (e.g. <code>/trade size BTC 0.01</code>)\n"
+                "• <code>/trade size &lt;SYM&gt; reset</code> — Clear override for pair\n"
+                "• <code>/size &lt;VAL&gt;</code> — Fast alias"
+            )
+            await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+            return
+
+        def _try_float(val_str):
+            try:
+                return float(str(val_str).replace("x", "").replace("lots", "").replace("lot", "").strip())
+            except (ValueError, AttributeError):
+                return None
+
+        # Mode configuration (/trade size mode custom / risk_pct)
+        if rest[0].lower() in ("mode", "type") and len(rest) > 1:
+            try:
+                new_m = auto_trader.set_lot_size_mode(rest[1])
+                await update.message.reply_text(f"✅ Lot size mode updated to <b>{new_m.upper()}</b>.", parse_mode=ParseMode.HTML)
+            except Exception as e:
+                await update.message.reply_text(f"⚠️ Invalid mode: {e}")
+            return
+
+        # Case 1: Single numeric argument -> /trade size 0.05
+        val_first = _try_float(rest[0])
+        if val_first is not None and len(rest) == 1:
+            new_sz = auto_trader.set_lot_size(val_first)
+            await update.message.reply_text(
+                f"✅ <b>Global Auto-Trade Lot Size set to {new_sz}!</b> 🎯\n"
+                f"All auto-trading scanners (AMD Scalp, Master Confluence, Gautam Jha, Candle Entry) and manual trades will strictly follow this lot size.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # Case 2: Size first, symbol second -> /trade size 0.01 btc
+        if val_first is not None and len(rest) > 1:
+            sym = resolve_symbol(rest[1])
+            new_sz = auto_trader.set_lot_size(val_first, symbol=sym)
+            await update.message.reply_text(
+                f"✅ <b>Lot Size for {sym} set to {new_sz}!</b> 🎯\n"
+                f"Auto-trader will strictly use <code>{new_sz}</code> for all trades on {sym}.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # Case 3: Symbol first -> /trade size btc 0.01 OR /trade size btc reset
+        sym_candidate = resolve_symbol(rest[0])
+        if len(rest) > 1:
+            if rest[1].lower() in ("reset", "clear", "remove", "default"):
+                removed = auto_trader.remove_symbol_lot_size(sym_candidate)
+                if removed:
+                    await update.message.reply_text(f"✅ Lot size override for <b>{sym_candidate}</b> cleared. Reverted to global: <code>{auto_trader.get_lot_size()}</code>.", parse_mode=ParseMode.HTML)
+                else:
+                    await update.message.reply_text(f"ℹ️ No override was active for <b>{sym_candidate}</b>.", parse_mode=ParseMode.HTML)
+                return
+
+            val_sec = _try_float(rest[1])
+            if val_sec is not None:
+                new_sz = auto_trader.set_lot_size(val_sec, symbol=sym_candidate)
+                await update.message.reply_text(
+                    f"✅ <b>Lot Size for {sym_candidate} set to {new_sz}!</b> 🎯\n"
+                    f"Auto-trader will strictly use <code>{new_sz}</code> for all trades on {sym_candidate}.",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+
+        # Query single symbol: e.g. /trade size btc
+        sym_sz = auto_trader.get_lot_size(sym_candidate)
+        await update.message.reply_text(f"📊 Active lot size for <b>{sym_candidate}</b>: <code>{sym_sz}</code>\nTo change: <code>/trade size {sym_candidate} &lt;VAL&gt;</code>", parse_mode=ParseMode.HTML)
     else:
         # Manual Trade execution:
         # Format 1: /trade <symbol> <side> [size]
@@ -3545,6 +3673,9 @@ def main():
     app.add_handler(CommandHandler("trading", autotrade_cmd))
     app.add_handler(CommandHandler("mode", mode_cmd))
     app.add_handler(CommandHandler("trade", trade_cmd))
+    app.add_handler(CommandHandler("size", size_cmd))
+    app.add_handler(CommandHandler("lotsize", size_cmd))
+    app.add_handler(CommandHandler("lot", size_cmd))
     app.add_handler(CommandHandler("positions", positions_cmd))
     app.add_handler(CommandHandler("closeposition", close_position_cmd))
     app.add_handler(CommandHandler("closeall", close_all_cmd))

@@ -365,10 +365,11 @@ class ConfluenceEngine:
         strategy_desc = f"Master Confluence ({analysis['confluence_score']}% {analysis['bias_signal']})"
 
         # Execute via AutoTrader
+        order_size = auto_trader.get_effective_lot_size(symbol) if auto_trader.data.get("lot_size_mode", "custom") == "custom" else plan["size"]
         trade_record = auto_trader.execute_trade(
             symbol=symbol,
             side=plan["side"],
-            size=plan["size"],
+            size=order_size,
             sl_price=plan["sl"],
             tp1_price=plan["tp1"],
             tp2_price=plan["tp2"],

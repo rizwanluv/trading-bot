@@ -2,8 +2,11 @@
 Automated test suite verifying price alerts, level analysis, and multi-timeframe candle entry analysis.
 """
 import os
+import tempfile
+import asyncio
 import unittest
 from unittest.mock import MagicMock, AsyncMock
+from auto_trader import AutoTrader
 from indicators import TechnicalAnalysis
 from market_data import (
     get_ticker,
@@ -1486,6 +1489,125 @@ class TestInstitutionalDeskAndAdvancedRisk(unittest.TestCase):
         asyncio.run(chat(self.mock_update, self.mock_ctx))
         text = self.mock_update.message.reply_text.call_args[0][0]
         self.assertIn("TRADE EXECUTED", text)
+
+
+class TestAutoTradeLotSizeManagement(unittest.TestCase):
+    """Test suite for Auto-Trade Lot Size configuration and strict bot execution."""
+
+    def setUp(self):
+        self.temp_file = tempfile.NamedTemporaryFile(delete=False)
+        self.temp_file.close()
+        self.trader = AutoTrader(store_file=self.temp_file.name, default_size=1.0)
+        self.mock_update = MagicMock()
+        self.mock_update.effective_chat.id = 888
+        self.mock_update.message.reply_text = AsyncMock()
+        self.mock_ctx = MagicMock()
+
+    def tearDown(self):
+        if os.path.exists(self.temp_file.name):
+            os.remove(self.temp_file.name)
+
+    def test_lot_size_get_set_global(self):
+        """Verify global lot size setter, getter, and persistence."""
+        self.assertEqual(self.trader.get_lot_size(), 1.0)
+        self.assertEqual(self.trader.data["lot_size_mode"], "custom")
+
+        new_sz = self.trader.set_lot_size(0.05)
+        self.assertEqual(new_sz, 0.05)
+        self.assertEqual(self.trader.get_lot_size(), 0.05)
+        self.assertEqual(self.trader.data["default_size"], 0.05)
+        self.assertEqual(self.trader.data["lot_size"], 0.05)
+
+        # Verify disk persistence
+        reloaded = AutoTrader(store_file=self.temp_file.name)
+        self.assertEqual(reloaded.get_lot_size(), 0.05)
+        self.assertEqual(reloaded.data["lot_size_mode"], "custom")
+
+    def test_lot_size_per_symbol_overrides(self):
+        """Verify per-symbol lot size overrides and fallbacks."""
+        self.trader.set_lot_size(0.05)  # Global size
+        self.trader.set_lot_size(0.01, symbol="BTCUSD")  # BTC override
+        self.trader.set_lot_size(0.5, symbol="XAUTUSD")  # Gold override
+
+        self.assertEqual(self.trader.get_effective_lot_size("BTCUSD"), 0.01)
+        self.assertEqual(self.trader.get_effective_lot_size("XAUTUSD"), 0.5)
+        self.assertEqual(self.trader.get_effective_lot_size("ETHUSD"), 0.05)  # Fallback to global
+
+        # Clear override
+        cleared = self.trader.remove_symbol_lot_size("BTCUSD")
+        self.assertTrue(cleared)
+        self.assertEqual(self.trader.get_effective_lot_size("BTCUSD"), 0.05)
+
+    def test_lot_size_mode_toggle(self):
+        """Verify switching between custom lot size mode and dynamic risk_pct mode."""
+        self.trader.set_lot_size_mode("risk_pct")
+        self.assertEqual(self.trader.data["lot_size_mode"], "risk_pct")
+
+        self.trader.set_lot_size_mode("custom")
+        self.assertEqual(self.trader.data["lot_size_mode"], "custom")
+
+        with self.assertRaises(ValueError):
+            self.trader.set_lot_size_mode("invalid_mode")
+
+    def test_trade_execution_strictly_follows_custom_lot_size(self):
+        """Verify that execute_trade and execute_amd_trade strictly follow user's lot size."""
+        self.trader.set_lot_size(0.02, symbol="BTCUSD")
+        self.trader.close_all_positions()
+
+        # 1. execute_trade without explicit size
+        pos = self.trader.execute_trade("BTCUSD", "BUY")
+        self.assertEqual(pos["size"], 0.02)
+        self.trader.close_all_positions()
+
+        # 2. execute_trade with explicit override should still work
+        pos_custom = self.trader.execute_trade("BTCUSD", "BUY", size=0.1)
+        self.assertEqual(pos_custom["size"], 0.1)
+        self.trader.close_all_positions()
+
+        # 3. execute_amd_trade follows user's configured lot size
+        amd_res = self.trader.execute_amd_trade("BTCUSD", force=True)
+        self.assertEqual(amd_res["status"], "executed")
+        self.assertEqual(amd_res["trade"]["size"], 0.02)
+        self.trader.close_all_positions()
+
+    def test_telegram_trade_size_commands(self):
+        """Verify /trade size, /size, and /lotsize commands."""
+        from main import trade_cmd, size_cmd, chat
+
+        # 1. /trade size without args (dashboard view)
+        self.mock_update.message.reply_text.reset_mock()
+        self.mock_ctx.args = ["size"]
+        asyncio.run(trade_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("AUTO-TRADE LOT SIZE CONFIGURATION", text)
+
+        # 2. /trade size 0.05 (set global size)
+        self.mock_update.message.reply_text.reset_mock()
+        self.mock_ctx.args = ["size", "0.05"]
+        asyncio.run(trade_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Global Auto-Trade Lot Size set to 0.05", text)
+
+        # 3. /size btc 0.01 (shortcut command with pair override)
+        self.mock_update.message.reply_text.reset_mock()
+        self.mock_ctx.args = ["btc", "0.01"]
+        asyncio.run(size_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Lot Size for BTCUSD set to 0.01", text)
+
+        # 4. Plain text in chat "set lot size 0.03"
+        self.mock_update.message.reply_text.reset_mock()
+        self.mock_update.message.text = "set lot size 0.03"
+        asyncio.run(chat(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Global Auto-Trade Lot Size set to 0.03", text)
+
+        # 5. Plain text in chat "btc size 0.015"
+        self.mock_update.message.reply_text.reset_mock()
+        self.mock_update.message.text = "btc size 0.015"
+        asyncio.run(chat(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Lot Size for BTCUSD set to 0.015", text)
 
 
 if __name__ == "__main__":
