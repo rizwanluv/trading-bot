@@ -916,6 +916,212 @@ class TestNewsAndOrderbookAndConfluence(unittest.TestCase):
         self.assertIn("MULTI-STRATEGY MASTER CONFLUENCE", call_text)
 
 
+class Test18AgentsAndUnifiedHubs(unittest.TestCase):
+    def setUp(self):
+        from unittest.mock import AsyncMock, MagicMock
+        self.mock_update = MagicMock()
+        self.mock_update.effective_chat.id = 888
+        self.mock_update.message.reply_text = AsyncMock()
+        self.mock_ctx = MagicMock()
+
+    def test_18_agents_system_prompt_structure(self):
+        from main import SYSTEM_PROMPT_18_AGENTS
+        self.assertIn("1. Price Action Core", SYSTEM_PROMPT_18_AGENTS)
+        self.assertIn("2. Liquidity & Sessions", SYSTEM_PROMPT_18_AGENTS)
+        self.assertIn("3. Market Context", SYSTEM_PROMPT_18_AGENTS)
+        self.assertIn("4. News & Sentiment", SYSTEM_PROMPT_18_AGENTS)
+        self.assertIn("5. Momentum & Strength", SYSTEM_PROMPT_18_AGENTS)
+        self.assertIn("6. Decision Layer", SYSTEM_PROMPT_18_AGENTS)
+        self.assertIn("Confluence Score", SYSTEM_PROMPT_18_AGENTS)
+        self.assertIn("Risk Manager", SYSTEM_PROMPT_18_AGENTS)
+        self.assertIn("Final Decision", SYSTEM_PROMPT_18_AGENTS)
+
+    def test_generate_18_agents_analysis_deterministic(self):
+        from main import generate_18_agents_analysis
+        report = generate_18_agents_analysis("BTCUSD", "15m")
+        self.assertIn("18-Agent Institutional Desk Analysis", report)
+        self.assertIn("1. Price Action Core", report)
+        self.assertIn("2. Liquidity & Sessions", report)
+        self.assertIn("3. Market Context", report)
+        self.assertIn("4. News & Sentiment", report)
+        self.assertIn("5. Momentum & Strength", report)
+        self.assertIn("6. Decision Layer", report)
+        self.assertIn("Confluence Agent:", report)
+        self.assertIn("Risk Manager:", report)
+        self.assertIn("Final Decision:", report)
+        self.assertIn("Direction:", report)
+        self.assertIn("Score:", report)
+
+    def test_format_symbol_hub_overview(self):
+        from main import format_symbol_hub_overview
+        btc_card = format_symbol_hub_overview("BTCUSD")
+        self.assertIn("BITCOIN", btc_card)
+        self.assertIn("ALL-IN-ONE HUB", btc_card)
+        self.assertIn("Daily Open:", btc_card)
+        self.assertIn("Order Book:", btc_card)
+        self.assertIn("News Sentiment:", btc_card)
+        self.assertIn("Master Confluence:", btc_card)
+        self.assertIn("/btc price", btc_card)
+        self.assertIn("/btc analyze", btc_card)
+
+        gold_card = format_symbol_hub_overview("XAUTUSD")
+        self.assertIn("GOLD", gold_card)
+        self.assertIn("ALL-IN-ONE HUB", gold_card)
+        self.assertIn("/gold price", gold_card)
+        self.assertIn("/gold analyze", gold_card)
+
+    def test_unified_btc_cmd_dispatch(self):
+        import asyncio
+        from main import btc_cmd
+
+        # 1. /btc with no args -> All-in-one card
+        self.mock_ctx.args = []
+        asyncio.run(btc_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("BITCOIN", text)
+        self.assertIn("ALL-IN-ONE HUB", text)
+
+        # 2. /btc price -> Live ticker
+        self.mock_ctx.args = ["price"]
+        asyncio.run(btc_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Live Ticker", text)
+
+        # 3. /btc levels -> Levels analysis
+        self.mock_ctx.args = ["levels"]
+        asyncio.run(btc_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("AUTOMATIC LEVEL ANALYSIS", text)
+
+        # 4. /btc gj -> Gautam Jha liquidity
+        self.mock_ctx.args = ["gj"]
+        asyncio.run(btc_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("GAUTAM JHA PRICE-ACTION ANALYSIS", text)
+
+    def test_unified_gold_cmd_dispatch(self):
+        import asyncio
+        from main import gold_cmd
+
+        # 1. /gold no args -> Gold all-in-one card
+        self.mock_ctx.args = []
+        asyncio.run(gold_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("GOLD", text)
+        self.assertIn("ALL-IN-ONE HUB", text)
+
+        # 2. /gold news -> Gold news
+        self.mock_ctx.args = ["news"]
+        asyncio.run(gold_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("MARKET NEWS & SENTIMENT ANALYSIS", text)
+
+        # 3. /gold confluence -> Gold confluence
+        self.mock_ctx.args = ["confluence"]
+        asyncio.run(gold_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("MULTI-STRATEGY MASTER CONFLUENCE", text)
+
+    def test_unified_trade_cmd_dispatch(self):
+        import asyncio
+        from main import trade_cmd, auto_trader
+
+        # 1. /trade no args -> Master dashboard
+        self.mock_ctx.args = []
+        asyncio.run(trade_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("MASTER TRADING & PORTFOLIO HUB", text)
+        self.assertIn("Bot Status:", text)
+        self.assertIn("Account Balance:", text)
+
+        # 2. /trade on -> Start auto trading
+        self.mock_ctx.args = ["on"]
+        asyncio.run(trade_cmd(self.mock_update, self.mock_ctx))
+        self.assertTrue(auto_trader.enabled)
+
+        # 3. /trade off -> Stop auto trading
+        self.mock_ctx.args = ["off"]
+        asyncio.run(trade_cmd(self.mock_update, self.mock_ctx))
+        self.assertFalse(auto_trader.enabled)
+
+        # 4. /trade pos -> Open positions
+        self.mock_ctx.args = ["pos"]
+        asyncio.run(trade_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertTrue("Open Positions" in text or "No Open Positions" in text)
+
+        # 5. /trade bal -> Balances
+        self.mock_ctx.args = ["bal"]
+        asyncio.run(trade_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertTrue("Balance" in text or "Balances" in text)
+
+    def test_unified_alert_cmd_dispatch(self):
+        import asyncio
+        from main import set_alert_cmd
+
+        # 1. /alert no args -> Master alerts hub
+        self.mock_ctx.args = []
+        asyncio.run(set_alert_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("MASTER ALERTS CONTROL CENTER", text)
+
+        # 2. /alert on -> Auto alerts turned on
+        self.mock_ctx.args = ["on"]
+        asyncio.run(set_alert_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("AUTOMATIC ALERTS: TURNED ON", text)
+
+        # 3. /alert off -> Auto alerts turned off
+        self.mock_ctx.args = ["off"]
+        asyncio.run(set_alert_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("AUTOMATIC ALERTS: TURNED OFF", text)
+
+        # 4. /alert btc 85000 -> Price alert
+        self.mock_ctx.args = ["btc", "85000"]
+        asyncio.run(set_alert_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Price Alert Set", text)
+        self.assertIn("85,000", text)
+
+    def test_unified_keys_cmd_dispatch(self):
+        import asyncio
+        from main import keys_cmd, delta_client
+
+        # 1. /keys no args
+        self.mock_ctx.args = []
+        asyncio.run(keys_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("MASTER KEYS & BOT CONFIGURATION HUB", text)
+
+        # 2. /keys base india
+        self.mock_ctx.args = ["base", "india"]
+        asyncio.run(keys_cmd(self.mock_update, self.mock_ctx))
+        self.assertIn("india.delta.exchange", delta_client.base_url)
+
+    def test_analyze_cmd_and_chat_routing(self):
+        import asyncio
+        from main import analyze_cmd, chat
+
+        # 1. Direct /analyze cmd
+        self.mock_ctx.args = ["BTCUSD", "15m"]
+        asyncio.run(analyze_cmd(self.mock_update, self.mock_ctx))
+        reply_calls = [c[0][0] for c in self.mock_update.message.reply_text.call_args_list]
+        found_header = any("18 Institutional Agents Analyzing" in c for c in reply_calls)
+        found_report = any("18-Agent Institutional Desk Analysis" in c for c in reply_calls)
+        self.assertTrue(found_header)
+        self.assertTrue(found_report)
+
+        # 2. Plain-text "analysis"
+        self.mock_update.message.reply_text.reset_mock()
+        self.mock_update.message.text = "analysis"
+        asyncio.run(chat(self.mock_update, self.mock_ctx))
+        reply_calls = [c[0][0] for c in self.mock_update.message.reply_text.call_args_list]
+        self.assertTrue(any("18 Institutional Agents Analyzing" in c for c in reply_calls))
+
+
 if __name__ == "__main__":
     unittest.main()
+
 

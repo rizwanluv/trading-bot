@@ -537,6 +537,24 @@ class LearningEngine:
             "tokens_consumed": 0,  # Explicit verification of 0-token efficiency
         }
 
+    def get_top_setup(self) -> Optional[Dict[str, Any]]:
+        """Return the best performing setup by score and win rate."""
+        if not self.setups:
+            return None
+        sorted_setups = sorted(
+            self.setups.values(),
+            key=lambda m: (m.status == "PRIORITIZED", m.score, m.win_rate, m.total_trades),
+            reverse=True
+        )
+        best = sorted_setups[0]
+        return {
+            "name": best.name,
+            "win_rate_pct": best.win_rate,
+            "trades": best.total_trades,
+            "score": best.score,
+            "status": best.status,
+        }
+
     def format_html_report(self) -> str:
         """
         Generate Telegram-ready HTML report with rich emojis and actionable breakdown.

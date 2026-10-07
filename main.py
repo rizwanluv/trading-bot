@@ -188,6 +188,96 @@ Important Rules:
 - Prefer quality over quantity
 - Keep replies concise, structured, and mobile-friendly."""
 
+# ====================== CATEGORIZED 18-AGENT SYSTEM ======================
+SYSTEM_PROMPT_18_AGENTS = """
+You are an elite institutional trading desk with 18 specialized AI agents organized in clear categories.
+Be strict and focus on high accuracy. Prefer "No Trade" when confluence is weak.
+
+### Agent Categories:
+
+**1. Price Action Core**
+- Gautam Jha Analyst: Daily Open (DO), candle behavior, Break-and-Go, Retrace-to-Level, Level Reversal
+- Order Block / Supply-Demand Agent: Fresh Order Blocks and strong Supply/Demand zones
+- Fair Value Gap (FVG) Agent: Imbalances and Fair Value Gaps
+- Breaker / Mitigation Agent: Breaker blocks and mitigation of previous orders
+
+**2. Liquidity & Sessions**
+- Liquidity & Session Specialist: Liquidity grabs, equal highs/lows, PDH/PDL, Asia/London/New York sessions
+- Psychological Levels Agent: Round numbers and major psychological levels (e.g. 00, 50, 000)
+
+**3. Market Context**
+- Higher Timeframe Trend Agent: Daily & Weekly bias and structure
+- Multi-Timeframe Alignment Agent: Checks if lower TF aligns with higher TF
+- Correlated Markets Agent: BTC vs DXY, Nasdaq, Gold etc.
+- Volatility & Range Agent: Current volatility and range condition (expansion vs compression)
+
+**4. News & Sentiment**
+- News & US News Agent: Impact of news, especially US high-impact events (CPI, NFP, FOMC)
+- Market Sentiment Agent: Risk-on/Risk-off, strength of move, FOMO detection
+
+**5. Momentum & Strength**
+- Volume & Momentum Agent: Candle strength, momentum, volume characteristics
+- Institutional Intent Agent: Possible institutional behavior and smart money flow
+
+**6. Decision Layer**
+- Confluence Agent: Gives Confluence Score /10 and lists strong vs weak factors
+- Risk Manager: Stop quality, Risk-Reward (min 1:1.5), overall risk (can reject)
+- Contrarian Agent: Challenges the main bias (Devil’s Advocate)
+- Final Decision Maker: Makes the final call. Very strict.
+
+### Response Format (Follow Exactly):
+
+**1. Price Action Core**
+- Gautam Jha Analyst: 
+- Order Block / Supply-Demand: 
+- Fair Value Gap (FVG): 
+- Breaker / Mitigation: 
+
+**2. Liquidity & Sessions**
+- Liquidity & Session Specialist: 
+- Psychological Levels: 
+
+**3. Market Context**
+- Higher Timeframe Trend: 
+- Multi-Timeframe Alignment: 
+- Correlated Markets: 
+- Volatility & Range: 
+
+**4. News & Sentiment**
+- News & US News: 
+- Market Sentiment: 
+
+**5. Momentum & Strength**
+- Volume & Momentum: 
+- Institutional Intent: 
+
+**6. Decision Layer**
+- Confluence Agent:
+  - Score: X/10
+  - Strong Factors:
+  - Weak/Missing Factors:
+- Risk Manager: Approve / Caution / Reject — Reason:
+- Contrarian Agent: 
+- Final Decision:
+  - Direction: Long / Short / No Trade
+  - Setup Name:
+  - Entry Condition:
+  - Stop Loss:
+  - Target:
+  - Confidence: High / Medium / Low
+  - Confluence Score: X/10
+  - Main Reason:
+
+**Risk Reminder**
+Educational purpose only. Not financial advice. Manage your risk.
+
+Strict Rules:
+- Confluence Score below 7 → Prefer No Trade
+- If Risk Manager rejects → Final Decision = No Trade
+- Only give trade when multiple strong factors clearly align
+- Be honest and professional
+"""
+
 # Try importing google.genai if available
 try:
     from google import genai
@@ -203,10 +293,11 @@ auto_trader = AutoTrader(store_file="autotrade_store.json", delta_client=delta_c
 histories: Dict[int, List[Dict[str, str]]] = {}
 
 
-def generate_ai_reply(messages: List[Dict[str, str]]) -> str:
+def generate_ai_reply(messages: List[Dict[str, str]], system_prompt: Optional[str] = None) -> str:
     """Generate response from Gemini via SDK or direct REST API with auto-fallback."""
     api_key = os.environ.get("GEMINI_API_KEY")
     active_model = get_gemini_model()
+    sys_instruction = system_prompt or SYSTEM
     if not api_key:
         return (
             "⚠️ <b>GEMINI_API_KEY is not set.</b>\n\n"
@@ -234,7 +325,7 @@ def generate_ai_reply(messages: List[Dict[str, str]]) -> str:
                     model=m_name,
                     contents=formatted_contents,
                     config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM, max_output_tokens=800
+                        system_instruction=sys_instruction, max_output_tokens=800
                     ),
                 )
                 if reply.text:
@@ -254,7 +345,7 @@ def generate_ai_reply(messages: List[Dict[str, str]]) -> str:
                     {"role": m["role"], "parts": [{"text": m["text"]}]}
                     for m in messages
                 ],
-                "systemInstruction": {"parts": [{"text": SYSTEM}]},
+                "systemInstruction": {"parts": [{"text": sys_instruction}]},
                 "generationConfig": {"maxOutputTokens": 800},
             }
             r = requests.post(url, json=payload, timeout=20)
@@ -278,15 +369,21 @@ def generate_ai_reply(messages: List[Dict[str, str]]) -> str:
     return f"Error contacting Gemini API ({active_model}): {last_err}"
 
 
-def generate_ai_vision_reply(prompt_text: str, image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
-    """Analyze chart photo using Gemini Multimodal Vision following Gautam Jha strategy with auto-fallback."""
+def generate_ai_vision_reply(
+    prompt_text: str,
+    image_bytes: bytes,
+    mime_type: str = "image/jpeg",
+    system_prompt: Optional[str] = None,
+) -> str:
+    """Analyze chart photo using Gemini Multimodal Vision following 18-Agent Institutional Desk system with auto-fallback."""
     api_key = os.environ.get("GEMINI_API_KEY")
     active_model = get_gemini_model()
+    sys_instruction = system_prompt or SYSTEM_PROMPT_18_AGENTS
     if not api_key:
         return (
             "⚠️ <b>GEMINI_API_KEY is not set.</b>\n\n"
             f"• <b>Active Model:</b> <code>{active_model}</code>\n\n"
-            "To enable chart screenshot analysis with Gautam Jha strategy, "
+            "To enable 18-Agent chart screenshot analysis with Gautam Jha strategy, "
             "set your key via <code>/setgemini &lt;API_KEY&gt;</code>."
         )
 
@@ -302,8 +399,8 @@ def generate_ai_vision_reply(prompt_text: str, image_bytes: bytes, mime_type: st
                     model=m_name,
                     contents=[types.Content(parts=[text_part, img_part])],
                     config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM,
-                        max_output_tokens=1200,
+                        system_instruction=sys_instruction,
+                        max_output_tokens=1500,
                     ),
                 )
                 if reply.text:
@@ -329,8 +426,8 @@ def generate_ai_vision_reply(prompt_text: str, image_bytes: bytes, mime_type: st
                         ]
                     }
                 ],
-                "systemInstruction": {"parts": [{"text": SYSTEM}]},
-                "generationConfig": {"maxOutputTokens": 1200},
+                "systemInstruction": {"parts": [{"text": sys_instruction}]},
+                "generationConfig": {"maxOutputTokens": 1500},
             }
             r = requests.post(url, json=payload, timeout=30)
             if r.status_code == 200:
@@ -413,106 +510,397 @@ def generate_compact_ai_insight(prompt_text: str, max_tokens: int = 250) -> str:
     return "⚠️ Unable to contact Gemini API for AI insight."
 
 
+# ==================== 18-Agent Institutional Desk & Hub Engines ====================
+
+def generate_18_agents_analysis(symbol: str, timeframe: str = "15m") -> str:
+    """
+    Generate complete 18-Agent Categorized Institutional Desk Analysis.
+    Combines Price Action Core, Liquidity & Sessions, Market Context, News & Sentiment,
+    Momentum & Strength, and Decision Layer.
+    Uses Google Gemini multimodal/reasoning model when API key is set,
+    with an instantaneous deterministic institutional synthesis fallback (0 tokens).
+    """
+    sym = resolve_symbol(symbol)
+    tf = timeframe.lower() if timeframe.lower() in ("1m", "5m", "15m", "30m", "1h") else "15m"
+
+    try:
+        ticker = get_ticker(sym)
+        mark = ticker["mark_price"] or ticker["close"]
+        chg = mark - ticker["open"] if ticker["open"] > 0 else 0.0
+        chg_pct = (chg / ticker["open"] * 100.0) if ticker["open"] > 0 else 0.0
+    except Exception:
+        ticker = {"mark_price": 0.0, "close": 0.0, "high": 0.0, "low": 0.0, "volume": 0.0, "open": 0.0}
+        mark, chg, chg_pct = 0.0, 0.0, 0.0
+
+    try:
+        levels = get_level_analysis(sym)
+        pivots = levels.get("pivots", {})
+        pivot = pivots.get("pivot", mark)
+        r1 = pivots.get("r1", mark * 1.01)
+        s1 = pivots.get("s1", mark * 0.99)
+        trend_bias = levels.get("trend_bias", "NEUTRAL")
+    except Exception:
+        pivot, r1, s1, trend_bias = mark, mark * 1.01, mark * 0.99, "NEUTRAL"
+
+    try:
+        gj_analysis = get_gautam_jha_analysis(sym)
+        gj = gj_analysis.get("gautam_jha", {})
+        do_val = gj.get("daily_open", mark)
+        color = gj.get("daily_candle_color", "Neutral")
+        pdh_val = gj.get("pdh", mark * 1.02)
+        pdl_val = gj.get("pdl", mark * 0.98)
+        pdh_swept = gj.get("pdh_swept", False)
+        pdl_swept = gj.get("pdl_swept", False)
+        struct = gj_analysis.get("market_structure", "Normal Range")
+    except Exception:
+        do_val, color, pdh_val, pdl_val, pdh_swept, pdl_swept, struct = mark, "Neutral", mark * 1.02, mark * 0.98, False, False, "Normal Range"
+
+    try:
+        multi = get_multi_timeframe_entry(sym, ["1m", "5m", "15m"])
+        tfs_data = multi.get("timeframes", {})
+        c1m = tfs_data.get("1m", {})
+        c5m = tfs_data.get("5m", {})
+        c15m = tfs_data.get("15m", {})
+    except Exception:
+        c1m, c5m, c15m = {}, {}, {}
+
+    try:
+        ob = analyze_orderbook(sym)
+        imb_ratio = ob.get("imbalance_ratio", 1.0)
+        imb_bias = ob.get("imbalance_bias", "NEUTRAL")
+        micro_price = ob.get("micro_price", mark)
+        buy_wall = ob.get("top_bid_wall", {}).get("price", mark * 0.99)
+        sell_wall = ob.get("top_ask_wall", {}).get("price", mark * 1.01)
+    except Exception:
+        imb_ratio, imb_bias, micro_price, buy_wall, sell_wall = 1.0, "NEUTRAL", mark, mark * 0.99, mark * 1.01
+
+    try:
+        news = get_news_sentiment(sym)
+        news_score = news.get("sentiment_score", 0.0)
+        news_label = news.get("sentiment_label", "NEUTRAL")
+        headlines = [h.get("title", "") for h in news.get("headlines", [])[:3]]
+    except Exception:
+        news_score, news_label, headlines = 0.0, "NEUTRAL", []
+
+    try:
+        conf = auto_trader.confluence_engine.calculate_confluence(sym)
+        conf_score = conf.get("confluence_score", 50)
+        conf_sig = conf.get("bias_signal", "NEUTRAL")
+    except Exception:
+        conf_score, conf_sig = 50, "NEUTRAL"
+
+    # AI query if Gemini key is available
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if api_key:
+        prompt_lines = [
+            f"Live Institutional Market Data for contract #{sym} ({tf}):",
+            f"- Price: ${mark:,.2f} (24h: {chg_pct:+.2f}%) | High: ${ticker.get('high', 0):,.2f} | Low: ${ticker.get('low', 0):,.2f}",
+            f"- Gautam Jha Daily Open: ${do_val:,.2f} (Daily Candle: {color})",
+            f"- PDH: ${pdh_val:,.2f} (Swept: {pdh_swept}) | PDL: ${pdl_val:,.2f} (Swept: {pdl_swept})",
+            f"- Market Structure: {struct} | Higher TF Bias: {trend_bias}",
+            f"- Key Levels: Pivot ${pivot:,.2f}, Resistance ${r1:,.2f}, Support ${s1:,.2f}",
+            f"- 1m Candle: {c1m.get('signal', 'NEUTRAL')} ({c1m.get('pattern', 'None')}, RSI {c1m.get('rsi')})",
+            f"- 5m Candle: {c5m.get('signal', 'NEUTRAL')} ({c5m.get('pattern', 'None')}, RSI {c5m.get('rsi')})",
+            f"- 15m Candle: {c15m.get('signal', 'NEUTRAL')} ({c15m.get('pattern', 'None')}, RSI {c15m.get('rsi')})",
+            f"- Delta L2 Order Book: Imbalance Ratio {imb_ratio:.2f} ({imb_bias}), Micro-Price ${micro_price:,.2f}, Buy Wall ${buy_wall:,.2f}, Sell Wall ${sell_wall:,.2f}",
+            f"- News Sentiment: {news_score:+.2f} ({news_label}), Recent Headlines: {'; '.join(headlines)}",
+            f"- Confluence Engine Score: {conf_score}% {conf_sig}",
+            "",
+            "Conduct full 18-Agent Institutional Desk Analysis following the exact 6-category response format.",
+            "Strict Rules: Score < 7 means No Trade; If Risk Manager rejects -> No Trade.",
+        ]
+        user_prompt = "\n".join(prompt_lines)
+        ai_resp = generate_ai_reply([{"role": "user", "text": user_prompt}], system_prompt=SYSTEM_PROMPT_18_AGENTS)
+        if ai_resp and not ai_resp.startswith("⚠️ <b>GEMINI_API_KEY is not set") and not ai_resp.startswith("Error contacting"):
+            return ai_resp
+
+    # Deterministic 18-Agent Institutional Report (0 tokens / offline)
+    score_10 = round(conf_score / 10.0)
+    score_10 = max(1, min(10, score_10))
+
+    strong_factors = []
+    weak_factors = []
+
+    if color in ("Green", "Red"):
+        strong_factors.append(f"Gautam Jha Daily Open color alignment ({color})")
+    if pdh_swept or pdl_swept:
+        strong_factors.append("Liquidity sweep confirmed on previous day extremes")
+    if imb_bias != "NEUTRAL":
+        strong_factors.append(f"L2 Order Book volume imbalance ({imb_bias})")
+    else:
+        weak_factors.append("Order book bid/ask volume neutral")
+
+    if abs(news_score) >= 0.15:
+        strong_factors.append(f"Macro news sentiment backing direction ({news_label})")
+    else:
+        weak_factors.append("Lack of strong directional news catalyst")
+
+    if c15m.get("signal") == conf_sig:
+        strong_factors.append("15m candle pattern confirms macro bias")
+    else:
+        weak_factors.append("Multi-timeframe candle divergence")
+
+    if not strong_factors:
+        strong_factors.append("None significant")
+    if not weak_factors:
+        weak_factors.append("None significant")
+
+    # Risk Manager Decision
+    sl_dist = abs(mark - s1) if conf_sig == "BUY" else abs(mark - r1)
+    if sl_dist == 0 or sl_dist > (mark * 0.05):
+        sl_dist = mark * 0.015
+
+    sl_price = (mark - sl_dist) if conf_sig == "BUY" else (mark + sl_dist)
+    tp1_price = (mark + sl_dist * 1.5) if conf_sig == "BUY" else (mark - sl_dist * 1.5)
+    tp2_price = (mark + sl_dist * 2.5) if conf_sig == "BUY" else (mark - sl_dist * 2.5)
+
+    if score_10 >= 7 and conf_sig in ("BUY", "SELL"):
+        rm_status = "Approve"
+        rm_reason = f"Favorable Risk:Reward (1:1.5 to 1:2.5+), clean invalidation at ${sl_price:,.2f}."
+        final_dir = "Long" if conf_sig == "BUY" else "Short"
+        setup_name = f"GJ_{'Break_And_Go' if pdh_swept or pdl_swept else 'DO_Continuation'}"
+        entry_cond = f"Enter on candle confirmation above ${mark:,.2f}" if conf_sig == "BUY" else f"Enter on candle confirmation below ${mark:,.2f}"
+        confidence = "High" if score_10 >= 8 else "Medium"
+        main_reason = f"Confluence score of {score_10}/10 with {len(strong_factors)} institutional factors aligning."
+    elif score_10 >= 6 and conf_sig in ("BUY", "SELL"):
+        rm_status = "Caution"
+        rm_reason = "Marginal confluence score; smaller size recommended."
+        final_dir = "No Trade"
+        setup_name = "Wait for Confirmation"
+        entry_cond = "Wait for clear retest or 15m breakout candle"
+        confidence = "Low"
+        main_reason = f"Confluence score {score_10}/10 is below strict institutional threshold (7/10)."
+    else:
+        rm_status = "Reject"
+        rm_reason = "Weak confluence or choppy structure; risk of whipsaw."
+        final_dir = "No Trade"
+        setup_name = "Chop / Range Wait"
+        entry_cond = "No entry; wait for liquidity sweep or Daily Open flip"
+        confidence = "Low"
+        main_reason = "Confluence below threshold and Risk Manager rejected setup."
+
+    psych_round = round(mark / 100.0) * 100.0 if "BTC" in sym else round(mark / 10.0) * 10.0
+    contrarian_bias = "Bearish rejection risk if price retests higher resistance" if conf_sig == "BUY" else "Bullish short-squeeze risk if sellers fail to break support"
+
+    report = (
+        f"🏛️ **18-Agent Institutional Desk Analysis**\n"
+        f"Instrument: `#{sym}` | Timeframe: `{tf.upper()}` | Mark: `${mark:,.2f}`\n\n"
+        f"**1. Price Action Core**\n"
+        f"- Gautam Jha Analyst: Daily Open at ${do_val:,.2f} ({color} candle). Bias is {conf_sig}.\n"
+        f"- Order Block / Supply-Demand: Nearest Supply at ${r1:,.2f}, Demand at ${s1:,.2f}.\n"
+        f"- Fair Value Gap (FVG): Imbalance zone between ${s1:,.2f} and ${r1:,.2f}.\n"
+        f"- Breaker / Mitigation: Mitigation level anchored near Daily Pivot ${pivot:,.2f}.\n\n"
+        f"**2. Liquidity & Sessions**\n"
+        f"- Liquidity & Session Specialist: PDH ${pdh_val:,.2f} ({'Swept 🎯' if pdh_swept else 'Intact'}), PDL ${pdl_val:,.2f} ({'Swept 🎯' if pdl_swept else 'Intact'}).\n"
+        f"- Psychological Levels: Major psychological round number at `${psych_round:,.0f}`.\n\n"
+        f"**3. Market Context**\n"
+        f"- Higher Timeframe Trend: {trend_bias} trend bias on Daily structure.\n"
+        f"- Multi-Timeframe Alignment: 1m ({c1m.get('signal', 'NEUTRAL')}), 5m ({c5m.get('signal', 'NEUTRAL')}), 15m ({c15m.get('signal', 'NEUTRAL')}).\n"
+        f"- Correlated Markets: Risk sentiment alignment tracking DXY and macro flows.\n"
+        f"- Volatility & Range: 24h High ${ticker.get('high', 0):,.2f} | Low ${ticker.get('low', 0):,.2f}.\n\n"
+        f"**4. News & Sentiment**\n"
+        f"- News & US News: Financial sentiment score {news_score:+.2f} ({news_label}).\n"
+        f"- Market Sentiment: {news_label} sentiment environment; watching macro releases.\n\n"
+        f"**5. Momentum & Strength**\n"
+        f"- Volume & Momentum: 15m RSI={c15m.get('rsi', 50.0)}, candle pattern: {c15m.get('pattern', 'Standard')}.\n"
+        f"- Institutional Intent: L2 Order Book Imbalance ratio {imb_ratio:.2f} ({imb_bias}).\n\n"
+        f"**6. Decision Layer**\n"
+        f"- Confluence Agent:\n"
+        f"  - Score: {score_10}/10\n"
+        f"  - Strong Factors: {'; '.join(strong_factors)}\n"
+        f"  - Weak/Missing Factors: {'; '.join(weak_factors)}\n"
+        f"- Risk Manager: {rm_status} — Reason: {rm_reason}\n"
+        f"- Contrarian Agent: {contrarian_bias}.\n"
+        f"- Final Decision:\n"
+        f"  - Direction: {final_dir}\n"
+        f"  - Setup Name: {setup_name}\n"
+        f"  - Entry Condition: {entry_cond}\n"
+        f"  - Stop Loss: ${sl_price:,.2f}\n"
+        f"  - Target: ${tp1_price:,.2f} (TP1 1:1.5) | ${tp2_price:,.2f} (TP2 1:2.5+)\n"
+        f"  - Confidence: {confidence}\n"
+        f"  - Confluence Score: {score_10}/10\n"
+        f"  - Main Reason: {main_reason}\n\n"
+        f"**Risk Reminder**\n"
+        f"Educational purpose only. Not financial advice. Manage your risk.\n"
+    )
+    return report
+
+
+def format_symbol_hub_overview(symbol: str) -> str:
+    """Format all-in-one comprehensive hub snapshot for BTC or Gold combining all market dimensions."""
+    sym = resolve_symbol(symbol)
+    name = get_symbol_display_name(sym)
+    cmd_prefix = "/gold" if ("XAU" in sym or "GOLD" in sym) else "/btc"
+
+    try:
+        t = get_ticker(sym)
+        mark = t["mark_price"] or t["close"]
+        chg = mark - t["open"] if t["open"] > 0 else 0.0
+        chg_pct = (chg / t["open"] * 100.0) if t["open"] > 0 else 0.0
+        sign = "+" if chg >= 0 else ""
+        color_emoji = "🟢" if chg >= 0 else "🔴"
+    except Exception:
+        mark, chg, chg_pct, sign, color_emoji = 0.0, 0.0, 0.0, "", "⚪"
+        t = {"high": 0.0, "low": 0.0, "volume": 0.0}
+
+    # Liquidity & GJ
+    try:
+        gj_analysis = get_gautam_jha_analysis(sym)
+        gj = gj_analysis.get("gautam_jha", {})
+        do_val = gj.get("daily_open", 0.0)
+        do_col = gj.get("daily_candle_color", "Neutral")
+        pdh_val = gj.get("pdh", 0.0)
+        pdl_val = gj.get("pdl", 0.0)
+        pdh_s = "Swept 🎯" if gj.get("pdh_swept") else "Intact"
+        pdl_s = "Swept 🎯" if gj.get("pdl_swept") else "Intact"
+        struct = gj_analysis.get("market_structure", "Normal")
+    except Exception:
+        do_val, do_col, pdh_val, pdl_val, pdh_s, pdl_s, struct = 0.0, "Neutral", 0.0, 0.0, "N/A", "N/A", "N/A"
+
+    # Order book
+    try:
+        ob = analyze_orderbook(sym)
+        ob_ratio = ob.get("imbalance_ratio", 1.0)
+        ob_bias = ob.get("imbalance_bias", "NEUTRAL")
+        buy_wall = ob.get("top_bid_wall", {}).get("price", 0.0)
+        ob_str = f"Ratio <code>{ob_ratio:.2f} ({ob_bias})</code> | Wall: <code>${buy_wall:,.2f}</code>"
+    except Exception:
+        ob_str = "Available via Delta L2"
+
+    # News
+    try:
+        news = get_news_sentiment(sym)
+        news_score = news.get("sentiment_score", 0.0)
+        news_label = news.get("sentiment_label", "NEUTRAL")
+        news_str = f"<code>{news_score:+.2f} ({news_label})</code>"
+    except Exception:
+        news_str = "Neutral (0.00)"
+
+    # Confluence
+    try:
+        conf = auto_trader.confluence_engine.calculate_confluence(sym)
+        conf_score = conf.get("confluence_score", 50)
+        conf_sig = conf.get("bias_signal", "NEUTRAL")
+        conf_cat = conf.get("bias_category", "NEUTRAL")
+        conf_str = f"<b>{conf_score}% {conf_sig}</b> ({conf_cat})"
+    except Exception:
+        conf_str = "50% NEUTRAL"
+
+    header_icon = "🥇" if ("XAU" in sym or "GOLD" in sym) else "🪙"
+
+    msg = (
+        f"{header_icon} <b>{name.upper()} (<code>#{sym}</code>) ALL-IN-ONE HUB</b>\n\n"
+        f"💵 <b>Price:</b> <code>${mark:,.2f}</code> | 24h: {color_emoji} <code>{sign}{chg_pct:.2f}%</code>\n"
+        f"📊 <b>24h Range:</b> High <code>${t.get('high', 0):,.2f}</code> | Low <code>${t.get('low', 0):,.2f}</code>\n"
+        f"🚪 <b>Daily Open:</b> <code>${do_val:,.2f}</code> ({do_col}) | Structure: <b>{struct}</b>\n"
+        f"🎯 <b>Liquidity:</b> PDH <code>${pdh_val:,.2f}</code> ({pdh_s}) | PDL <code>${pdl_val:,.2f}</code> ({pdl_s})\n"
+        f"📦 <b>Order Book:</b> {ob_str}\n"
+        f"📰 <b>News Sentiment:</b> {news_str}\n"
+        f"🎯 <b>Master Confluence:</b> {conf_str}\n\n"
+        f"⚡ <b>1-Command Working Modes:</b>\n"
+        f"• <code>{cmd_prefix} price</code> — Live ticker & volume\n"
+        f"• <code>{cmd_prefix} levels</code> — Automatic S/R, Pivots & Fibs\n"
+        f"• <code>{cmd_prefix} gj</code> — Gautam Jha liquidity & sweeps\n"
+        f"• <code>{cmd_prefix} entry</code> — 1m, 5m, 15m candle setups\n"
+        f"• <code>{cmd_prefix} watch</code> — Automatic candle entry alerts\n"
+        f"• <code>{cmd_prefix} book</code> — Live L2 depth, imbalance & walls\n"
+        f"• <code>{cmd_prefix} news</code> — Breaking news & sentiment score\n"
+        f"• <code>{cmd_prefix} confluence</code> — Master 5-strategy score & plan\n"
+        f"• <code>{cmd_prefix} analyze</code> — 18-Agent Institutional Desk\n"
+        f"• <code>{cmd_prefix} buy [sz]</code> — Execute Buy order with auto SL/TP\n"
+        f"• <code>{cmd_prefix} sell [sz]</code> — Execute Sell order with auto SL/TP"
+    )
+    return msg
+
+
 # ==================== Command Handlers ====================
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Start command intro."""
     msg = (
         "🤖 <b>Welcome to Gemini Trading Assistant & Auto-Trade Bot!</b>\n\n"
-        "Your intelligent algorithmic assistant powered by Delta Exchange live data, automatic level "
-        "analysis, price alerts, multi-timeframe candle scanner, <b>Gautam Jha Liquidity strategy</b>, "
-        "and <b>Automated Order Execution</b> for <b>🥇 Gold (XAU/USD)</b> and <b>🪙 Bitcoin (BTC/USD)</b>.\n\n"
-        "🔥 <b>Key Capabilities:</b>\n"
-        "• <b>🤖 Automated Trading:</b> <code>/autotrade on [live|paper]</code> (Executes high-probability setups)\n"
-        "• <b>⚡ Manual Trading:</b> <code>/trade btc buy 1</code> | <code>/trade gold sell 1</code> (Auto SL & TP)\n"
-        "• <b>📈 Positions & Balances:</b> <code>/positions</code> | <code>/balance</code> | <code>/closeall</code>\n"
-        "• <b>🔑 Delta API Keys:</b> <code>/setkeys &lt;KEY&gt; &lt;SECRET&gt;</code> | <code>/keys</code>\n"
-        "• <b>🥇 Gold (XAU/USD):</b> <code>/gold</code>, <code>/goldlevels</code>, <code>/goldgj</code>, <code>/goldentry</code>, <code>/goldwatch</code>\n"
-        "• <b>🪙 Bitcoin (BTC):</b> <code>/btc</code>, <code>/btclevels</code>, <code>/btcgj</code>, <code>/btcentry</code>, <code>/btcwatch</code>\n"
-        "• <b>🌐 Live Market Overview:</b> <code>/price</code> (Live Gold & BTC overview)\n"
-        "• <b>🚨 Price Alerts:</b> <code>/alert gold 4180</code> or <code>/alert btc 85000</code>\n"
-        "• <b>📸 Chart Photo Scanner:</b> Send any chart photo for instant Gautam Jha analysis!\n\n"
-        "Type <code>/list</code> to view all commands or <code>/help</code> for detailed instructions."
+        "Your intelligent institutional algorithmic assistant powered by Delta Exchange live data, "
+        "<b>18-Agent Institutional Desk Analysis</b>, automatic level analysis, price alerts, "
+        "multi-timeframe candle scanner, <b>Gautam Jha Liquidity strategy</b>, and "
+        "<b>Automated Order Execution</b> for <b>🥇 Gold (XAU/USD)</b> and <b>🪙 Bitcoin (BTC/USD)</b>.\n\n"
+        "🏛️ <b>6 Master Unified Command Hubs (1 Command, Multiple Working Types):</b>\n"
+        "• <code>/btc [action]</code> — 11-in-1 Bitcoin Hub (price, levels, gj, entry, watch, book, news, confluence, analyze, trade)\n"
+        "• <code>/gold [action]</code> — 11-in-1 Gold Hub (price, levels, gj, entry, watch, book, news, confluence, analyze, trade)\n"
+        "• <code>/trade [action]</code> — Master Trading Hub (dashboard, on, off, live, paper, pos, close, bal, manual trade)\n"
+        "• <code>/alert [action]</code> — Master Alerts Hub (on, off, list, del, clear, price alert, watch)\n"
+        "• <code>/analyze [sym]</code> — 18-Agent Categorized Institutional Desk Analysis\n"
+        "• <code>/keys [action]</code> — API & Bot Config Hub (check, set, base, gemini, model)\n"
+        "• 📸 <b>Send Chart Screenshot:</b> 18-Agent Institutional Multimodal Vision Analysis!\n\n"
+        "Type <code>/list</code> to view all commands or <code>/help</code> for detailed guides."
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
 async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Show all bot commands in a quick, clean reference list."""
+    """Show all bot commands in a quick, clean reference list featuring unified hubs."""
     msg = (
-        "📜 <b>ALL BOT COMMANDS:</b>\n\n"
-        "🤖 <b>Automated & Manual Trading:</b>\n"
-        "• <code>/starttrade</code> (or <code>/tradeon</code>) — <b>START</b> automated trading bot 🟢\n"
-        "• <code>/stoptrade</code> (or <code>/tradeoff</code>) — <b>STOP</b> / pause automated trading 🔴\n"
-        "• <code>/autotrade [on|off]</code> — Automated bot control & performance\n"
-        "• <code>/trade &lt;SYMBOL&gt; &lt;BUY/SELL&gt; [SIZE]</code> — Execute order with auto SL/TP\n"
-        "• <code>/positions</code> — View active open positions & unrealized PnL\n"
-        "• <code>/closeposition &lt;ID&gt;</code> (or <code>/closeall</code>) — Close position at market\n"
-        "• <code>/balance</code> — View Delta Exchange wallet & paper balance\n"
-        "• <code>/mode [live|paper]</code> — Switch between Live & Paper trading\n\n"
-        "🧠 <b>Self-Learning & Optimization:</b>\n"
-        "• <code>/learn</code> — Strategy performance & dynamic weights (0 tokens) 🟢\n"
-        "• <code>/learn ai</code> — Compact quantitative AI review (&lt;250 tokens)\n"
-        "• <code>/insights</code> — View learned strategy insights\n"
-        "• <code>/learn reset</code> — Reset learned weights & history\n\n"
-        "🎯 <b>Multi-Strategy Confluence, News & Order Book:</b>\n"
-        "• <code>/confluence [SYMBOL]</code> — Every strategy combined consensus analysis 🟢\n"
-        "• <code>/confluence trade [SYMBOL]</code> — Execute trade with master confluence plan\n"
-        "• <code>/orderbook [SYMBOL]</code> (or <code>/book</code>) — Live L2 depth, imbalance & walls\n"
-        "• <code>/news [SYMBOL]</code> — Live breaking news & financial sentiment score\n"
-        "• <code>/news ai [SYMBOL]</code> — Token-capped AI macro sentiment synthesis\n\n"
-        "🔑 <b>Delta Exchange API Keys:</b>\n"
-        "• <code>/setkey &lt;KEY&gt;</code> — Set Delta Exchange API Key\n"
-        "• <code>/setsecret &lt;SECRET&gt;</code> — Set Delta Exchange API Secret\n"
-        "• <code>/setkeys &lt;KEY&gt; &lt;SECRET&gt;</code> — Connect Delta credentials\n"
-        "• <code>/keys</code> (or <code>/checkkeys</code>) — Check & verify API connection live\n"
-        "• <code>/setbaseurl [india|global]</code> — Switch Delta India vs Global\n"
-        "• <code>/orders</code> — View active open orders on Delta\n"
-        "• <code>/cancelorders [SYMBOL]</code> — Cancel working orders\n\n"
-        "🔔 <b>Automatic Market Alerts:</b>\n"
-        "• <code>/alertson</code> — <b>TURN ON</b> automatic alerts for BTC & Gold 🟢\n"
-        "• <code>/alertsoff</code> — <b>TURN OFF</b> automatic market alerts 🔴\n"
-        "• <code>/autoalert [on|off]</code> — Automatic alerts toggle\n\n"
-        "🥇 <b>Gold (XAU/USD) Shortcuts:</b>\n"
-        "• <code>/gold</code> (or <code>/xau</code>, <code>/xauusd</code>) — Live Gold ticker & 24h stats\n"
-        "• <code>/goldlevels</code> (or <code>/xaulevels</code>) — Gold Automatic Level Analysis\n"
-        "• <code>/goldgj</code> (or <code>/xaugj</code>) — Gold Gautam Jha Liquidity (DO, PDH, PDL sweeps)\n"
-        "• <code>/goldentry</code> (or <code>/xauentry</code>) — Gold 1m, 5m, 15m candle entry scan\n"
-        "• <code>/goldwatch</code> (or <code>/xauwatch</code>) — Turn ON automated candle alerts for Gold\n\n"
-        "🪙 <b>Bitcoin (BTC) Shortcuts:</b>\n"
-        "• <code>/btc</code> — Live BTC ticker & 24h stats\n"
-        "• <code>/btclevels</code> — BTC Automatic Level Analysis (Pivots, Fibs, S/R)\n"
-        "• <code>/btcgj</code> — BTC Gautam Jha Liquidity (DO, PDH, PDL sweeps)\n"
-        "• <code>/btcentry</code> — BTC 1m, 5m, 15m candle entry scan\n"
-        "• <code>/btcwatch</code> — Turn ON automated candle alerts for BTC\n\n"
-        "💹 <b>Market Data & Any Symbol:</b>\n"
-        "• <code>/price</code> — Live overview of Gold & BTC\n"
-        "• <code>/price [SYMBOL]</code> — Live ticker for any coin (e.g. <code>/price ETH</code>)\n\n"
-        "📊 <b>Level & Liquidity Analysis:</b>\n"
-        "• <code>/levels [SYMBOL]</code> (or <code>/analysis</code>) — S/R, Pivots, Fibs, DO\n"
-        "• <code>/gj [SYMBOL]</code> (or <code>/liquidity</code>) — Gautam Jha Price Action\n\n"
-        "🚨 <b>Custom Price Alerts:</b>\n"
-        "• <code>/alert [SYMBOL] &lt;PRICE&gt;</code> — Set price alert (e.g. <code>/alert gold 4180</code>)\n"
-        "• <code>/alerts</code> — List your active price alerts\n"
-        "• <code>/delalert &lt;ID&gt;</code> — Remove an alert by ID\n"
-        "• <code>/clearalerts</code> — Clear all your active price alerts\n\n"
-        "🎯 <b>Candle Scanner & Watchers:</b>\n"
-        "• <code>/entry [SYMBOL]</code> (or <code>/scan</code>) — Scan 1m, 5m, 15m candles\n"
-        "• <code>/watch [SYMBOL] [tfs]</code> — Turn ON automated candle alerts\n"
-        "• <code>/unwatch [SYMBOL]</code> — Turn OFF automated candle alerts\n"
-        "• <code>/watchers</code> — List active candle scanners\n\n"
+        "📜 <b>UNIFIED MULTI-WORKING COMMAND HUBS:</b>\n"
+        "<i>(Minimum Commands — Maximum Working Types!)</i>\n\n"
+        "🪙 <b>1. Bitcoin All-in-One Hub (/btc):</b>\n"
+        "• <code>/btc</code> — Comprehensive all-in-one Bitcoin card\n"
+        "• <code>/btc price</code> — Live ticker & volume\n"
+        "• <code>/btc levels</code> — Pivots, S/R & Fibs\n"
+        "• <code>/btc gj</code> — Gautam Jha liquidity & sweeps\n"
+        "• <code>/btc entry</code> — 1m, 5m, 15m candle setups\n"
+        "• <code>/btc watch</code> — Auto candle entry alerts\n"
+        "• <code>/btc book</code> — L2 order book depth & walls\n"
+        "• <code>/btc news</code> — Breaking news & sentiment score\n"
+        "• <code>/btc confluence</code> — Master 5-strategy score & plan\n"
+        "• <code>/btc analyze</code> — 18-Agent Institutional Desk\n"
+        "• <code>/btc buy [sz]</code> | <code>/btc sell [sz]</code> — Execute order with auto SL/TP\n\n"
+        "🥇 <b>2. Gold All-in-One Hub (/gold or /xau):</b>\n"
+        "• <code>/gold</code> — Comprehensive all-in-one Gold card\n"
+        "• <code>/gold price</code> | <code>/gold levels</code> | <code>/gold gj</code> | <code>/gold entry</code>\n"
+        "• <code>/gold watch</code> | <code>/gold book</code> | <code>/gold news</code> | <code>/gold confluence</code>\n"
+        "• <code>/gold analyze</code> — 18-Agent Institutional Desk\n"
+        "• <code>/gold buy [sz]</code> | <code>/gold sell [sz]</code> — Execute order with auto SL/TP\n\n"
+        "💼 <b>3. Master Trading & Portfolio Hub (/trade):</b>\n"
+        "• <code>/trade</code> — Portfolio & bot dashboard (balance, mode, win rate)\n"
+        "• <code>/trade on</code> (or <code>start</code>) — START automated trading bot 🟢\n"
+        "• <code>/trade off</code> (or <code>stop</code>) — STOP / pause automated trading 🔴\n"
+        "• <code>/trade live</code> | <code>/trade paper</code> — Switch execution mode\n"
+        "• <code>/trade pos</code> — View active open positions & live PnL\n"
+        "• <code>/trade close [id|all]</code> — Close position(s) at market\n"
+        "• <code>/trade bal</code> — Wallet & account balances\n"
+        "• <code>/trade confluence &lt;sym&gt;</code> — Execute master confluence trade\n"
+        "• <code>/trade &lt;sym&gt; &lt;buy|sell&gt; [sz]</code> — Manual trade execution\n"
+        "• <code>/trade learn</code> — Self-learning performance & insights\n\n"
+        "🔔 <b>4. Master Alerts Hub (/alert):</b>\n"
+        "• <code>/alert</code> — Alerts overview & active list\n"
+        "• <code>/alert on</code> — Turn ON automatic market alerts for BTC & Gold 🟢\n"
+        "• <code>/alert off</code> — Turn OFF automatic alerts 🔴\n"
+        "• <code>/alert list</code> — List your active price alerts\n"
+        "• <code>/alert &lt;sym&gt; &lt;price&gt;</code> — Set price alert (e.g. <code>/alert btc 85000</code>)\n"
+        "• <code>/alert &lt;price&gt;</code> — Set price alert (auto-detects symbol)\n"
+        "• <code>/alert del &lt;ID&gt;</code> — Remove an alert by ID\n"
+        "• <code>/alert clear</code> — Clear all price alerts\n"
+        "• <code>/alert watch &lt;sym&gt;</code> — Watch candle closes\n\n"
+        "🏛️ <b>5. 18-Agent Institutional Desk (/analyze):</b>\n"
+        "• <code>/analyze [symbol] [tf]</code> (or <code>/analysis</code>) — Deep 18-agent categorized report\n"
+        "• Categories: Price Action Core, Liquidity & Sessions, Market Context, News & Sentiment, Momentum & Strength, Decision Layer\n\n"
+        "🔐 <b>6. Master Keys & Bot Config (/keys):</b>\n"
+        "• <code>/keys</code> — Connection status & balances overview\n"
+        "• <code>/keys check</code> — Test live Delta Exchange connection\n"
+        "• <code>/keys set &lt;KEY&gt; &lt;SECRET&gt;</code> — Connect Delta API keys\n"
+        "• <code>/keys base [india|global]</code> — Switch Delta endpoint\n"
+        "• <code>/keys gemini &lt;KEY&gt;</code> — Set Google Gemini API Key\n"
+        "• <code>/keys model [flash|pro|lite]</code> — Switch Gemini AI Model\n\n"
         "📸 <b>Chart Photo Analysis:</b>\n"
-        "• <i>Send Chart Photo</i> — Upload any screenshot for Gautam Jha vision analysis\n\n"
-        "🧠 <b>Google Gemini AI & Models:</b>\n"
-        "• <code>/model [MODEL]</code> — View or switch Gemini model (e.g. <code>/model pro</code>)\n"
-        "• <code>/setgemini &lt;KEY&gt;</code> — Set Google Gemini API Key\n"
-        "• <code>/gemini</code> — Check AI status and active model\n\n"
-        "🤖 <b>Bot Controls & Chat:</b>\n"
-        "• <code>/list</code> — Show this full commands list\n"
-        "• <code>/help</code> — Detailed instructions & examples\n"
-        "• <code>/start</code> — Introduction & welcome overview\n"
-        "• <code>/reset</code> — Clear AI conversation history\n"
-        "• <i>Any text</i> — Chat directly with the AI trading assistant"
+        "• <i>Send Chart Photo</i> — Instant 18-Agent Multimodal Vision Analysis\n\n"
+        "💡 <b>Direct Shortcuts & Aliases:</b>\n"
+        "• <code>/btc</code>, <code>/btclevels</code>, <code>/btcgj</code>, <code>/btcentry</code>, <code>/btcwatch</code>\n"
+        "• <code>/gold</code>, <code>/xau</code>, <code>/xauusd</code>, <code>/goldlevels</code>, <code>/goldgj</code>, <code>/goldentry</code>, <code>/goldwatch</code>\n"
+        "• <code>/price</code>, <code>/levels</code>, <code>/analysis</code>, <code>/gj</code>, <code>/liquidity</code>\n"
+        "• <code>/alert</code>, <code>/alerts</code>, <code>/delalert</code>, <code>/clearalerts</code>\n"
+        "• <code>/entry</code>, <code>/scan</code>, <code>/watch</code>, <code>/unwatch</code>, <code>/watchers</code>\n"
+        "• <code>/autotrade</code>, <code>/starttrade</code>, <code>/stoptrade</code>, <code>/trade</code>, <code>/positions</code>, <code>/closeposition</code>, <code>/balance</code>, <code>/mode</code>\n"
+        "• <code>/alertson</code>, <code>/alertsoff</code>, <code>/setkey</code>, <code>/setsecret</code>, <code>/setkeys</code>, <code>/keys</code>\n"
+        "• <code>/list</code>, <code>/help</code>, <code>/start</code>, <code>/reset</code>"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
@@ -521,53 +909,33 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Help command with usage examples."""
     msg = (
         "📖 <b>Trading Assistant & Auto-Trade Guide:</b>\n\n"
-        "<b>1. Automated Trading (Auto-Trade Engine):</b>\n"
-        "• <code>/autotrade on [symbol] [live|paper]</code> — Turn on auto-trading\n"
-        "  <i>Examples: <code>/autotrade on btc paper</code> | <code>/autotrade on gold live</code> | <code>/autotrade on</code></i>\n"
-        "• <code>/autotrade off</code> — Turn off auto-trading\n"
-        "• <code>/autotrade status</code> — View performance, win-rate & open trades\n"
-        "• <code>/mode [live|paper]</code> — Switch between Live Delta Exchange and Paper simulation\n\n"
-        "<b>2. Manual Trading & Positions:</b>\n"
-        "• <code>/trade &lt;SYMBOL&gt; &lt;BUY/SELL&gt; [SIZE]</code> — Immediate trade with auto SL & TP\n"
-        "  <i>Examples: <code>/trade btc buy 1</code> | <code>/trade gold sell 1</code></i>\n"
-        "• <code>/positions</code> — View all open positions, mark prices & real-time PnL\n"
-        "• <code>/closeposition &lt;SYMBOL&gt;</code> — Close position at market (or <code>/closeall</code>)\n"
-        "• <code>/balance</code> — View Delta Exchange wallet balances & paper portfolio\n\n"
-        "<b>3. Delta Exchange API Configuration:</b>\n"
-        "• <code>/setkeys &lt;API_KEY&gt; &lt;API_SECRET&gt;</code> — Set your Delta credentials directly\n"
-        "• <code>/keys</code> — Check connection status & permissions\n"
-        "• <code>/orders</code> — View working open orders on Delta\n"
-        "• <code>/cancelorders</code> — Cancel working orders\n\n"
-        "<b>4. 🥇 Gold (XAU/USD) Shortcuts:</b>\n"
-        "• <code>/gold</code> (or <code>/xau</code>, <code>/xauusd</code>) — Live Gold ticker\n"
-        "• <code>/goldlevels</code> (or <code>/xaulevels</code>) — Gold key levels (Pivots, Fibs, S/R)\n"
-        "• <code>/goldgj</code> (or <code>/xaugj</code>) — Gold Gautam Jha Liquidity (DO, PDH, PDL sweeps)\n"
-        "• <code>/goldentry</code> (or <code>/xauentry</code>) — Gold 1m, 5m, 15m candle entry scan\n"
-        "• <code>/goldwatch</code> (or <code>/xauwatch</code>) — Automated candle alerts for Gold\n\n"
-        "<b>5. 🪙 Bitcoin (BTC) Shortcuts:</b>\n"
-        "• <code>/btc</code> — Live BTC ticker & 24h stats\n"
-        "• <code>/btclevels</code> — BTC key levels (Pivots, Fibs, S/R)\n"
-        "• <code>/btcgj</code> — BTC Gautam Jha Liquidity (DO, PDH, PDL)\n"
-        "• <code>/btcentry</code> — BTC 1m, 5m, 15m candle entry scan\n"
-        "• <code>/btcwatch</code> — Automated candle alerts for BTC\n\n"
-        "<b>6. Market Data, Alerts & Analysis:</b>\n"
-        "• <code>/price</code> — Live comparison overview (Gold & BTC)\n"
-        "• <code>/levels [SYMBOL]</code> — S/R, Pivots, Fibs for any coin\n"
-        "• <code>/gj [SYMBOL]</code> — Gautam Jha analysis for any coin\n"
-        "• <code>/alert [SYMBOL] &lt;PRICE&gt;</code> — Custom price alerts\n"
-        "• <code>/entry [SYMBOL]</code> — 1m, 5m, 15m candle setups\n"
-        "• <code>/watch [SYMBOL]</code> — Automated background candle alerts\n"
-        "• <b>📸 Send Chart Screenshot</b> — Gautam Jha AI vision analysis\n\n"
-        "<b>7. 🧠 Self-Learning & Auto-Improvement (0 Tokens):</b>\n"
-        "• <code>/learn</code> — Self-learning dashboard & setup calibrations (0 tokens)\n"
-        "• <code>/learn ai</code> — Ultra-compact quantitative AI review (&lt;250 tokens)\n"
-        "• <code>/insights</code> — View learned strategy insights\n"
-        "• <code>/learn reset</code> — Reset learning memory\n\n"
-        "<b>8. 🎯 Multi-Strategy Confluence, News & Order Book:</b>\n"
-        "• <code>/confluence [SYMBOL]</code> — Evaluates all 5 strategies combined (Gautam Jha + Candles + OrderBook + News + Self-Learning)\n"
-        "• <code>/confluence trade [SYMBOL]</code> — Execute trade with master confluence plan\n"
-        "• <code>/orderbook [SYMBOL]</code> — Live L2 depth, imbalance ratio & liquidity walls\n"
-        "• <code>/news [SYMBOL]</code> — Breaking financial news with sentiment score"
+        "<b>1. Master Unified Commands (Recommended):</b>\n"
+        "• <code>/btc</code> — All-in-one Bitcoin hub (run with <code>price</code>, <code>levels</code>, <code>gj</code>, <code>book</code>, <code>news</code>, <code>confluence</code>, <code>analyze</code>, <code>buy</code>, <code>sell</code>)\n"
+        "• <code>/gold</code> — All-in-one Gold hub (same 11 working modes)\n"
+        "• <code>/trade</code> — Trading control hub (<code>on</code>, <code>off</code>, <code>live</code>, <code>paper</code>, <code>pos</code>, <code>close</code>, <code>bal</code>, <code>learn</code>)\n"
+        "• <code>/alert</code> — Alerts hub (<code>on</code>, <code>off</code>, <code>list</code>, <code>del</code>, <code>clear</code>, <code>watch</code>, or <code>&lt;price&gt;</code>)\n"
+        "• <code>/analyze [sym] [tf]</code> — 18-Agent Institutional Desk analysis\n"
+        "• <code>/keys</code> — Bot configuration (<code>check</code>, <code>set</code>, <code>base</code>, <code>gemini</code>, <code>model</code>)\n\n"
+        "<b>2. 18-Agent Institutional Desk System:</b>\n"
+        "• Sends chart or text through 18 specialized agents in 6 categories:\n"
+        "  1. Price Action Core (Gautam Jha DO, Order Blocks, FVGs, Breakers)\n"
+        "  2. Liquidity & Sessions (PDH/PDL sweeps, session ranges, round numbers)\n"
+        "  3. Market Context (Higher TF bias, Multi-TF alignment, Correlated markets)\n"
+        "  4. News & Sentiment (US high-impact news, market sentiment)\n"
+        "  5. Momentum & Strength (Volume characteristics, institutional intent)\n"
+        "  6. Decision Layer (Strict Confluence Score /10 & Risk Manager veto)\n\n"
+        "<b>3. Automated & Manual Trading:</b>\n"
+        "• <code>/trade on</code> — Start automated trading bot 🟢\n"
+        "• <code>/trade off</code> — Pause automated trading bot 🔴\n"
+        "• <code>/trade btc buy 1</code> — Buy Bitcoin with automatic Stop Loss & Take Profit\n"
+        "• <code>/trade pos</code> — View live positions & unrealized PnL\n"
+        "• <code>/trade close all</code> — Close all positions immediately\n\n"
+        "<b>4. Delta Exchange API Setup:</b>\n"
+        "• <code>/keys set &lt;API_KEY&gt; &lt;API_SECRET&gt;</code> — Connect Delta credentials\n"
+        "• <code>/keys check</code> — Verify connection live & display wallet balance\n"
+        "• <code>/keys base [india|global]</code> — Switch Delta India (.exchange) vs Global (.com)\n\n"
+        "<b>5. Chart Screenshot Upload:</b>\n"
+        "• Upload any chart screenshot with caption (e.g. <code>BTC 15m</code>) for instant 18-agent categorized analysis!"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
@@ -633,11 +1001,65 @@ async def gj_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error computing Gautam Jha analysis for {symbol}: {e}")
 
 
-# Shortcuts for Bitcoin (BTC)
+# ==================== Unified Multi-Working Bitcoin Hub ====================
 async def btc_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Shortcut: /btc -> Live BTC ticker."""
-    ctx.args = ["BTCUSD"]
-    await price_cmd(update, ctx)
+    """
+    Bitcoin (BTC) Unified Multi-Working Command Hub.
+    Usage:
+    • /btc — Comprehensive all-in-one market snapshot
+    • /btc [price|levels|gj|entry|watch|book|news|confluence|analyze|buy|sell]
+    """
+    args = ctx.args or []
+    if not args:
+        msg = format_symbol_hub_overview("BTCUSD")
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        return
+
+    sub = args[0].lower().strip()
+    rest = args[1:]
+
+    if sub in ("price", "p", "ticker", "quote"):
+        ctx.args = ["BTCUSD"]
+        await price_cmd(update, ctx)
+    elif sub in ("levels", "level", "lvl", "pivots", "sr"):
+        ctx.args = ["BTCUSD"]
+        await levels_cmd(update, ctx)
+    elif sub in ("gj", "gautam", "liquidity", "pa"):
+        ctx.args = ["BTCUSD"]
+        await gj_cmd(update, ctx)
+    elif sub in ("entry", "entries", "scan", "candle", "candles"):
+        ctx.args = ["BTCUSD"]
+        await entry_cmd(update, ctx)
+    elif sub in ("watch", "watcher", "watchers"):
+        tfs = rest if rest else ["1m,5m,15m"]
+        ctx.args = ["BTCUSD"] + tfs
+        await watch_cmd(update, ctx)
+    elif sub in ("unwatch", "stopwatch"):
+        ctx.args = ["BTCUSD"]
+        await unwatch_cmd(update, ctx)
+    elif sub in ("book", "orderbook", "depth", "l2"):
+        ctx.args = ["BTCUSD"]
+        await orderbook_cmd(update, ctx)
+    elif sub in ("news", "sentiment"):
+        ctx.args = ["BTCUSD"] + rest
+        await news_cmd(update, ctx)
+    elif sub in ("confluence", "combine", "master"):
+        ctx.args = ["BTCUSD"] + rest
+        await confluence_cmd(update, ctx)
+    elif sub in ("analyze", "analysis", "desk", "agents", "18"):
+        ctx.args = ["BTCUSD"] + rest
+        await analyze_cmd(update, ctx)
+    elif sub in ("buy", "long"):
+        size = rest[0] if rest else None
+        ctx.args = ["BTCUSD", "buy"] + ([size] if size else [])
+        await trade_cmd(update, ctx)
+    elif sub in ("sell", "short"):
+        size = rest[0] if rest else None
+        ctx.args = ["BTCUSD", "sell"] + ([size] if size else [])
+        await trade_cmd(update, ctx)
+    else:
+        msg = format_symbol_hub_overview("BTCUSD")
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
 async def btc_levels_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -665,11 +1087,65 @@ async def btc_watch_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await watch_cmd(update, ctx)
 
 
-# Shortcuts for Gold (XAU)
+# ==================== Unified Multi-Working Gold Hub ====================
 async def gold_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Shortcut: /gold or /xau -> Live Gold ticker."""
-    ctx.args = ["XAUTUSD"]
-    await price_cmd(update, ctx)
+    """
+    Gold (XAU/USD) Unified Multi-Working Command Hub.
+    Usage:
+    • /gold — Comprehensive all-in-one market snapshot
+    • /gold [price|levels|gj|entry|watch|book|news|confluence|analyze|buy|sell]
+    """
+    args = ctx.args or []
+    if not args:
+        msg = format_symbol_hub_overview("XAUTUSD")
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        return
+
+    sub = args[0].lower().strip()
+    rest = args[1:]
+
+    if sub in ("price", "p", "ticker", "quote"):
+        ctx.args = ["XAUTUSD"]
+        await price_cmd(update, ctx)
+    elif sub in ("levels", "level", "lvl", "pivots", "sr"):
+        ctx.args = ["XAUTUSD"]
+        await levels_cmd(update, ctx)
+    elif sub in ("gj", "gautam", "liquidity", "pa"):
+        ctx.args = ["XAUTUSD"]
+        await gj_cmd(update, ctx)
+    elif sub in ("entry", "entries", "scan", "candle", "candles"):
+        ctx.args = ["XAUTUSD"]
+        await entry_cmd(update, ctx)
+    elif sub in ("watch", "watcher", "watchers"):
+        tfs = rest if rest else ["1m,5m,15m"]
+        ctx.args = ["XAUTUSD"] + tfs
+        await watch_cmd(update, ctx)
+    elif sub in ("unwatch", "stopwatch"):
+        ctx.args = ["XAUTUSD"]
+        await unwatch_cmd(update, ctx)
+    elif sub in ("book", "orderbook", "depth", "l2"):
+        ctx.args = ["XAUTUSD"]
+        await orderbook_cmd(update, ctx)
+    elif sub in ("news", "sentiment"):
+        ctx.args = ["XAUTUSD"] + rest
+        await news_cmd(update, ctx)
+    elif sub in ("confluence", "combine", "master"):
+        ctx.args = ["XAUTUSD"] + rest
+        await confluence_cmd(update, ctx)
+    elif sub in ("analyze", "analysis", "desk", "agents", "18"):
+        ctx.args = ["XAUTUSD"] + rest
+        await analyze_cmd(update, ctx)
+    elif sub in ("buy", "long"):
+        size = rest[0] if rest else None
+        ctx.args = ["XAUTUSD", "buy"] + ([size] if size else [])
+        await trade_cmd(update, ctx)
+    elif sub in ("sell", "short"):
+        size = rest[0] if rest else None
+        ctx.args = ["XAUTUSD", "sell"] + ([size] if size else [])
+        await trade_cmd(update, ctx)
+    else:
+        msg = format_symbol_hub_overview("XAUTUSD")
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
 async def gold_levels_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -695,6 +1171,42 @@ async def gold_watch_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tfs = ctx.args if ctx.args else ["1m,5m,15m"]
     ctx.args = ["XAUTUSD"] + tfs
     await watch_cmd(update, ctx)
+
+
+# ==================== 18-Agent Institutional Desk Command ====================
+async def analyze_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    18-Agent Categorized Institutional Desk Analysis (/analyze [symbol] [timeframe]).
+    Evaluates:
+    1. Price Action Core (Gautam Jha DO, Order Blocks, FVGs, Breakers)
+    2. Liquidity & Sessions (PDH/PDL sweeps, session range, round levels)
+    3. Market Context (Higher TF structure, Multi-TF alignment, Correlated markets)
+    4. News & Sentiment (Macro events, financial news sentiment)
+    5. Momentum & Strength (Volume characteristics, smart money flow)
+    6. Decision Layer (Strict Confluence Score & Risk Manager veto)
+    """
+    args = ctx.args or []
+    sym_raw = args[0] if args else DEFAULT_SYMBOL
+    tf = args[1].lower() if len(args) > 1 and args[1].lower() in ("1m", "5m", "15m", "30m", "1h") else "15m"
+    symbol = resolve_symbol(sym_raw)
+
+    await update.message.reply_text(
+        f"🏛️ <b>18 Institutional Agents Analyzing #{symbol}...</b>\n"
+        "Price Action → Liquidity → Context → News → Momentum → Decision\nPlease wait ⏳",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        report = generate_18_agents_analysis(symbol, tf)
+        if len(report) > 4000:
+            parts = [report[i:i+3800] for i in range(0, len(report), 3800)]
+            for p in parts:
+                await update.message.reply_text(p)
+        else:
+            await update.message.reply_text(report)
+    except Exception as e:
+        logger.error(f"Error in 18-agent analysis for {symbol}: {e}")
+        await update.message.reply_text(f"❌ Error during 18-agent analysis: {e}")
 
 
 def _parse_alert_args(args: List[str]) -> Tuple[Optional[str], Optional[float], Optional[str], Optional[str]]:
@@ -750,40 +1262,103 @@ def _parse_alert_args(args: List[str]) -> Tuple[Optional[str], Optional[float], 
 
 
 async def set_alert_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Set price alert command."""
-    symbol, target_price, condition, err = _parse_alert_args(ctx.args or [])
-    if err:
-        await update.message.reply_text(err, parse_mode=ParseMode.HTML)
+    """
+    Master Alerts Multi-Working Hub.
+    Usage:
+    • /alert (alerts center & active alerts list)
+    • /alert on | /alert off (toggle automatic candle & liquidity alerts)
+    • /alert list (list active alerts)
+    • /alert del <id> | /alert clear
+    • /alert watch <sym> [tfs] | /alert unwatch <sym>
+    • /alert <sym> <price> (or /alert <price>)
+    """
+    args = ctx.args or []
+    if not args:
+        chat_id = update.effective_chat.id
+        alerts = alert_manager.get_chat_alerts(chat_id)
+        watchers = alert_manager.get_chat_entry_watchers(chat_id)
+        auto_alerts_on = len(watchers) > 0
+
+        alerts_summary = f"<code>{len(alerts)}</code> active" if alerts else "None active"
+        watchers_summary = f"<code>{len(watchers)}</code> active" if watchers else "None active"
+
+        msg = (
+            "🔔 <b>MASTER ALERTS CONTROL CENTER</b>\n\n"
+            f"• <b>Auto Market Alerts:</b> {'🟢 ACTIVE (BTC & Gold)' if auto_alerts_on else '🔴 OFF'}\n"
+            f"• <b>Active Price Alerts:</b> {alerts_summary}\n"
+            f"• <b>Candle Watchers:</b> {watchers_summary}\n\n"
+            "⚡ <b>1-Command Working Modes:</b>\n"
+            "• <code>/alert on</code> — Turn ON automatic alerts for BTC & Gold 🟢\n"
+            "• <code>/alert off</code> — Turn OFF automatic alerts 🔴\n"
+            "• <code>/alert list</code> — View all active price alerts\n"
+            "• <code>/alert &lt;price&gt;</code> — Set price alert (e.g. <code>/alert 85000</code>)\n"
+            "• <code>/alert &lt;sym&gt; &lt;price&gt;</code> — Set price alert (e.g. <code>/alert gold 4180</code>)\n"
+            "• <code>/alert del &lt;ID&gt;</code> — Remove an alert by ID\n"
+            "• <code>/alert clear</code> — Clear all price alerts\n"
+            "• <code>/alert watch &lt;sym&gt;</code> — Enable candle alerts on closes\n"
+            "• <code>/alert unwatch &lt;sym&gt;</code> — Disable candle alerts"
+        )
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
         return
 
-    chat_id = update.effective_chat.id
-    try:
-        ticker = get_ticker(symbol)
-        curr_price = ticker["mark_price"] or ticker["close"]
-    except Exception as e:
-        await update.message.reply_text(f"❌ Could not verify symbol {symbol}: {e}")
-        return
+    sub = args[0].lower().strip()
+    rest = args[1:]
 
-    alert = alert_manager.add_price_alert(
-        chat_id=chat_id,
-        symbol=symbol,
-        target_price=target_price,
-        condition=condition,
-        current_price=curr_price,
-    )
+    if sub in ("on", "start", "enable"):
+        await auto_alert_on_cmd(update, ctx)
+    elif sub in ("off", "stop", "disable"):
+        await auto_alert_off_cmd(update, ctx)
+    elif sub in ("list", "show", "all"):
+        ctx.args = []
+        await list_alerts_cmd(update, ctx)
+    elif sub in ("del", "delete", "remove"):
+        ctx.args = rest
+        await delete_alert_cmd(update, ctx)
+    elif sub in ("clear", "clearall", "reset"):
+        await clear_alerts_cmd(update, ctx)
+    elif sub in ("watch", "watcher"):
+        ctx.args = rest
+        await watch_cmd(update, ctx)
+    elif sub in ("unwatch", "stopwatch"):
+        ctx.args = rest
+        await unwatch_cmd(update, ctx)
+    elif sub in ("watchers",):
+        await list_watchers_cmd(update, ctx)
+    else:
+        # Price alert mode
+        symbol, target_price, condition, err = _parse_alert_args(args)
+        if err:
+            await update.message.reply_text(err, parse_mode=ParseMode.HTML)
+            return
 
-    cond_str = "rises to or crosses above" if alert["condition"] in (">=", ">") else "drops to or crosses below"
-    diff_pct = ((target_price - curr_price) / curr_price * 100.0) if curr_price > 0 else 0.0
+        chat_id = update.effective_chat.id
+        try:
+            ticker = get_ticker(symbol)
+            curr_price = ticker["mark_price"] or ticker["close"]
+        except Exception as e:
+            await update.message.reply_text(f"❌ Could not verify symbol {symbol}: {e}")
+            return
 
-    msg = (
-        f"✅ <b>Price Alert Set (#A{alert['id']})</b>\n\n"
-        f"🪙 <b>Symbol:</b> <code>#{symbol}</code>\n"
-        f"🎯 <b>Target Price:</b> <code>${target_price:,.2f}</code>\n"
-        f"📍 <b>Current Price:</b> <code>${curr_price:,.2f}</code> ({diff_pct:+.2f}% away)\n"
-        f"🔔 <b>Trigger:</b> When price {cond_str} <code>${target_price:,.2f}</code>\n\n"
-        f"<i>I will notify you automatically when this price is hit. Use <code>/alerts</code> to manage.</i>"
-    )
-    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        alert = alert_manager.add_price_alert(
+            chat_id=chat_id,
+            symbol=symbol,
+            target_price=target_price,
+            condition=condition,
+            current_price=curr_price,
+        )
+
+        cond_str = "rises to or crosses above" if alert["condition"] in (">=", ">") else "drops to or crosses below"
+        diff_pct = ((target_price - curr_price) / curr_price * 100.0) if curr_price > 0 else 0.0
+
+        msg = (
+            f"✅ <b>Price Alert Set (#A{alert['id']})</b>\n\n"
+            f"🪙 <b>Symbol:</b> <code>#{symbol}</code>\n"
+            f"🎯 <b>Target Price:</b> <code>${target_price:,.2f}</code>\n"
+            f"📍 <b>Current Price:</b> <code>${curr_price:,.2f}</code> ({diff_pct:+.2f}% away)\n"
+            f"🔔 <b>Trigger:</b> When price {cond_str} <code>${target_price:,.2f}</code>\n\n"
+            f"<i>I will notify you automatically when this price is hit. Use <code>/alert list</code> to manage.</i>"
+        )
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
 async def auto_alert_on_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1192,6 +1767,34 @@ async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await confluence_cmd(update, ctx)
         return
 
+    # 18-Agent Institutional Desk queries
+    if lower_text in (
+        "analysis", "analyze", "deep analysis", "18 agents", "18 agent", "desk",
+        "institutional analysis", "chart analysis", "market analysis"
+    ) or lower_text.startswith("analyze") or lower_text.startswith("analysis"):
+        sym = "XAUTUSD" if ("gold" in lower_text or "xau" in lower_text) else "BTCUSD"
+        ctx.args = [sym]
+        await analyze_cmd(update, ctx)
+        return
+
+    # Master hub quick access
+    if lower_text in ("btc", "bitcoin"):
+        ctx.args = []
+        await btc_cmd(update, ctx)
+        return
+    if lower_text in ("gold", "xau"):
+        ctx.args = []
+        await gold_cmd(update, ctx)
+        return
+    if lower_text in ("trade", "trading"):
+        ctx.args = []
+        await trade_cmd(update, ctx)
+        return
+    if lower_text in ("alert", "alerts"):
+        ctx.args = []
+        await set_alert_cmd(update, ctx)
+        return
+
     # Mode switch
     if lower_text in ("mode paper", "paper mode", "paper trading"):
         ctx.args = ["paper"]
@@ -1239,16 +1842,19 @@ async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Analyze chart photo or screenshot using Gemini Multimodal Vision & Gautam Jha strategy."""
+    """Analyze chart photo or screenshot using Gemini Multimodal Vision & 18-Agent Institutional Desk system."""
     if not update.message or not update.message.photo:
         return
 
-    await update.message.reply_text("🔍 Analyzing chart screenshot with Gautam Jha price-action strategy... ⏳")
+    await update.message.reply_text(
+        "🏛️ 18 Institutional Agents Analyzing Chart...\n"
+        "Price Action → Liquidity → Context → News → Momentum → Decision\nPlease wait ⏳"
+    )
 
     photo = update.message.photo[-1]
     file = await ctx.bot.get_file(photo.file_id)
     image_bytes = await file.download_as_bytearray()
-    caption = update.message.caption or "Analyze this chart using Gautam Jha style."
+    caption = update.message.caption or "Deep categorized analysis required. Follow the category structure. Only high confluence trades allowed."
 
     # Detect symbol from caption if present
     symbol = _detect_symbol_from_text(caption, DEFAULT_SYMBOL)
@@ -1258,11 +1864,18 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         gj_analysis = get_gautam_jha_analysis(symbol)
         gj = gj_analysis["gautam_jha"]
+        ob = analyze_orderbook(symbol)
+        news = get_news_sentiment(symbol)
+        conf = auto_trader.confluence_engine.calculate_confluence(symbol)
         context_note = (
-            f"\n[Live Delta Exchange Data for {symbol}]\n"
-            f"Current Price: {gj_analysis['mark_price']} | Daily Open: {gj['daily_open']} ({gj['daily_candle_color']})\n"
-            f"PDH: {gj['pdh']} (Swept: {gj['pdh_swept']}) | PDL: {gj['pdl']} (Swept: {gj['pdl_swept']})\n"
-            f"Market Structure: {gj_analysis['market_structure']}\n"
+            f"\n[Live Delta Exchange Institutional Data for #{symbol}]\n"
+            f"• Current Mark Price: ${gj_analysis['mark_price']:,.2f}\n"
+            f"• Gautam Jha Daily Open: ${gj['daily_open']:,.2f} ({gj['daily_candle_color']} candle)\n"
+            f"• PDH: ${gj['pdh']:,.2f} (Swept: {gj['pdh_swept']}) | PDL: ${gj['pdl']:,.2f} (Swept: {gj['pdl_swept']})\n"
+            f"• Market Structure: {gj_analysis['market_structure']}\n"
+            f"• L2 Order Book Imbalance: {ob['imbalance_ratio']:.2f} ({ob['imbalance_bias']})\n"
+            f"• News Sentiment: {news['sentiment_score']:+.2f} ({news['sentiment_label']})\n"
+            f"• Master Confluence Score: {conf['confluence_score']}% {conf['bias_signal']}\n"
         )
     except Exception:
         pass
@@ -1270,12 +1883,17 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     full_prompt = (
         f"User request: {caption}\n"
         f"{context_note}\n"
-        f"Analyze this chart image thoroughly using Gautam Jha rules: identify Daily Open, PDH, PDL, "
-        f"liquidity pools, market structure, and provide 1-2 high-probability trade setups (Break-and-Go, "
-        f"Retrace-to-Level, or Level Reversal) with Entry, Stop Loss, and Targets."
+        f"Conduct a rigorous 18-Agent Institutional Desk Analysis following the exact 6-category structure:\n"
+        f"1. Price Action Core (Gautam Jha, Order Block, FVG, Breaker)\n"
+        f"2. Liquidity & Sessions (Grabs, PDH/PDL, round numbers)\n"
+        f"3. Market Context (Higher TF, Multi-TF alignment, Correlations)\n"
+        f"4. News & Sentiment (US high-impact events, Sentiment)\n"
+        f"5. Momentum & Strength (Volume, Institutional Intent)\n"
+        f"6. Decision Layer (Strict Confluence Score /10 & Risk Manager approval/reject)\n"
+        f"Strict Rules: Confluence Score < 7 means No Trade; If Risk Manager rejects -> No Trade."
     )
 
-    reply = generate_ai_vision_reply(full_prompt, bytes(image_bytes))
+    reply = generate_ai_vision_reply(full_prompt, bytes(image_bytes), system_prompt=SYSTEM_PROMPT_18_AGENTS)
     await update.message.reply_text(reply)
 
 
@@ -1587,24 +2205,73 @@ async def set_base_url_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def keys_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """View Delta Exchange API connection status & perform live handshake (/keys, /checkkeys, /testkeys)."""
+    """
+    Master Keys & Bot Configuration Hub.
+    Usage:
+    • /keys (connection status & credentials overview)
+    • /keys check (test live Delta Exchange connection)
+    • /keys set <key> <secret> (save Delta credentials)
+    • /keys base [india|global] (switch Delta endpoint)
+    • /keys gemini <api_key> (save Google Gemini API Key)
+    • /keys model [pro|flash|lite] (switch Gemini model)
+    """
+    args = ctx.args or []
+    if args:
+        sub = args[0].lower().strip()
+        rest = args[1:]
+        if sub in ("set", "save", "add"):
+            if len(rest) >= 2:
+                ctx.args = rest[:2]
+                await set_keys_cmd(update, ctx)
+                return
+            elif len(rest) == 1:
+                ctx.args = [rest[0]]
+                await set_key_cmd(update, ctx)
+                return
+            else:
+                await update.message.reply_text("Usage: <code>/keys set &lt;KEY&gt; &lt;SECRET&gt;</code>", parse_mode=ParseMode.HTML)
+                return
+        elif sub in ("secret",):
+            ctx.args = rest
+            await set_secret_cmd(update, ctx)
+            return
+        elif sub in ("base", "baseurl", "url"):
+            ctx.args = rest
+            await set_base_url_cmd(update, ctx)
+            return
+        elif sub in ("gemini", "google", "ai"):
+            ctx.args = rest
+            await set_gemini_cmd(update, ctx)
+            return
+        elif sub in ("model", "switchmodel"):
+            ctx.args = rest
+            await gemini_model_cmd(update, ctx)
+            return
+        # If sub is check or test, fall through to live check below
+
     is_cfg = delta_client.is_configured()
     masked = delta_client.get_masked_key()
     mode = auto_trader.mode.upper()
     at_status = "🟢 ACTIVE" if auto_trader.enabled else "🔴 OFF"
+    active_model = get_gemini_model()
+    has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
 
     if not is_cfg:
         msg = (
-            "🔐 <b>Delta Exchange API Status: 🔴 NOT CONFIGURED</b>\n\n"
+            "🔐 <b>MASTER KEYS & BOT CONFIGURATION HUB</b>\n\n"
+            "<b>Delta Exchange API Status:</b> 🔴 <b>NOT CONFIGURED</b>\n"
             f"• <b>API Key:</b> <code>{masked}</code>\n"
             f"• <b>Base URL:</b> <code>{delta_client.base_url}</code>\n"
             f"• <b>Trading Mode:</b> <code>{mode}</code> (Paper Trading is active)\n"
             f"• <b>Auto-Trading:</b> {at_status}\n\n"
-            "🔑 <b>How to set your Delta Exchange API keys:</b>\n"
-            "• Use command: <code>/setkeys &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>\n"
-            "• Or individual commands:\n"
-            "  - <code>/setkey &lt;KEY&gt;</code>\n"
-            "  - <code>/setsecret &lt;SECRET&gt;</code>\n\n"
+            f"<b>Google Gemini AI:</b> {'🟢 Configured' if has_gemini else '⚠️ Not Set'}\n"
+            f"• <b>Active Model:</b> <code>{active_model}</code> 🚀\n\n"
+            "⚡ <b>1-Command Working Modes:</b>\n"
+            "• <code>/keys check</code> — Test live Delta Exchange connection\n"
+            "• <code>/keys set &lt;KEY&gt; &lt;SECRET&gt;</code> — Connect Delta API keys\n"
+            "• <code>/keys base [india|global]</code> — Switch Delta India vs Global\n"
+            "• <code>/keys gemini &lt;KEY&gt;</code> — Connect Google Gemini API Key\n"
+            "• <code>/keys model [flash|pro|lite]</code> — Switch Gemini model\n\n"
             "💡 <i>Tip: You can also paste your keys directly into the chat:</i>\n"
             "<code>delta new api YOUR_KEY api secret YOUR_SECRET</code>"
         )
@@ -1628,19 +2295,27 @@ async def keys_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         drift = getattr(delta_client, "_server_time_offset", 0.0)
         msg = (
-            "🔐 <b>Delta Exchange API Status: 🟢 CONNECTED & VERIFIED</b>\n\n"
+            "🔐 <b>MASTER KEYS & BOT CONFIGURATION HUB</b>\n\n"
+            "<b>Delta Exchange API Status:</b> 🟢 <b>CONNECTED & VERIFIED</b>\n"
             f"• <b>API Key:</b> <code>{masked}</code>\n"
             f"• <b>Base URL:</b> <code>{delta_client.base_url}</code>\n"
             f"• <b>Clock Sync:</b> <code>{drift:+.2f}s</code> (Auto-synchronized)\n"
             f"• <b>Trading Mode:</b> <code>{mode}</code>\n"
             f"• <b>Auto-Trading:</b> {at_status}\n\n"
+            f"<b>Google Gemini AI:</b> {'🟢 Configured' if has_gemini else '⚠️ Not Set'}\n"
+            f"• <b>Active Model:</b> <code>{active_model}</code> 🚀\n\n"
             f"💰 <b>Live Balances:</b>\n{bal_text}\n\n"
+            "⚡ <b>1-Command Working Modes:</b>\n"
+            "• <code>/keys check</code> — Re-test live connection & refresh balances\n"
+            "• <code>/keys set &lt;KEY&gt; &lt;SECRET&gt;</code> — Update Delta credentials\n"
+            "• <code>/keys base [india|global]</code> — Switch Delta endpoint\n"
+            "• <code>/keys gemini &lt;KEY&gt;</code> — Set Gemini API Key\n"
+            "• <code>/keys model [flash|pro|lite]</code> — Switch Gemini Model\n\n"
             "🎯 <b>Ready Commands:</b>\n"
-            "• <code>/starttrade</code> — Start automatic trading bot\n"
-            "• <code>/stoptrade</code> — Pause automatic trading\n"
-            "• <code>/mode live</code> — Switch to live orders\n"
-            "• <code>/mode paper</code> — Switch back to paper mode ($10,000 demo)\n"
-            "• <code>/balance</code> — Refresh live balance"
+            "• <code>/trade on</code> — Start automatic trading bot\n"
+            "• <code>/trade off</code> — Pause automatic trading\n"
+            "• <code>/trade live</code> — Switch to live orders\n"
+            "• <code>/trade pos</code> — View active open positions"
         )
     else:
         err_msg = test_res.get("error", "Unknown connection error")
@@ -1649,28 +2324,29 @@ async def keys_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             hint = (
                 "\n\n⚠️ <b>Troubleshooting Delta 'invalid_api_key':</b>\n"
                 "1. <b>Platform Mismatch:</b> If your account is on Delta Global (.com), run:\n"
-                "   <code>/setbaseurl global</code>\n"
+                "   <code>/keys base global</code>\n"
                 "   If your account is on Delta India (.exchange), run:\n"
-                "   <code>/setbaseurl india</code>\n"
+                "   <code>/keys base india</code>\n"
                 "2. <b>IP Whitelist:</b> If you set IP restrictions when creating the key on Delta, requests from this bot will be rejected. Make sure IP restriction is disabled.\n"
                 "3. <b>Permissions:</b> Verify in Delta settings that <b>Read</b> and <b>Trade</b> permissions are checked.\n"
                 "4. <b>Re-enter Keys:</b> Update keys anytime with:\n"
-                "   <code>/setkeys &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>"
+                "   <code>/keys set &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>"
             )
         elif "expired_signature" in err_msg.lower():
             drift = getattr(delta_client, "_server_time_offset", 0.0)
             hint = (
-                f"\n\n⚠️ <b>Clock Drift:</b> Synchronized offset ({drift:+.2f}s). Run <code>/checkkeys</code> again to retry."
+                f"\n\n⚠️ <b>Clock Drift:</b> Synchronized offset ({drift:+.2f}s). Run <code>/keys check</code> again to retry."
             )
 
         msg = (
-            "🔐 <b>Delta Exchange API Status: 🔴 CONNECTION FAILED</b>\n\n"
+            "🔐 <b>MASTER KEYS & BOT CONFIGURATION HUB</b>\n\n"
+            "<b>Delta Exchange API Status:</b> 🔴 <b>CONNECTION FAILED</b>\n\n"
             f"• <b>API Key:</b> <code>{masked}</code>\n"
             f"• <b>Base URL:</b> <code>{delta_client.base_url}</code>\n"
             f"• <b>Error:</b> <code>{err_msg}</code>"
             f"{hint}\n\n"
             "💡 <b>To update your API keys:</b>\n"
-            "<code>/setkeys &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>"
+            "<code>/keys set &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>"
         )
 
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
@@ -2009,76 +2685,154 @@ async def gold_confluence_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Execute a manual trade (/trade <SYMBOL> <buy|sell> [size])."""
+    """
+    Master Trading & Portfolio Multi-Working Hub.
+    Usage:
+    • /trade (portfolio & bot dashboard)
+    • /trade on | /trade off (start / stop automated trading)
+    • /trade live | /trade paper (switch mode)
+    • /trade pos (view open positions & PnL)
+    • /trade close <id|all> (close positions)
+    • /trade bal (view wallet balances)
+    • /trade confluence <sym> (execute master confluence trade)
+    • /trade <sym> <buy|sell> [size] (manual trade)
+    • /trade learn [ai|reset] (self-learning dashboard)
+    """
     args = ctx.args or []
-    if len(args) < 2:
-        await update.message.reply_text(
-            "⚡ <b>Manual Trade Execution</b>\n\n"
-            "<b>Usage:</b>\n"
-            "<code>/trade &lt;SYMBOL&gt; &lt;buy|sell&gt; [size]</code>\n\n"
-            "<b>Examples:</b>\n"
-            "• <code>/trade BTC buy</code> (Buy BTC with default size)\n"
-            "• <code>/trade GOLD sell 0.05</code> (Short Gold)\n"
-            "• <code>/trade BTCUSD buy 0.01</code>\n\n"
-            f"• <b>Current Mode:</b> <code>{auto_trader.mode.upper()}</code>\n"
-            "<i>(Auto-calculates entry, SL, TP1, and TP2 based on Gautam Jha levels!)</i>",
-            parse_mode=ParseMode.HTML,
-        )
-        return
+    if not args:
+        summary = auto_trader.get_account_summary()
+        status_str = "🟢 ACTIVE / RUNNING" if auto_trader.enabled else "🔴 DISABLED / PAUSED"
+        mode_str = auto_trader.mode.upper()
+        top_setup = auto_trader.learning_engine.get_top_setup()
+        top_setup_str = f"{top_setup['name']} ({top_setup['win_rate_pct']}%)" if top_setup else "Calibrating..."
 
-    sym_raw = args[0]
-    side = args[1].lower().strip()
-    if side not in ("buy", "sell", "long", "short"):
-        await update.message.reply_text("⚠️ Side must be <code>buy</code> or <code>sell</code>.", parse_mode=ParseMode.HTML)
-        return
-
-    if side == "long":
-        side = "buy"
-    elif side == "short":
-        side = "sell"
-
-    size = None
-    if len(args) >= 3:
-        try:
-            size = float(args[2])
-        except ValueError:
-            await update.message.reply_text("⚠️ Invalid size. Please specify a numeric amount.", parse_mode=ParseMode.HTML)
-            return
-
-    symbol = resolve_symbol(sym_raw)
-
-    await update.message.reply_text(f"⏳ Executing {side.upper()} order for {symbol} ({auto_trader.mode.upper()} mode)...")
-
-    res = auto_trader.execute_trade(
-        symbol=symbol,
-        side=side,
-        size=size,
-        trade_type="manual",
-    )
-
-    if res.get("status") in ("executed", "simulated", "filled", "open"):
-        emoji = "🟢 LONG" if side == "buy" else "🔴 SHORT"
         msg = (
-            f"✅ <b>TRADE EXECUTED!</b>\n\n"
-            f"• <b>Symbol:</b> <code>#{symbol}</code>\n"
-            f"• <b>Action:</b> {emoji}\n"
-            f"• <b>Size:</b> <code>{res.get('size')}</code>\n"
-            f"• <b>Entry Price:</b> <code>${res.get('entry_price', 0):,.2f}</code>\n"
-            f"• <b>Stop Loss:</b> <code>${res.get('sl_price', 0):,.2f}</code>\n"
-            f"• <b>Take Profit 1:</b> <code>${res.get('tp1_price', 0):,.2f}</code>\n"
-            f"• <b>Take Profit 2:</b> <code>${res.get('tp2_price', 0):,.2f}</code>\n"
-            f"• <b>Mode:</b> <code>{res.get('mode', '').upper()}</code>\n"
-            f"• <b>Position ID:</b> <code>{res.get('position_id', 'N/A')}</code>\n\n"
-            "📊 <i>Track with <code>/positions</code> or close with <code>/closeposition {id}</code></i>"
+            "💼 <b>MASTER TRADING & PORTFOLIO HUB</b>\n\n"
+            f"• <b>Bot Status:</b> {status_str}\n"
+            f"• <b>Execution Mode:</b> <code>{mode_str}</code> "
+            + ("(Connected to Delta Exchange ⚡)" if auto_trader.mode == "live" else "($10,000 Paper Demo 🎮)") + "\n"
+            f"• <b>Account Balance:</b> <code>${auto_trader.balance:,.2f}</code>\n"
+            f"• <b>Open Positions:</b> <code>{summary['open_positions_count']}</code>\n"
+            f"• <b>Win Rate:</b> <code>{summary['win_rate_pct']}%</code> ({summary['total_trades']} closed trades)\n"
+            f"• <b>Top Learned Setup:</b> <code>{top_setup_str}</code>\n\n"
+            "⚡ <b>1-Command Working Modes:</b>\n"
+            "• <code>/trade on</code> (or <code>/trade start</code>) — Start auto trading 🟢\n"
+            "• <code>/trade off</code> (or <code>/trade stop</code>) — Stop / pause auto trading 🔴\n"
+            "• <code>/trade live</code> / <code>/trade paper</code> — Switch execution mode\n"
+            "• <code>/trade pos</code> — View active open positions & live PnL\n"
+            "• <code>/trade close all</code> — Close all positions at market\n"
+            "• <code>/trade close &lt;ID&gt;</code> — Close position by ID\n"
+            "• <code>/trade bal</code> — Delta Exchange & Paper wallet balances\n"
+            "• <code>/trade btc buy 1</code> — Buy Bitcoin with auto SL/TP\n"
+            "• <code>/trade gold sell 0.05</code> — Short Gold with auto SL/TP\n"
+            "• <code>/trade confluence btc</code> — Execute master confluence trade\n"
+            "• <code>/trade learn</code> — Self-learning performance & insights"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        return
+
+    sub = args[0].lower().strip()
+    rest = args[1:]
+
+    # Sub-action routing
+    if sub in ("on", "start", "enable"):
+        await start_trade_cmd(update, ctx)
+    elif sub in ("off", "stop", "pause", "disable"):
+        await stop_trade_cmd(update, ctx)
+    elif sub in ("live", "real"):
+        ctx.args = ["live"]
+        await mode_cmd(update, ctx)
+    elif sub in ("paper", "demo", "sim"):
+        ctx.args = ["paper"]
+        await mode_cmd(update, ctx)
+    elif sub in ("pos", "position", "positions", "open"):
+        await positions_cmd(update, ctx)
+    elif sub in ("close", "closeposition", "closeall"):
+        if rest and rest[0].lower() == "all":
+            await close_all_cmd(update, ctx)
+        elif rest:
+            ctx.args = [rest[0]]
+            await close_position_cmd(update, ctx)
+        else:
+            await close_all_cmd(update, ctx)
+    elif sub in ("bal", "balance", "wallet"):
+        await balance_cmd(update, ctx)
+    elif sub in ("learn", "learning", "insights"):
+        ctx.args = rest
+        await learn_cmd(update, ctx)
+    elif sub in ("confluence", "combine", "master"):
+        sym = rest[0] if rest else "BTCUSD"
+        ctx.args = ["trade", sym]
+        await confluence_cmd(update, ctx)
     else:
-        err = res.get("error", "Unknown error")
-        await update.message.reply_text(
-            f"❌ <b>Trade Execution Failed:</b> {err}\n\n"
-            f"Mode: <code>{auto_trader.mode.upper()}</code>",
-            parse_mode=ParseMode.HTML,
+        # Manual Trade execution:
+        # Format 1: /trade <symbol> <side> [size]
+        # Format 2: /trade <side> <symbol> [size]
+        if sub in ("buy", "sell", "long", "short"):
+            side = sub
+            if not rest:
+                await update.message.reply_text("Usage: <code>/trade buy &lt;SYMBOL&gt; [size]</code>", parse_mode=ParseMode.HTML)
+                return
+            sym_raw = rest[0]
+            size_arg = rest[1] if len(rest) > 1 else None
+        else:
+            sym_raw = sub
+            if not rest:
+                await update.message.reply_text("Usage: <code>/trade &lt;SYMBOL&gt; &lt;buy|sell&gt; [size]</code>", parse_mode=ParseMode.HTML)
+                return
+            side = rest[0].lower().strip()
+            size_arg = rest[1] if len(rest) > 1 else None
+
+        if side not in ("buy", "sell", "long", "short"):
+            await update.message.reply_text("⚠️ Action must be <code>buy</code> or <code>sell</code>.", parse_mode=ParseMode.HTML)
+            return
+
+        if side == "long":
+            side = "buy"
+        elif side == "short":
+            side = "sell"
+
+        size = None
+        if size_arg:
+            try:
+                size = float(size_arg)
+            except ValueError:
+                await update.message.reply_text("⚠️ Invalid size. Please specify a numeric amount.", parse_mode=ParseMode.HTML)
+                return
+
+        symbol = resolve_symbol(sym_raw)
+        await update.message.reply_text(f"⏳ Executing {side.upper()} order for {symbol} ({auto_trader.mode.upper()} mode)...")
+
+        res = auto_trader.execute_trade(
+            symbol=symbol,
+            side=side,
+            size=size,
+            trade_type="manual",
         )
+
+        if res.get("status") in ("executed", "simulated", "filled", "open"):
+            emoji = "🟢 LONG" if side == "buy" else "🔴 SHORT"
+            msg = (
+                f"✅ <b>TRADE EXECUTED!</b>\n\n"
+                f"• <b>Symbol:</b> <code>#{symbol}</code>\n"
+                f"• <b>Action:</b> {emoji}\n"
+                f"• <b>Size:</b> <code>{res.get('size')}</code>\n"
+                f"• <b>Entry Price:</b> <code>${res.get('entry_price', 0):,.2f}</code>\n"
+                f"• <b>Stop Loss:</b> <code>${res.get('sl_price', 0):,.2f}</code>\n"
+                f"• <b>Take Profit 1:</b> <code>${res.get('tp1_price', 0):,.2f}</code>\n"
+                f"• <b>Take Profit 2:</b> <code>${res.get('tp2_price', 0):,.2f}</code>\n"
+                f"• <b>Mode:</b> <code>{res.get('mode', '').upper()}</code>\n"
+                f"• <b>Position ID:</b> <code>{res.get('position_id', 'N/A')}</code>\n\n"
+                "📊 <i>Track with <code>/trade pos</code> or close with <code>/trade close {id}</code></i>"
+            )
+            await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        else:
+            err = res.get("error", "Unknown error")
+            await update.message.reply_text(
+                f"❌ <b>Trade Execution Failed:</b> {err}\n\n"
+                f"Mode: <code>{auto_trader.mode.upper()}</code>",
+                parse_mode=ParseMode.HTML,
+            )
 
 
 async def positions_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2565,6 +3319,8 @@ def main():
     app.add_handler(CommandHandler("testkeys", keys_cmd))
     app.add_handler(CommandHandler("testkey", keys_cmd))
     app.add_handler(CommandHandler("key", keys_cmd))
+    app.add_handler(CommandHandler("bot", keys_cmd))
+    app.add_handler(CommandHandler("config", keys_cmd))
     app.add_handler(CommandHandler("setbaseurl", set_base_url_cmd))
     app.add_handler(CommandHandler("model", gemini_model_cmd))
     app.add_handler(CommandHandler("geminimodel", gemini_model_cmd))
@@ -2598,10 +3354,15 @@ def main():
     app.add_handler(CommandHandler("xauwatch", gold_watch_cmd))
     app.add_handler(CommandHandler("xauusdwatch", gold_watch_cmd))
 
+    # 18-Agent Institutional Desk Analysis
+    app.add_handler(CommandHandler("analyze", analyze_cmd))
+    app.add_handler(CommandHandler("analysis", analyze_cmd))
+    app.add_handler(CommandHandler("desk", analyze_cmd))
+    app.add_handler(CommandHandler("agents", analyze_cmd))
+
     # General Market Commands
     app.add_handler(CommandHandler("price", price_cmd))
     app.add_handler(CommandHandler("levels", levels_cmd))
-    app.add_handler(CommandHandler("analysis", levels_cmd))
     app.add_handler(CommandHandler("gj", gj_cmd))
     app.add_handler(CommandHandler("liquidity", gj_cmd))
     app.add_handler(CommandHandler("alertson", auto_alert_on_cmd))
@@ -2609,7 +3370,7 @@ def main():
     app.add_handler(CommandHandler("autoalert", auto_alert_toggle_cmd))
     app.add_handler(CommandHandler("autoalerts", auto_alert_toggle_cmd))
     app.add_handler(CommandHandler("alert", set_alert_cmd))
-    app.add_handler(CommandHandler("alerts", list_alerts_cmd))
+    app.add_handler(CommandHandler("alerts", set_alert_cmd))
     app.add_handler(CommandHandler("delalert", delete_alert_cmd))
     app.add_handler(CommandHandler("clearalerts", clear_alerts_cmd))
     app.add_handler(CommandHandler("entry", entry_cmd))
