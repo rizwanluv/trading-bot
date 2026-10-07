@@ -1724,6 +1724,42 @@ class TestMemoryAndConsolidationEngine(unittest.TestCase):
         self.assertIn("Rule Removed", text)
 
 
+class TestBackupScheduler(unittest.TestCase):
+    """Test suite for automated database and state backups."""
+
+    def test_backup_skipped_when_no_chat_id(self):
+        from unittest.mock import patch, MagicMock, AsyncMock
+        from backup import send_database_backup_to_telegram
+        mock_bot = MagicMock()
+        mock_bot.send_document = AsyncMock()
+
+        with patch.dict(os.environ, {}, clear=True):
+            asyncio.run(send_database_backup_to_telegram(mock_bot))
+            mock_bot.send_document.assert_not_called()
+
+    def test_backup_creates_archive_and_sends(self):
+        from unittest.mock import patch, MagicMock, AsyncMock
+        from backup import send_database_backup_to_telegram
+        mock_bot = MagicMock()
+        mock_bot.send_document = AsyncMock()
+
+        # Create dummy db file
+        dummy_db = "test_trading_tmp.db"
+        with open(dummy_db, "w") as f:
+            f.write("sqlite test")
+
+        try:
+            with patch.dict(os.environ, {"TELEGRAM_CHAT_ID": "999888", "DB_PATH": dummy_db}):
+                asyncio.run(send_database_backup_to_telegram(mock_bot))
+                self.assertTrue(mock_bot.send_document.called)
+                call_kwargs = mock_bot.send_document.call_args[1]
+                self.assertEqual(call_kwargs["chat_id"], "999888")
+                self.assertIn("AUTOMATED TRADING STATE BACKUP", call_kwargs["caption"])
+        finally:
+            if os.path.exists(dummy_db):
+                os.remove(dummy_db)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -3722,13 +3722,19 @@ async def post_init(application):
     asyncio.create_task(price_alert_loop(application))
     asyncio.create_task(entry_alert_loop(application))
     asyncio.create_task(auto_trade_loop(application))
+    try:
+        from backup import schedule_backups
+        asyncio.create_task(schedule_backups(application.bot, interval_seconds=86400))
+        logger.info("Database backup task successfully scheduled.")
+    except Exception as err:
+        logger.warning(f"Could not schedule database backups: {err}")
     logger.info("Background alert & auto-trading tasks successfully scheduled.")
 
 
 def main():
-    token = os.environ.get("TELEGRAM_TOKEN")
+    token = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
-        print("ERROR: TELEGRAM_TOKEN environment variable is not set.", file=sys.stderr)
+        print("ERROR: TELEGRAM_TOKEN or TELEGRAM_BOT_TOKEN environment variable is not set.", file=sys.stderr)
         print("Please export TELEGRAM_TOKEN=... and rerun.", file=sys.stderr)
         sys.exit(1)
 
@@ -3876,28 +3882,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-import os
-import asyncio
-from telegram import Bot
-from backup import schedule_backups
-
-# Import your existing trading/dashboard loop function
-# from trading_engine import run_dashboard_daemon
-
-async def run_dashboard_daemon():
-    # Your existing trading/battlefield loop
-    while True:
-        # Trading logic...
-        await asyncio.sleep(900)
-
-async def main():
-    bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
-
-    # Launch both tasks concurrently
-    await asyncio.gather(
-        run_dashboard_daemon(),              # Main trading logic
-        schedule_backups(bot, interval_seconds=86400)  # Daily backup task
-    )
-
-if __name__ == "__main__":
-    asyncio.run(main())
