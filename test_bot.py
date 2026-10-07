@@ -802,6 +802,120 @@ class TestSelfLearningEngine(unittest.TestCase):
         self.assertIn("Self-Learning Memory Reset", call_text)
 
 
+class TestNewsAndOrderbookAndConfluence(unittest.TestCase):
+    def test_news_sentiment_lexicon_scoring(self):
+        from news_analysis import score_headline, format_news_html_report, get_news_sentiment
+
+        # Bullish headline
+        bull = score_headline("Bitcoin breaks out to record high with massive institutional inflows")
+        self.assertEqual(bull["label"], "BULLISH")
+        self.assertGreater(bull["score"], 0.2)
+
+        # Bearish headline
+        bear = score_headline("Crypto flash crash as SEC launches lawsuit and liquidation cascade ensues")
+        self.assertEqual(bear["label"], "BEARISH")
+        self.assertLess(bear["score"], -0.2)
+
+        # Sentiment data structure
+        data = get_news_sentiment("BTCUSD", limit=5)
+        self.assertIn(data["sentiment_label"], ("STRONG_BULLISH", "BULLISH", "NEUTRAL", "BEARISH", "STRONG_BEARISH"))
+        self.assertIn("articles", data)
+        self.assertGreater(len(data["articles"]), 0)
+
+        # HTML formatting
+        html = format_news_html_report(data)
+        self.assertIn("MARKET NEWS & SENTIMENT ANALYSIS", html)
+
+    def test_orderbook_analysis(self):
+        from orderbook_analysis import analyze_orderbook, format_orderbook_html_report
+
+        mock_raw = {
+            "symbol": "BTCUSD",
+            "buy": [
+                {"price": "84000.0", "size": 25000},
+                {"price": "83990.0", "size": 3000},
+                {"price": "83980.0", "size": 2000},
+            ],
+            "sell": [
+                {"price": "84010.0", "size": 2000},
+                {"price": "84020.0", "size": 3000},
+                {"price": "84030.0", "size": 2500},
+            ],
+        }
+        res = analyze_orderbook("BTCUSD", raw_data=mock_raw)
+        self.assertEqual(res["best_bid"], 84000.0)
+        self.assertEqual(res["best_ask"], 84010.0)
+        self.assertEqual(res["spread"], 10.0)
+        self.assertGreater(res["imbalance_ratio"], 0.2)
+        self.assertEqual(res["direction"], "LONG")
+        self.assertIn("BULLISH", res["bias"])
+
+        # Liquidity wall detection: the 10000 buy level should be flagged as a buy wall
+        self.assertGreater(len(res["bid_walls"]), 0)
+        self.assertEqual(res["bid_walls"][0]["price"], 84000.0)
+
+        # HTML formatting
+        html = format_orderbook_html_report(res)
+        self.assertIn("ORDER BOOK (L2 DEPTH) ANALYSIS", html)
+        self.assertIn("Buy Wall", html)
+
+    def test_confluence_engine_evaluation_and_execution(self):
+        from confluence_engine import ConfluenceEngine, format_confluence_html_report
+        from auto_trader import AutoTrader
+
+        ce = ConfluenceEngine()
+        res = ce.evaluate_confluence("BTCUSD")
+        self.assertIn("confluence_score", res)
+        self.assertIn("layers", res)
+        self.assertIn("gautam_jha", res["layers"])
+        self.assertIn("candlestick", res["layers"])
+        self.assertIn("orderbook", res["layers"])
+        self.assertIn("news", res["layers"])
+        self.assertIn("self_learning", res["layers"])
+
+        html = format_confluence_html_report(res)
+        self.assertIn("MULTI-STRATEGY MASTER CONFLUENCE", html)
+
+        # Test trade execution via AutoTrader
+        trader = AutoTrader(store_file="test_autotrade_store_conf.json")
+        exec_res = trader.execute_confluence_trade("BTCUSD", force=True)
+        self.assertEqual(exec_res["status"], "executed")
+        self.assertEqual(len(trader.positions), 1)
+
+        # Clean up
+        trader.close_all_positions()
+        if os.path.exists("test_autotrade_store_conf.json"):
+            os.remove("test_autotrade_store_conf.json")
+
+    def test_news_orderbook_confluence_chat_routing(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from main import chat, news_cmd, orderbook_cmd, confluence_cmd
+
+        mock_update = MagicMock()
+        mock_update.effective_chat.id = 777
+        mock_update.message.reply_text = AsyncMock()
+        mock_ctx = MagicMock()
+
+        # 1. Plain text "news analysis"
+        mock_update.message.text = "news analysis"
+        asyncio.run(chat(mock_update, mock_ctx))
+        call_text = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("MARKET NEWS & SENTIMENT ANALYSIS", call_text)
+
+        # 2. Plain text "oderbook analysis" (user prompt spelling)
+        mock_update.message.text = "oderbook analysis"
+        asyncio.run(chat(mock_update, mock_ctx))
+        call_text = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("ORDER BOOK (L2 DEPTH) ANALYSIS", call_text)
+
+        # 3. Plain text "every strategy combined"
+        mock_update.message.text = "every strategy combined"
+        asyncio.run(chat(mock_update, mock_ctx))
+        call_text = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("MULTI-STRATEGY MASTER CONFLUENCE", call_text)
+
+
 if __name__ == "__main__":
     unittest.main()
 

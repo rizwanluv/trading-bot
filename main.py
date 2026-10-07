@@ -64,6 +64,8 @@ from market_data import (
 from alerts_manager import AlertManager
 from delta_client import DeltaClient, DEFAULT_BASE_URL
 from auto_trader import AutoTrader
+from news_analysis import get_news_sentiment
+from orderbook_analysis import analyze_orderbook
 
 # Logging setup
 logging.basicConfig(
@@ -453,6 +455,12 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <code>/learn ai</code> — Compact quantitative AI review (&lt;250 tokens)\n"
         "• <code>/insights</code> — View learned strategy insights\n"
         "• <code>/learn reset</code> — Reset learned weights & history\n\n"
+        "🎯 <b>Multi-Strategy Confluence, News & Order Book:</b>\n"
+        "• <code>/confluence [SYMBOL]</code> — Every strategy combined consensus analysis 🟢\n"
+        "• <code>/confluence trade [SYMBOL]</code> — Execute trade with master confluence plan\n"
+        "• <code>/orderbook [SYMBOL]</code> (or <code>/book</code>) — Live L2 depth, imbalance & walls\n"
+        "• <code>/news [SYMBOL]</code> — Live breaking news & financial sentiment score\n"
+        "• <code>/news ai [SYMBOL]</code> — Token-capped AI macro sentiment synthesis\n\n"
         "🔑 <b>Delta Exchange API Keys:</b>\n"
         "• <code>/setkey &lt;KEY&gt;</code> — Set Delta Exchange API Key\n"
         "• <code>/setsecret &lt;SECRET&gt;</code> — Set Delta Exchange API Secret\n"
@@ -554,7 +562,12 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <code>/learn</code> — Self-learning dashboard & setup calibrations (0 tokens)\n"
         "• <code>/learn ai</code> — Ultra-compact quantitative AI review (&lt;250 tokens)\n"
         "• <code>/insights</code> — View learned strategy insights\n"
-        "• <code>/learn reset</code> — Reset learning memory"
+        "• <code>/learn reset</code> — Reset learning memory\n\n"
+        "<b>8. 🎯 Multi-Strategy Confluence, News & Order Book:</b>\n"
+        "• <code>/confluence [SYMBOL]</code> — Evaluates all 5 strategies combined (Gautam Jha + Candles + OrderBook + News + Self-Learning)\n"
+        "• <code>/confluence trade [SYMBOL]</code> — Execute trade with master confluence plan\n"
+        "• <code>/orderbook [SYMBOL]</code> — Live L2 depth, imbalance ratio & liquidity walls\n"
+        "• <code>/news [SYMBOL]</code> — Breaking financial news with sentiment score"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
@@ -1145,6 +1158,38 @@ async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if lower_text in ("learn ai", "ai insights", "ai insight", "strategy ai", "ai improve", "ai learning"):
         ctx.args = ["ai"]
         await learn_cmd(update, ctx)
+        return
+
+    # News analysis queries
+    if lower_text in (
+        "news", "news analysis", "crypto news", "market news", "gold news", "btc news",
+        "bitcoin news", "latest news", "breaking news", "check news", "sentiment", "macro",
+    ) or "news analysis" in lower_text:
+        sym = "XAUTUSD" if ("gold" in lower_text or "xau" in lower_text) else "BTCUSD"
+        ctx.args = [sym]
+        await news_cmd(update, ctx)
+        return
+
+    # Orderbook analysis queries (including common typo 'oderbook')
+    if lower_text in (
+        "orderbook", "order book", "orderbook analysis", "order book analysis", "oderbook", "oderbook analysis",
+        "depth", "depth analysis", "market depth", "l2 depth", "order flow", "bid ask",
+        "liquidity walls", "buy walls", "sell walls", "book",
+    ) or "orderbook" in lower_text or "order book" in lower_text or "oderbook" in lower_text:
+        sym = "XAUTUSD" if ("gold" in lower_text or "xau" in lower_text) else "BTCUSD"
+        ctx.args = [sym]
+        await orderbook_cmd(update, ctx)
+        return
+
+    # Confluence & combined strategy queries
+    if lower_text in (
+        "confluence", "master strategy", "every strategy combined", "combined strategy",
+        "all strategies", "all strategy", "combine strategy", "combined trade",
+        "confluence trade", "master trade", "strategy combined",
+    ) or "every strategy combined" in lower_text or "combined strategy" in lower_text or "confluence trade" in lower_text:
+        sym = "XAUTUSD" if ("gold" in lower_text or "xau" in lower_text) else "BTCUSD"
+        ctx.args = [sym]
+        await confluence_cmd(update, ctx)
         return
 
     # Mode switch
@@ -1820,6 +1865,149 @@ async def insights_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await learn_cmd(update, ctx)
 
 
+async def news_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """View breaking news & sentiment analysis (/news [SYMBOL] [ai])."""
+    args = ctx.args or []
+    sym = "BTCUSD"
+    is_ai = False
+
+    for a in args:
+        a_clean = a.lower().strip()
+        if a_clean == "ai":
+            is_ai = True
+        elif a_clean in ("btc", "bitcoin", "btcusd"):
+            sym = "BTCUSD"
+        elif a_clean in ("gold", "xau", "xaut", "xautusd"):
+            sym = "XAUTUSD"
+        elif a_clean in ("eth", "ethereum"):
+            sym = "ETHUSD"
+        else:
+            sym = resolve_symbol(a)
+
+    if is_ai:
+        await update.message.reply_text("🤖 Generating token-efficient AI macro synthesis...", parse_mode=ParseMode.HTML)
+        news_data = get_news_sentiment(sym)
+        headlines_summary = "\n".join(f"- {a['title']} ({a['label']})" for a in news_data.get("articles", [])[:4])
+        prompt = (
+            f"Asset: {news_data['asset_name']}. Headlines:\n{headlines_summary}\n"
+            "In 2-3 concise bullets (<60 words), state: 1) Core market driver, 2) Sentiment impact on price."
+        )
+        ai_resp = generate_compact_ai_insight(prompt, max_tokens=180)
+        await update.message.reply_text(
+            f"📰 <b>AI Macro Sentiment Synthesis:</b>\n\n{ai_resp}",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    report = auto_trader.get_news_report(sym)
+    await update.message.reply_text(report, parse_mode=ParseMode.HTML)
+
+
+async def btc_news_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut for Bitcoin news (/btcnews)."""
+    ctx.args = ["BTCUSD"] + (ctx.args or [])
+    await news_cmd(update, ctx)
+
+
+async def gold_news_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut for Gold news (/goldnews)."""
+    ctx.args = ["XAUTUSD"] + (ctx.args or [])
+    await news_cmd(update, ctx)
+
+
+async def orderbook_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """View live L2 Order Book depth, imbalance & liquidity walls (/orderbook [SYMBOL])."""
+    args = ctx.args or []
+    sym = resolve_symbol(args[0]) if args else "BTCUSD"
+    report = auto_trader.get_orderbook_report(sym)
+    await update.message.reply_text(report, parse_mode=ParseMode.HTML)
+
+
+async def btc_book_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut for Bitcoin order book (/btcbook)."""
+    ctx.args = ["BTCUSD"]
+    await orderbook_cmd(update, ctx)
+
+
+async def gold_book_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut for Gold order book (/goldbook)."""
+    ctx.args = ["XAUTUSD"]
+    await orderbook_cmd(update, ctx)
+
+
+async def confluence_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Evaluate all strategies combined (Gautam Jha + Candles + OrderBook + News + Self-Learning).
+    Usage: /confluence [SYMBOL] or /confluence trade [SYMBOL]
+    """
+    args = ctx.args or []
+    is_trade = False
+    sym = "BTCUSD"
+
+    filtered_args = []
+    for a in args:
+        if a.lower().strip() in ("trade", "execute", "run"):
+            is_trade = True
+        else:
+            filtered_args.append(a)
+
+    if filtered_args:
+        sym = resolve_symbol(filtered_args[0])
+
+    if is_trade:
+        await update.message.reply_text(
+            f"⚡ Evaluating master confluence and executing trade for <b>{sym}</b>...",
+            parse_mode=ParseMode.HTML,
+        )
+        result = auto_trader.execute_confluence_trade(sym, force=False)
+        if result.get("status") == "executed":
+            trade = result["trade"]
+            conf = result["confluence"]
+            await update.message.reply_text(
+                f"🚀 <b>CONFLUENCE TRADE EXECUTED!</b>\n\n"
+                f"• <b>Contract:</b> <code>#{trade['symbol']}</code>\n"
+                f"• <b>Mode:</b> <code>{trade['mode'].upper()}</code>\n"
+                f"• <b>Side:</b> <b>{trade['side'].upper()}</b>\n"
+                f"• <b>Size:</b> <code>{trade['size']}</code>\n"
+                f"• <b>Entry Price:</b> <code>${trade['entry_price']:,.2f}</code>\n"
+                f"• <b>Stop Loss:</b> <code>${trade['sl']:,.2f}</code>\n"
+                f"• <b>Take Profit 1:</b> <code>${trade['tp1']:,.2f}</code> (1:1.5)\n"
+                f"• <b>Take Profit 2:</b> <code>${trade['tp2']:,.2f}</code> (1:2.5+)\n"
+                f"• <b>Confluence Score:</b> <code>{conf['confluence_score']}% {conf['bias_signal']}</code>\n\n"
+                "<i>Position is now actively tracked by exit monitor!</i>",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            reason = result.get("reason", "Confluence criteria not satisfied.")
+            await update.message.reply_text(
+                f"⏸️ <b>Confluence Trade Skipped:</b>\n{reason}\n\n"
+                "Run <code>/confluence</code> to inspect individual strategy scores.",
+                parse_mode=ParseMode.HTML,
+            )
+        return
+
+    report = auto_trader.get_confluence_report(sym)
+    await update.message.reply_text(report, parse_mode=ParseMode.HTML)
+
+
+async def confluence_trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Directly execute trade when master confluence confirms (/confluencetrade [SYMBOL])."""
+    ctx.args = ["trade"] + (ctx.args or [])
+    await confluence_cmd(update, ctx)
+
+
+async def btc_confluence_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut for Bitcoin confluence analysis (/btcconfluence)."""
+    ctx.args = ["BTCUSD"] + (ctx.args or [])
+    await confluence_cmd(update, ctx)
+
+
+async def gold_confluence_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut for Gold confluence analysis (/goldconfluence)."""
+    ctx.args = ["XAUTUSD"] + (ctx.args or [])
+    await confluence_cmd(update, ctx)
+
+
 async def trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Execute a manual trade (/trade <SYMBOL> <buy|sell> [size])."""
     args = ctx.args or []
@@ -2354,6 +2542,20 @@ def main():
     app.add_handler(CommandHandler("selflearning", learn_cmd))
     app.add_handler(CommandHandler("insights", insights_cmd))
     app.add_handler(CommandHandler("insight", insights_cmd))
+    app.add_handler(CommandHandler("confluence", confluence_cmd))
+    app.add_handler(CommandHandler("combine", confluence_cmd))
+    app.add_handler(CommandHandler("master", confluence_cmd))
+    app.add_handler(CommandHandler("confluencetrade", confluence_trade_cmd))
+    app.add_handler(CommandHandler("orderbook", orderbook_cmd))
+    app.add_handler(CommandHandler("book", orderbook_cmd))
+    app.add_handler(CommandHandler("depth", orderbook_cmd))
+    app.add_handler(CommandHandler("news", news_cmd))
+    app.add_handler(CommandHandler("btcnews", btc_news_cmd))
+    app.add_handler(CommandHandler("goldnews", gold_news_cmd))
+    app.add_handler(CommandHandler("btcbook", btc_book_cmd))
+    app.add_handler(CommandHandler("goldbook", gold_book_cmd))
+    app.add_handler(CommandHandler("btcconfluence", btc_confluence_cmd))
+    app.add_handler(CommandHandler("goldconfluence", gold_confluence_cmd))
     app.add_handler(CommandHandler("setkey", set_key_cmd))
     app.add_handler(CommandHandler("setsecret", set_secret_cmd))
     app.add_handler(CommandHandler("setkeys", set_keys_cmd))

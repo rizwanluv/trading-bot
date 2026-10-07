@@ -10,6 +10,9 @@ from typing import Dict, Any, List, Optional, Tuple
 from delta_client import DeltaClient
 from market_data import get_ticker, resolve_symbol, get_multi_timeframe_entry, get_gautam_jha_analysis
 from self_learning import LearningEngine
+from confluence_engine import ConfluenceEngine, format_confluence_html_report
+from orderbook_analysis import analyze_orderbook, format_orderbook_html_report
+from news_analysis import get_news_sentiment, format_news_html_report
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +27,12 @@ class AutoTrader:
         mode: Optional[str] = None,
         default_size: Optional[float] = None,
         learning_engine: Optional[LearningEngine] = None,
+        confluence_engine: Optional[ConfluenceEngine] = None,
     ):
         self.store_file = store_file
         self.delta_client = delta_client or DeltaClient()
         self.learning_engine = learning_engine or LearningEngine()
+        self.confluence_engine = confluence_engine or ConfluenceEngine(learning_engine=self.learning_engine)
         self.data: Dict[str, Any] = {
             "enabled": False,
             "mode": (mode or os.environ.get("TRADING_MODE", "paper")).lower(),
@@ -412,7 +417,28 @@ class AutoTrader:
         if len(self.data.get("positions", {})) >= self.data.get("max_open_positions", 2):
             return None
 
-        # 1. Check Gautam Jha liquidity setup on 15m
+        # 1. Master Multi-Strategy Confluence Check (Every Strategy Combined)
+        try:
+            conf = self.confluence_engine.evaluate_confluence(sym, self.learning_engine)
+            if conf.get("is_executable") and conf.get("confluence_score", 0) >= 70.0:
+                plan = conf.get("trade_plan", {})
+                if plan:
+                    desc = f"Master Confluence ({conf['confluence_score']}% {conf['bias_signal']})"
+                    return self.execute_trade(
+                        symbol=sym,
+                        side=plan["side"],
+                        size=plan["size"],
+                        sl_price=plan["sl"],
+                        tp1_price=plan["tp1"],
+                        tp2_price=plan["tp2"],
+                        strategy=desc,
+                        trade_type="confluence_master",
+                        reason=conf.get("decision_reason", ""),
+                    )
+        except Exception as e:
+            logger.warning(f"Error evaluating Confluence setup for {sym}: {e}")
+
+        # 2. Check Gautam Jha liquidity setup on 15m
         try:
             gj_analysis = get_gautam_jha_analysis(sym)
             setup = gj_analysis.get("setup")
@@ -660,4 +686,28 @@ class AutoTrader:
     def reset_learning(self):
         """Reset self-learning state."""
         self.learning_engine.reset()
+
+    def evaluate_confluence(self, symbol: str) -> Dict[str, Any]:
+        """Evaluate all 5 strategy layers for a symbol."""
+        return self.confluence_engine.evaluate_confluence(symbol, self.learning_engine)
+
+    def execute_confluence_trade(self, symbol: str, force: bool = False) -> Dict[str, Any]:
+        """Execute a trade combining all strategies (Technicals, Order Book, News, Learning)."""
+        return self.confluence_engine.execute_confluence_trade(symbol, self, force=force)
+
+    def get_confluence_report(self, symbol: str) -> str:
+        """Get formatted HTML report for all combined strategies."""
+        res = self.evaluate_confluence(symbol)
+        return format_confluence_html_report(res)
+
+    def get_orderbook_report(self, symbol: str) -> str:
+        """Get formatted HTML report for L2 Order Book depth."""
+        book = analyze_orderbook(symbol)
+        return format_orderbook_html_report(book)
+
+    def get_news_report(self, symbol: str) -> str:
+        """Get formatted HTML report for News and Macro Sentiment."""
+        news = get_news_sentiment(symbol)
+        return format_news_html_report(news)
+
 

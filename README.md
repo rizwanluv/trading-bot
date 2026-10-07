@@ -79,9 +79,41 @@ An advanced algorithmic trading and market intelligence Telegram bot powered by 
 - Upload any chart screenshot to the bot.
 - Gemini analyzes the image according to Gautam Jha rules: identifies Daily Open, PDH, PDL, liquidity sweeps, and produces structured trade recommendations.
 
+### 10. 🎯 Multi-Strategy Master Confluence (`/confluence`, `/confluencetrade`)
+- Combines every quantitative strategy layer into a single consensus model:
+  1. **Gautam Jha Liquidity (30%)** — DO color flips & PDH/PDL liquidity sweeps
+  2. **Multi-Timeframe Candles (25%)** — 5m & 15m Pin Bars, Engulfing patterns, S/R bounces
+  3. **Order Book L2 Depth (20%)** — Real-time bid/ask imbalance ratio & liquidity wall cushions
+  4. **News & Macro Sentiment (15%)** — Breaking headlines with lexical sentiment scoring
+  5. **Self-Learning Risk Engine (10%)** — Auto-suppression of cold setups & adaptive sizing weights
+- Executes high-conviction trades when combined confluence reaches **>= 65% - 70%**.
+
+### 11. 📖 Order Book (L2 Depth) Analysis (`/orderbook`, `/book`)
+- Real-time order book analysis from Delta Exchange API.
+- Bid/Ask depth ratio & imbalance percentage (`-100%` to `+100%`).
+- Micro-price vs Mid-price spread calculations.
+- Automatic detection of large institutional **Buy Walls** (support) and **Sell Walls** (resistance).
+
+### 12. 📰 Breaking News & Macro Sentiment Engine (`/news`)
+- Real-time financial news headlines for Bitcoin, Gold, and macroeconomic events.
+- Zero-token quantitative sentiment scoring (`STRONG_BULLISH` to `STRONG_BEARISH`).
+- Optional token-efficient AI macro synthesis on demand (`/news ai`).
+
 ---
 
 ## 📜 Commands Reference
+
+### 🎯 Multi-Strategy Confluence, News & Order Book
+| Command | Description |
+|---|---|
+| `/confluence [SYMBOL]` | Every strategy combined consensus score & layers breakdown 🟢 |
+| `/confluence trade [SYMBOL]` | Execute trade using unified master confluence plan |
+| `/orderbook [SYMBOL]` (or `/book`) | Live L2 orderbook depth, bid/ask imbalance & liquidity walls |
+| `/news [SYMBOL]` | Real-time breaking news headlines & financial sentiment score |
+| `/news ai [SYMBOL]` | Token-capped AI macro sentiment synthesis (<180 tokens) |
+| `/btcconfluence` / `/goldconfluence` | Instant shortcuts for BTC / Gold confluence |
+| `/btcbook` / `/goldbook` | Instant shortcuts for BTC / Gold order book depth |
+| `/btcnews` / `/goldnews` | Instant shortcuts for BTC / Gold breaking news |
 
 ### 🤖 Trading & Delta Exchange Commands
 | Command | Description |
