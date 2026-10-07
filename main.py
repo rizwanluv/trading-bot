@@ -846,6 +846,9 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = (
         "📜 <b>UNIFIED MULTI-WORKING COMMAND HUBS:</b>\n"
         "<i>(Minimum Commands — Maximum Working Types!)</i>\n\n"
+        "🏛️ <b>0. Master Institutional Dashboard (/status or /dashboard):</b>\n"
+        "• <code>/status</code> (or <code>/dashboard</code>) — Single-card institutional command center\n"
+        "  └ Real-time bot state, live market session killzone, open positions with live PnL, risk rules, self-learning health, and API connectivity in 1 view!\n\n"
         "🪙 <b>1. Bitcoin All-in-One Hub (/btc):</b>\n"
         "• <code>/btc</code> — Comprehensive all-in-one Bitcoin card\n"
         "• <code>/btc price</code> — Live ticker & volume\n"
@@ -866,8 +869,11 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <code>/gold buy [sz]</code> | <code>/gold sell [sz]</code> — Execute order with auto SL/TP\n\n"
         "💼 <b>3. Master Trading & Portfolio Hub (/trade):</b>\n"
         "• <code>/trade</code> — Portfolio & bot dashboard (balance, mode, win rate)\n"
+        "• <code>/trade status</code> — Detailed single-screen institutional command center 🏛️\n"
         "• <code>/trade on</code> (or <code>start</code>) — START automated trading bot 🟢\n"
         "• <code>/trade off</code> (or <code>stop</code>) — STOP / pause automated trading 🔴\n"
+        "• <code>/trade be [on|off]</code> — Toggle Breakeven Stop-Loss on TP1 (Risk-Free Trades) 🛡️\n"
+        "• <code>/trade trail [on|off|pct]</code> — Toggle Dynamic Trailing Stop-Loss ⚡\n"
         "• <code>/trade live</code> | <code>/trade paper</code> — Switch execution mode\n"
         "• <code>/trade pos</code> — View active open positions & live PnL\n"
         "• <code>/trade close [id|all]</code> — Close position(s) at market\n"
@@ -907,6 +913,7 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "📸 <b>Chart Photo Analysis:</b>\n"
         "• <i>Send Chart Photo</i> — Instant 18-Agent Multimodal Vision Analysis\n\n"
         "💡 <b>Direct Shortcuts & Aliases:</b>\n"
+        "• <code>/status</code>, <code>/dashboard</code>, <code>/dash</code>\n"
         "• <code>/btc</code>, <code>/btclevels</code>, <code>/btcgj</code>, <code>/btcentry</code>, <code>/btcwatch</code>, <code>/btcamd</code>\n"
         "• <code>/gold</code>, <code>/xau</code>, <code>/xauusd</code>, <code>/goldlevels</code>, <code>/goldgj</code>, <code>/goldentry</code>, <code>/goldwatch</code>, <code>/goldamd</code>\n"
         "• <code>/amd</code>, <code>/scalp</code>, <code>/multitrade</code>\n"
@@ -1732,11 +1739,62 @@ async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await auto_alert_off_cmd(update, ctx)
         return
 
-    # Balance / Positions
-    if lower_text in ("balance", "my balance", "check balance", "wallet", "wallet balance"):
+    # Institutional Status & Dashboard
+    if lower_text in (
+        "status", "dashboard", "dash", "bot status", "bot overview", "overview",
+        "desk status", "system status", "bot health"
+    ):
+        await status_cmd(update, ctx)
+        return
+
+    # Close positions
+    if lower_text in ("close all", "closeall", "exit all", "close all positions", "close positions"):
+        await close_all_cmd(update, ctx)
+        return
+
+    # Breakeven SL toggles
+    if lower_text in ("be on", "breakeven on", "enable breakeven", "turn on breakeven"):
+        ctx.args = ["be", "on"]
+        await trade_cmd(update, ctx)
+        return
+    if lower_text in ("be off", "breakeven off", "disable breakeven", "turn off breakeven"):
+        ctx.args = ["be", "off"]
+        await trade_cmd(update, ctx)
+        return
+
+    # Trailing Stop-Loss toggles
+    if lower_text in ("trail on", "trailing on", "trailing stop on", "enable trailing", "enable trail"):
+        ctx.args = ["trail", "on"]
+        await trade_cmd(update, ctx)
+        return
+    if lower_text in ("trail off", "trailing off", "trailing stop off", "disable trailing", "disable trail"):
+        ctx.args = ["trail", "off"]
+        await trade_cmd(update, ctx)
+        return
+
+    # Help & commands list
+    if lower_text in ("help", "commands", "cmd", "cmds", "list", "all commands"):
+        await list_cmd(update, ctx)
+        return
+
+    # Quick Buy / Sell plain text orders (e.g. "buy btc", "sell btc 0.1", "buy gold")
+    quick_order_match = re.match(r'^(buy|sell|long|short)\s+(btc|bitcoin|gold|xau|eth|sol)(?:\s+([0-9.]+))?$', lower_text)
+    if quick_order_match:
+        q_side = quick_order_match.group(1)
+        q_sym = quick_order_match.group(2)
+        q_size = quick_order_match.group(3)
+        args_to_pass = [q_sym, q_side]
+        if q_size:
+            args_to_pass.append(q_size)
+        ctx.args = args_to_pass
+        await trade_cmd(update, ctx)
+        return
+
+    # Balance / Positions / PnL
+    if lower_text in ("balance", "my balance", "check balance", "wallet", "wallet balance", "bal"):
         await balance_cmd(update, ctx)
         return
-    if lower_text in ("positions", "my positions", "open positions", "position"):
+    if lower_text in ("positions", "my positions", "open positions", "position", "pos", "pnl", "profit", "live pnl"):
         await positions_cmd(update, ctx)
         return
 
@@ -2809,12 +2867,21 @@ async def gold_confluence_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await confluence_cmd(update, ctx)
 
 
+async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Single-card institutional command center dashboard (/status, /dashboard, /dash)."""
+    msg = auto_trader.format_institutional_dashboard()
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
 async def trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
     Master Trading & Portfolio Multi-Working Hub.
     Usage:
     • /trade (portfolio & bot dashboard)
+    • /trade status (detailed institutional dashboard)
     • /trade on | /trade off (start / stop automated trading)
+    • /trade be [on|off] (toggle breakeven stop loss)
+    • /trade trail [on|off|pct] (toggle trailing stop loss)
     • /trade live | /trade paper (switch mode)
     • /trade pos (view open positions & PnL)
     • /trade close <id|all> (close positions)
@@ -2842,8 +2909,11 @@ async def trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"• <b>Win Rate:</b> <code>{summary['win_rate_pct']}%</code> ({summary['total_trades']} closed trades)\n"
             f"• <b>Top Learned Setup:</b> <code>{top_setup_str}</code>\n\n"
             "⚡ <b>1-Command Working Modes:</b>\n"
+            "• <code>/trade status</code> — Comprehensive institutional dashboard 🏛️\n"
             "• <code>/trade on</code> (or <code>/trade start</code>) — Start auto trading 🟢\n"
             "• <code>/trade off</code> (or <code>/trade stop</code>) — Stop / pause auto trading 🔴\n"
+            "• <code>/trade be [on|off]</code> — Toggle Breakeven SL on TP1 🛡️\n"
+            "• <code>/trade trail [on|off]</code> — Toggle Dynamic Trailing SL ⚡\n"
             "• <code>/trade amd [btc|gold]</code> — 1m/5m/15m AMD Scalp execution\n"
             "• <code>/trade maxpos &lt;N&gt;</code> — Set max concurrent positions (e.g. 5)\n"
             "• <code>/trade risk &lt;PCT&gt;</code> — Set capital risk per trade (e.g. 1.5%)\n"
@@ -2919,6 +2989,32 @@ async def trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             pct = auto_trader.data.get("risk_per_trade_pct", 0.015)
             await update.message.reply_text(f"🛡️ Current capital risk per trade: <b>{pct*100:.1f}%</b>\nTo update: <code>/trade risk &lt;PCT%&gt;</code>", parse_mode=ParseMode.HTML)
+    elif sub in ("status", "dash", "dashboard"):
+        await status_cmd(update, ctx)
+    elif sub in ("be", "breakeven"):
+        if rest and rest[0].lower() in ("off", "disable", "false", "0"):
+            auto_trader.set_auto_breakeven(False)
+            await update.message.reply_text("⚪ <b>Breakeven Stop-Loss DISABLED.</b>\nTrades will exit completely at TP1.", parse_mode=ParseMode.HTML)
+        elif rest and rest[0].lower() in ("on", "enable", "true", "1"):
+            auto_trader.set_auto_breakeven(True)
+            await update.message.reply_text("🛡️ <b>Breakeven Stop-Loss ENABLED 🟢</b>\nWhen TP1 is hit, Stop-Loss automatically moves to Entry price to lock in a 100% risk-free trade while runner continues towards TP2.", parse_mode=ParseMode.HTML)
+        else:
+            curr = "🟢 ENABLED" if auto_trader.data.get("auto_breakeven") else "⚪ DISABLED"
+            await update.message.reply_text(f"🛡️ Breakeven Protection: <b>{curr}</b>\n• To enable: <code>/trade be on</code>\n• To disable: <code>/trade be off</code>", parse_mode=ParseMode.HTML)
+    elif sub in ("trail", "trailing", "trailingstop"):
+        if rest and rest[0].lower() in ("off", "disable", "false", "0"):
+            auto_trader.set_trailing_sl(False)
+            await update.message.reply_text("⚪ <b>Dynamic Trailing Stop-Loss DISABLED.</b>", parse_mode=ParseMode.HTML)
+        else:
+            pct = None
+            if rest and rest[0].replace("%", "").replace(".", "").isdigit():
+                try:
+                    raw = float(rest[0].replace("%", ""))
+                    pct = raw / 100.0 if raw >= 1.0 else raw
+                except Exception:
+                    pass
+            res = auto_trader.set_trailing_sl(True, pct=pct)
+            await update.message.reply_text(f"⚡ <b>Dynamic Trailing Stop-Loss ENABLED 🟢</b>\nTrailing offset: <b>{res['trailing_pct']*100:.1f}%</b> behind peak price.", parse_mode=ParseMode.HTML)
     elif sub in ("multi", "multitrade", "multiple"):
         if rest and rest[0].lower() in ("off", "disable", "false", "0"):
             val = auto_trader.set_allow_multiple_per_symbol(False)
@@ -3434,6 +3530,9 @@ def main():
     app.add_handler(CommandHandler("list", list_cmd))
     app.add_handler(CommandHandler("commands", list_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("dashboard", status_cmd))
+    app.add_handler(CommandHandler("dash", status_cmd))
 
     # Delta Exchange & Automated Trading Commands
     app.add_handler(CommandHandler("autotrade", autotrade_cmd))

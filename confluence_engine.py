@@ -19,6 +19,7 @@ from market_data import (
     get_ticker,
     get_gautam_jha_analysis,
     get_multi_timeframe_entry,
+    get_market_session,
 )
 from orderbook_analysis import analyze_orderbook
 from news_analysis import get_news_sentiment
@@ -403,11 +404,13 @@ def format_confluence_html_report(res: Dict[str, Any]) -> str:
         sig_emoji = "⚪"
         meter = ("🟨" * int(score / 10)) + ("⬜" * (10 - int(score / 10)))
 
+    session = get_market_session()
     lines = [
         f"🎯 <b>MULTI-STRATEGY MASTER CONFLUENCE</b>",
         f"<i>Gautam Jha + Candles + OrderBook + News + Self-Learning</i>\n",
         f"• <b>Contract:</b> {disp}",
         f"• <b>Current Mark Price:</b> <code>${res['mark_price']:,.2f}</code>",
+        f"• <b>Session:</b> {session['emoji']} <b>{session['session']}</b> ({session['liquidity']} Liquidity)",
         f"• <b>Consensus Score:</b> {sig_emoji} <b>{score}% {signal.replace('_', ' ')}</b>",
         f"• <b>Meter:</b> <code>{meter}</code>",
         f"• <b>Long Confluence:</b> <code>{res['long_score']}%</code> | <b>Short:</b> <code>{res['short_score']}%</code>\n",

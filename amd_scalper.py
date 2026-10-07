@@ -17,6 +17,7 @@ from market_data import (
     get_ticker,
     get_candles,
     get_level_analysis,
+    get_market_session,
     DEFAULT_SYMBOL,
 )
 
@@ -458,10 +459,12 @@ def format_amd_scalp_html_report(analysis: Dict[str, Any]) -> str:
     manip = analysis.get("manipulation")
     trig = analysis.get("trigger")
 
+    session = get_market_session()
     lines = [
         f"⚡ <b>AMD SCALP TRADING DESK: {display_name}</b> (<code>#{sym}</code>)\n"
         f"<i>(Multi-Timeframe 1m • 5m • 15m Institutional Engine)</i>\n",
         f"💰 <b>Current Price:</b> <code>${mark:,.2f}</code>",
+        f"🌐 <b>Session:</b> {session['emoji']} <b>{session['session']}</b> ({session['liquidity']} Liquidity)",
         f"🎯 <b>AMD Cycle Status:</b> <b>{phase_banner}</b>\n",
         "📊 <b>Multi-Timeframe Structure:</b>",
         f"• <b>15m Higher-TF Bias:</b> <code>{tf.get('15m_bias', 'NEUTRAL')}</code> (EMA9: ${tf.get('15m_ema9', 0):,.2f})",

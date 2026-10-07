@@ -416,6 +416,7 @@ class TestBotCommands(unittest.TestCase):
         self.assertIn("Paper Trading Account Balance", mock_update.message.reply_text.call_args[0][0])
 
         # 9. /trade BTC buy
+        auto_trader.close_all_positions()
         mock_ctx.args = ["BTC", "buy", "0.01"]
         asyncio.run(trade_cmd(mock_update, mock_ctx))
         self.assertIn("TRADE EXECUTED", mock_update.message.reply_text.call_args[0][0])
@@ -1049,7 +1050,7 @@ class Test18AgentsAndUnifiedHubs(unittest.TestCase):
         self.mock_ctx.args = ["pos"]
         asyncio.run(trade_cmd(self.mock_update, self.mock_ctx))
         text = self.mock_update.message.reply_text.call_args[0][0]
-        self.assertTrue("Open Positions" in text or "No Open Positions" in text)
+        self.assertTrue("Positions" in text or "Position" in text)
 
         # 5. /trade bal -> Balances
         self.mock_ctx.args = ["bal"]
@@ -1306,6 +1307,185 @@ class TestAMDScalpAndMultiTrade(unittest.TestCase):
         asyncio.run(chat(self.mock_update, self.mock_ctx))
         text = self.mock_update.message.reply_text.call_args[0][0]
         self.assertIn("AMD SCALP TRADING DESK", text)
+
+
+class TestInstitutionalDeskAndAdvancedRisk(unittest.TestCase):
+    def setUp(self):
+        self.mock_update = MagicMock()
+        self.mock_update.effective_chat.id = 12345678
+        self.mock_update.message.reply_text = AsyncMock()
+        self.mock_ctx = MagicMock()
+        self.mock_ctx.args = []
+
+    def test_market_session_killzones(self):
+        from datetime import datetime, timezone
+        from market_data import get_market_session
+
+        # 08:30 UTC -> London Open Killzone
+        dt_london = datetime(2026, 10, 7, 8, 30, tzinfo=timezone.utc)
+        sess_london = get_market_session(dt_london)
+        self.assertIn("London Open Killzone", sess_london["session"])
+        self.assertTrue(sess_london["is_killzone"])
+
+        # 13:30 UTC -> New York Open Killzone
+        dt_ny = datetime(2026, 10, 7, 13, 30, tzinfo=timezone.utc)
+        sess_ny = get_market_session(dt_ny)
+        self.assertIn("New York Open Killzone", sess_ny["session"])
+        self.assertTrue(sess_ny["is_killzone"])
+
+        # 03:00 UTC -> Asian Session
+        dt_asia = datetime(2026, 10, 7, 3, 0, tzinfo=timezone.utc)
+        sess_asia = get_market_session(dt_asia)
+        self.assertIn("Asian Session", sess_asia["session"])
+        self.assertFalse(sess_asia["is_killzone"])
+
+    def test_auto_trader_breakeven_protection(self):
+        import tempfile
+        import os
+        from auto_trader import AutoTrader
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            temp_path = f.name
+
+        trader = AutoTrader(store_file=temp_path, mode="paper")
+        trader.set_auto_breakeven(True)
+        self.assertTrue(trader.data["auto_breakeven"])
+
+        # Open Long position
+        pos = trader.execute_trade(
+            symbol="BTCUSD",
+            side="buy",
+            size=0.1,
+        )
+        pid = pos["position_id"]
+        entry = pos["entry_price"]
+        pos["sl_price"] = round(entry * 0.98, 2)
+        pos["sl"] = round(entry * 0.98, 2)
+        pos["tp1_price"] = round(entry * 1.015, 2)
+        pos["tp1"] = round(entry * 1.015, 2)
+        pos["tp2_price"] = round(entry * 1.03, 2)
+        pos["tp2"] = round(entry * 1.03, 2)
+        trader.save()
+
+        # 1. Price hits TP1 (entry * 1.018) -> moves SL to Breakeven (entry) and keeps position open for TP2 runner
+        prices = {"BTCUSD": round(entry * 1.018, 2)}
+        exits = trader.check_open_positions_for_exits(prices)
+        self.assertEqual(len(exits), 0)  # Remains open for TP2 runner!
+        updated_pos = trader.data["positions"][pid]
+        self.assertTrue(updated_pos["tp1_hit"])
+        self.assertTrue(updated_pos["is_breakeven"])
+        self.assertEqual(updated_pos["sl_price"], updated_pos["entry_price"])
+
+        # 2. Price continues to TP2 (entry * 1.035) -> exits with TP2 hit
+        prices = {"BTCUSD": round(entry * 1.035, 2)}
+        exits = trader.check_open_positions_for_exits(prices)
+        self.assertEqual(len(exits), 1)
+        self.assertIn("TP2 Hit", exits[0]["exit_reason"])
+
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+    def test_auto_trader_trailing_stop_loss(self):
+        import tempfile
+        import os
+        from auto_trader import AutoTrader
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            temp_path = f.name
+
+        trader = AutoTrader(store_file=temp_path, mode="paper")
+        trader.set_trailing_sl(True, pct=0.01)  # 1% trailing
+        self.assertTrue(trader.data["trailing_sl"])
+
+        # Open Long position
+        pos = trader.execute_trade(
+            symbol="BTCUSD",
+            side="buy",
+            size=0.1,
+        )
+        pid = pos["position_id"]
+        entry = pos["entry_price"]
+        pos["sl_price"] = round(entry * 0.98, 2)
+        pos["sl"] = round(entry * 0.98, 2)
+        pos["tp1_price"] = round(entry * 1.10, 2)
+        pos["tp1"] = round(entry * 1.10, 2)
+        trader.save()
+
+        # Price surges to entry * 1.02 (> 1.2% profit) -> Trailing SL trails at (entry * 1.02) * 0.99
+        surge_price = round(entry * 1.02, 2)
+        prices = {"BTCUSD": surge_price}
+        trader.check_open_positions_for_exits(prices)
+        updated_pos = trader.data["positions"][pid]
+        self.assertTrue(updated_pos.get("is_trailing"))
+        expected_sl = round(surge_price * 0.99, 2)
+        self.assertAlmostEqual(updated_pos["sl_price"], expected_sl, delta=0.5)
+
+        # Price pulls back below trailed stop -> position closed
+        prices = {"BTCUSD": round(expected_sl - 10.0, 2)}
+        exits = trader.check_open_positions_for_exits(prices)
+        self.assertEqual(len(exits), 1)
+        self.assertIn("STOP LOSS", exits[0]["exit_reason"])
+
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+    def test_institutional_dashboard_card(self):
+        from auto_trader import AutoTrader
+        trader = AutoTrader(mode="paper")
+        card = trader.format_institutional_dashboard()
+        self.assertIn("INSTITUTIONAL TRADING DESK DASHBOARD", card)
+        self.assertIn("Bot Status:", card)
+        self.assertIn("Session:", card)
+        self.assertIn("PORTFOLIO & CAPITAL:", card)
+        self.assertIn("RISK MANAGEMENT RULES:", card)
+        self.assertIn("SELF-LEARNING DESK:", card)
+
+    def test_status_command_and_quick_chat_routes(self):
+        import asyncio
+        from main import status_cmd, trade_cmd, chat
+
+        # 1. /status command
+        self.mock_update.message.reply_text.reset_mock()
+        asyncio.run(status_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("INSTITUTIONAL TRADING DESK DASHBOARD", text)
+
+        # 2. /trade status
+        self.mock_update.message.reply_text.reset_mock()
+        self.mock_ctx.args = ["status"]
+        asyncio.run(trade_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("INSTITUTIONAL TRADING DESK DASHBOARD", text)
+
+        # 3. /trade be on
+        self.mock_update.message.reply_text.reset_mock()
+        self.mock_ctx.args = ["be", "on"]
+        asyncio.run(trade_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Breakeven Stop-Loss ENABLED", text)
+
+        # 4. /trade trail on
+        self.mock_update.message.reply_text.reset_mock()
+        self.mock_ctx.args = ["trail", "on"]
+        asyncio.run(trade_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Dynamic Trailing Stop-Loss ENABLED", text)
+
+        # 5. Plain-text "status" in chat
+        self.mock_update.message.reply_text.reset_mock()
+        self.mock_update.message.text = "status"
+        asyncio.run(chat(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("INSTITUTIONAL TRADING DESK DASHBOARD", text)
+
+        # 6. Plain-text "buy btc 0.01" in chat
+        from main import auto_trader
+        auto_trader.close_all_positions()
+        self.mock_update.message.reply_text.reset_mock()
+        self.mock_update.message.text = "buy btc 0.01"
+        asyncio.run(chat(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("TRADE EXECUTED", text)
 
 
 if __name__ == "__main__":

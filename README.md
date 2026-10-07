@@ -6,15 +6,43 @@ An advanced algorithmic trading and market intelligence Telegram bot powered by 
 
 ## 🚀 Key Features
 
-### 1. 🤖 Automated Trading Bot Engine (`/autotrade`)
+### 0. 🏛️ Single-Screen Institutional Command Center (`/status`, `/dashboard`, `/dash`)
+- **Everything in 1 Clean Card:**
+  - 🤖 **Bot Status & Mode:** Live or Paper status with 1-click controls.
+  - 🌐 **SMC / ICT Market Killzone Awareness:** Real-time tracking of London Open Killzone (07:00-10:00 UTC), New York Open Killzone (12:00-15:00 UTC), London Close (15:00-17:00 UTC), and Asian Accumulation (00:00-07:00 UTC).
+  - 💼 **Portfolio Performance:** Live virtual equity or live Delta balance, realized PnL, and historical win rate.
+  - 📈 **Active Positions Tracker:** Live mark price, entry price, live unrealized PnL ($ and %), Breakeven status, and trailing stops.
+  - 🛡️ **Institutional Risk Rules:** Capital risk cap per trade (1.5%), max open positions (5), Breakeven protection, and trailing stop offsets.
+  - 🧠 **Self-Learning Desk Health:** Scoring edge, suppressed loss patterns, and adaptive sizing multipliers.
+  - 🔑 **API Connectivity:** Delta Exchange authenticated status & active Google Gemini AI model.
+
+### 1. ⚡ Advanced Institutional Risk Management (`/trade be`, `/trade trail`)
+- **🛡️ Auto-Breakeven Protection (`/trade be [on|off]`):**
+  - When Take Profit 1 (TP1) is reached, Stop Loss is automatically shifted to Entry Price to lock in a **100% risk-free trade** while the runner continues towards TP2!
+- **⚡ Dynamic Trailing Stop-Loss (`/trade trail [on|off|pct]`):**
+  - Automatically trails Stop Loss behind peak profit once price advances into positive territory (e.g. 1.0% trail distance).
+- **🛡️ Capital Risk Management (`/trade risk <PCT>`):**
+  - Position sizing is dynamically calculated using account equity and structural invalidation levels to risk strictly e.g. `1.5%` of capital per trade.
+- **⚡ Multiple Concurrent Positions (`/trade maxpos <N>`, `/trade multi [on|off]`):**
+  - Configurable concurrent trades cap across Bitcoin, Gold, and other assets.
+
+### 2. ⚡ AMD Scalp Engine (1m • 5m • 15m) (`/amd`, `/scalp`)
+- **Accumulation - Manipulation - Distribution Multi-Timeframe Execution:**
+  - 15m Higher-Timeframe Trend and Order Flow Bias.
+  - 5m Consolidation / Range Accumulation detection.
+  - 5m Judas Swing Liquidity Sweep (stop hunts above range highs / below range lows).
+  - 1m Sniper Market Structure Shift (MSS) displacement trigger.
+  - Automated structural Stop Loss, Range TP1, Expansion TP2, and capital risk sizing.
+
+### 3. 🤖 Automated Trading Bot Engine (`/autotrade`, `/trade`)
 - **Dual Execution Modes:**
   - 🎮 **Paper Trading (Default):** Risk-free simulation with `$10,000` initial virtual capital, realistic tracking of SL/TP triggers, and realized PnL bookkeeping.
   - ⚡ **Live Delta Exchange Trading:** Direct authenticated order placement via Delta Exchange India or Global REST API v2 using HMAC-SHA256 signatures.
 - **Systematic Strategy Scanner:**
-  - Scans Bitcoin (`BTCUSD`) and Gold (`XAUTUSD`) on 5m and 15m timeframes.
-  - Detects Gautam Jha Liquidity Setups (Daily Open color flips, PDH / PDL liquidity sweeps, Break-and-Go momentum).
-  - Automatically attaches Stop Loss (SL) and dual Take-Profit targets (TP1 1:1.5, TP2 1:2.5+).
-  - Background exit monitor actively watches live prices and executes profit taking and stop loss exits with instant Telegram notifications.
+  - Scans Bitcoin (`BTCUSD`) and Gold (`XAUTUSD`) on 1m, 5m, and 15m timeframes.
+  - Integrates AMD Scalp Engine as Priority #1, followed by 5-Layer Confluence and Gautam Jha Liquidity setups.
+  - Automatically attaches Stop Loss (SL) and dual Take-Profit targets (TP1 & TP2).
+  - Background exit monitor actively watches live prices, trails stops, manages breakeven, and sends push notifications.
 
 ### 2. 🧠 Autonomous Self-Learning & Auto-Improvement (`/learn`, `/insights`)
 - **Zero-Token Local Intelligence:**

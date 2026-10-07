@@ -2,6 +2,7 @@
 Market data fetcher and technical analysis engine using Delta Exchange API.
 """
 import time
+from datetime import datetime, timezone
 import requests
 from typing import Dict, Any, List, Optional
 from indicators import TechnicalAnalysis
@@ -69,6 +70,92 @@ def get_symbol_display_name(symbol: str) -> str:
     elif "SOL" in sym:
         return "🟣 Solana (SOL/USD)"
     return f"#{sym}"
+
+
+def get_market_session(dt: Optional[datetime] = None) -> Dict[str, Any]:
+    """
+    Identify current institutional trading session and ICT/SMC Killzone in UTC.
+    London Open: 07:00 - 10:00 UTC (High Liquidity)
+    New York Open: 12:00 - 15:00 UTC (Peak Volatility / Data Releases)
+    London Close: 15:00 - 17:00 UTC (Fixing & Profit-Taking)
+    Asian Session: 00:00 - 07:00 UTC (Range Accumulation)
+    """
+    utc_now = dt if dt is not None else datetime.now(timezone.utc)
+    hour = utc_now.hour
+    minute = utc_now.minute
+    time_float = hour + (minute / 60.0)
+
+    if 7.0 <= time_float < 10.0:
+        return {
+            "session": "London Open Killzone",
+            "emoji": "🇬🇧",
+            "liquidity": "HIGH",
+            "phase": "MANIPULATION / EXPANSION",
+            "description": "London Open Judas swings & initial daily expansion",
+            "is_killzone": True,
+            "utc_time": utc_now.strftime("%H:%M UTC"),
+        }
+    elif 12.0 <= time_float < 15.0:
+        return {
+            "session": "New York Open Killzone",
+            "emoji": "🗽",
+            "liquidity": "PEAK",
+            "phase": "DISTRIBUTION / EXPANSION",
+            "description": "High institutional volume & US macro releases",
+            "is_killzone": True,
+            "utc_time": utc_now.strftime("%H:%M UTC"),
+        }
+    elif 15.0 <= time_float < 17.0:
+        return {
+            "session": "London Close Killzone",
+            "emoji": "⚡",
+            "liquidity": "HIGH",
+            "phase": "TREND CONTINUATION / PROFIT-TAKING",
+            "description": "London daily fix & institutional rebalancing",
+            "is_killzone": True,
+            "utc_time": utc_now.strftime("%H:%M UTC"),
+        }
+    elif 10.0 <= time_float < 12.0:
+        return {
+            "session": "London Morning Session",
+            "emoji": "🏛️",
+            "liquidity": "MODERATE",
+            "phase": "EXPANSION",
+            "description": "Post-London open trend follow-through",
+            "is_killzone": False,
+            "utc_time": utc_now.strftime("%H:%M UTC"),
+        }
+    elif 17.0 <= time_float < 21.0:
+        return {
+            "session": "New York Afternoon Session",
+            "emoji": "🌆",
+            "liquidity": "MODERATE",
+            "phase": "LATE TREND",
+            "description": "US equity trading session before daily close",
+            "is_killzone": False,
+            "utc_time": utc_now.strftime("%H:%M UTC"),
+        }
+    elif 0.0 <= time_float < 7.0:
+        return {
+            "session": "Asian Session",
+            "emoji": "🌏",
+            "liquidity": "MODERATE-LOW",
+            "phase": "ACCUMULATION",
+            "description": "Range-bound consolidation & liquidity buildup",
+            "is_killzone": False,
+            "utc_time": utc_now.strftime("%H:%M UTC"),
+        }
+    else:
+        return {
+            "session": "Pacific / Pre-Asia Transition",
+            "emoji": "🌙",
+            "liquidity": "LOW",
+            "phase": "OFF-HOURS",
+            "description": "Lower depth; wider spreads possible",
+            "is_killzone": False,
+            "utc_time": utc_now.strftime("%H:%M UTC"),
+        }
+
 
 
 def get_market_overview(symbols: Optional[List[str]] = None) -> str:

@@ -48,6 +48,10 @@ class AutoTrader:
             "risk_per_trade_pct": 0.015,  # 1.5% auto capital risk per trade
             "allow_multiple_per_symbol": False,
             "auto_tp_sl": True,
+            "auto_breakeven": False,      # Auto-shift SL to Breakeven when TP1 is reached
+            "trailing_sl": False,         # Dynamic Trailing Stop-Loss
+            "trailing_pct": 0.01,         # 1.0% trail distance
+            "trailing_activation_pct": 0.012,  # 1.2% profit before trail kicks in
             "paper_balance": 10000.0,  # $10,000 initial virtual capital
             "positions": {},           # position_id -> position dict
             "history": [],             # list of closed trades
@@ -203,6 +207,23 @@ class AutoTrader:
         self.data["allow_multiple_per_symbol"] = bool(allow)
         self.save()
         return self.data["allow_multiple_per_symbol"]
+
+    def set_auto_breakeven(self, enabled: bool) -> bool:
+        """Enable or disable moving Stop Loss to Breakeven when TP1 is hit."""
+        self.data["auto_breakeven"] = bool(enabled)
+        self.save()
+        return self.data["auto_breakeven"]
+
+    def set_trailing_sl(self, enabled: bool, pct: Optional[float] = None) -> Dict[str, Any]:
+        """Configure dynamic trailing stop-loss."""
+        self.data["trailing_sl"] = bool(enabled)
+        if pct is not None:
+            self.data["trailing_pct"] = max(0.002, min(float(pct), 0.10))
+        self.save()
+        return {
+            "trailing_sl": self.data["trailing_sl"],
+            "trailing_pct": self.data.get("trailing_pct", 0.01),
+        }
 
     def calculate_risk_position_size(
         self,
@@ -691,9 +712,50 @@ class AutoTrader:
                 continue
 
             side = pos["side"].lower()
+            entry = float(pos.get("entry_price", curr_price))
             sl = float(pos.get("sl_price") or pos.get("sl", 0))
             tp1 = float(pos.get("tp1_price") or pos.get("tp1", 0))
             tp2 = float(pos.get("tp2_price") or pos.get("tp2", tp1))
+
+            # 1. Dynamic Trailing Stop-Loss calculation
+            if self.data.get("trailing_sl", False):
+                trail_pct = float(self.data.get("trailing_pct", 0.01))
+                act_pct = float(self.data.get("trailing_activation_pct", 0.012))
+                if side in ("buy", "long") and curr_price >= entry * (1.0 + act_pct):
+                    cand_sl = round(curr_price * (1.0 - trail_pct), 2)
+                    if cand_sl > sl:
+                        pos["sl_price"] = cand_sl
+                        pos["sl"] = cand_sl
+                        pos["is_trailing"] = True
+                        sl = cand_sl
+                        self.save()
+                elif side in ("sell", "short") and curr_price <= entry * (1.0 - act_pct):
+                    cand_sl = round(curr_price * (1.0 + trail_pct), 2)
+                    if sl == 0 or cand_sl < sl:
+                        pos["sl_price"] = cand_sl
+                        pos["sl"] = cand_sl
+                        pos["is_trailing"] = True
+                        sl = cand_sl
+                        self.save()
+
+            # 2. Breakeven Stop-Loss shift when TP1 is hit
+            if self.data.get("auto_breakeven", False):
+                if side in ("buy", "long"):
+                    if curr_price >= tp1 and tp1 > 0 and not pos.get("tp1_hit", False) and tp2 > tp1:
+                        pos["tp1_hit"] = True
+                        pos["sl_price"] = entry
+                        pos["sl"] = entry
+                        pos["is_breakeven"] = True
+                        sl = entry
+                        self.save()
+                elif side in ("sell", "short"):
+                    if curr_price <= tp1 and tp1 > 0 and not pos.get("tp1_hit", False) and tp2 < tp1:
+                        pos["tp1_hit"] = True
+                        pos["sl_price"] = entry
+                        pos["sl"] = entry
+                        pos["is_breakeven"] = True
+                        sl = entry
+                        self.save()
 
             hit_exit = False
             exit_reason = ""
@@ -702,22 +764,22 @@ class AutoTrader:
                 if curr_price >= tp2 and tp2 > 0:
                     hit_exit = True
                     exit_reason = "TAKE PROFIT (TP2 Hit)"
-                elif curr_price >= tp1 and tp1 > 0:
+                elif curr_price >= tp1 and tp1 > 0 and not self.data.get("auto_breakeven", False):
                     hit_exit = True
                     exit_reason = "TAKE PROFIT (TP1 Hit)"
                 elif curr_price <= sl and sl > 0:
                     hit_exit = True
-                    exit_reason = "STOP LOSS Triggered"
+                    exit_reason = "BREAKEVEN Stop Hit" if pos.get("is_breakeven") else "STOP LOSS Triggered"
             elif side in ("sell", "short"):
                 if curr_price <= tp2 and tp2 > 0:
                     hit_exit = True
                     exit_reason = "TAKE PROFIT (TP2 Hit)"
-                elif curr_price <= tp1 and tp1 > 0:
+                elif curr_price <= tp1 and tp1 > 0 and not self.data.get("auto_breakeven", False):
                     hit_exit = True
                     exit_reason = "TAKE PROFIT (TP1 Hit)"
                 elif curr_price >= sl and sl > 0:
                     hit_exit = True
-                    exit_reason = "STOP LOSS Triggered"
+                    exit_reason = "BREAKEVEN Stop Hit" if pos.get("is_breakeven") else "STOP LOSS Triggered"
 
             if hit_exit:
                 try:
@@ -748,6 +810,10 @@ class AutoTrader:
             "max_open_positions": int(self.data.get("max_open_positions", 5)),
             "risk_per_trade_pct": float(self.data.get("risk_per_trade_pct", 0.015)),
             "allow_multiple_per_symbol": bool(self.data.get("allow_multiple_per_symbol", False)),
+            "auto_breakeven": bool(self.data.get("auto_breakeven", False)),
+            "trailing_sl": bool(self.data.get("trailing_sl", False)),
+            "trailing_pct": float(self.data.get("trailing_pct", 0.01)),
+            "trailing_activation_pct": float(self.data.get("trailing_activation_pct", 0.012)),
             "paper_balance": self.data.get("paper_balance", 10000.0),
             "balance": self.data.get("paper_balance", 10000.0),
             "initial_balance": 10000.0,
@@ -795,6 +861,99 @@ class AutoTrader:
                 pos_copy["unrealized_pnl_pct"] = 0.0
             results.append(pos_copy)
         return results
+
+    def format_institutional_dashboard(self) -> str:
+        """Format single-screen institutional command center dashboard."""
+        from market_data import get_market_session, get_symbol_display_name
+        data = self.get_summary()
+        open_positions = self.get_positions_with_pnl()
+        session = get_market_session()
+
+        status_tag = "🟢 <b>ACTIVE & SCANNING</b>" if data["enabled"] else "🔴 <b>STOPPED / PAUSED</b>"
+        mode_tag = "⚡ <b>LIVE (DELTA)</b>" if data["mode"] == "live" else "📝 <b>SIMULATED PAPER</b>"
+
+        bal = data["paper_balance"]
+        tot_pnl = data["total_pnl"]
+        pnl_sign = "+" if tot_pnl >= 0 else ""
+        pnl_emoji = "🟢" if tot_pnl >= 0 else "🔴"
+        win_rate = data["win_rate"]
+
+        lines = [
+            "🏛️ <b>INSTITUTIONAL TRADING DESK DASHBOARD</b>",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"🤖 <b>Bot Status:</b> {status_tag} | Mode: {mode_tag}",
+            f"🌐 <b>Session:</b> {session['emoji']} <b>{session['session']}</b> ({session['liquidity']} Liquidity)",
+            f"   └ <i>{session['description']}</i>\n",
+            "💼 <b>PORTFOLIO & CAPITAL:</b>",
+            f"• <b>Account Balance:</b> <code>${bal:,.2f}</code>",
+            f"• <b>Realized PnL:</b> {pnl_emoji} <code>{pnl_sign}${tot_pnl:,.2f}</code>",
+            f"• <b>Historical Win Rate:</b> <code>{win_rate:.1f}%</code> ({data['wins']}W / {data['losses']}L / {data['total_trades']} Total)\n",
+        ]
+
+        # Open Positions
+        max_pos = data["max_open_positions"]
+        lines.append(f"📈 <b>ACTIVE POSITIONS ({len(open_positions)}/{max_pos}):</b>")
+        if not open_positions:
+            lines.append("• <i>No active positions. Scanning 1m/5m/15m AMD & Confluence setups...</i>\n")
+        else:
+            for p in open_positions:
+                sym_display = get_symbol_display_name(p["symbol"])
+                side_badge = "🟢 LONG" if p["side"].lower() in ("buy", "long") else "🔴 SHORT"
+                u_pnl = p.get("unrealized_pnl", 0.0)
+                u_pct = p.get("unrealized_pnl_pct", 0.0)
+                u_sign = "+" if u_pnl >= 0 else ""
+                u_emoji = "🟢" if u_pnl >= 0 else "🔴"
+
+                be_badge = " [🛡️ BE]" if p.get("is_breakeven") else ""
+                trail_badge = " [⚡ TRAIL]" if p.get("is_trailing") else ""
+
+                lines.append(
+                    f"• {side_badge} <b>{sym_display}</b>{be_badge}{trail_badge}\n"
+                    f"  Entry: <code>${p['entry_price']:,.2f}</code> | Mark: <code>${p.get('current_price', p['entry_price']):,.2f}</code>\n"
+                    f"  PnL: {u_emoji} <b>{u_sign}${u_pnl:,.2f} ({u_sign}{u_pct:.2f}%)</b> | RRR: <code>{p.get('rrr', '1:2')}</code>\n"
+                    f"  SL: <code>${p.get('sl_price', 0):,.2f}</code> | TP1: <code>${p.get('tp1_price', 0):,.2f}</code> | TP2: <code>${p.get('tp2_price', 0):,.2f}</code>"
+                )
+            lines.append("")
+
+        # Risk Rules
+        risk_pct = data["risk_per_trade_pct"] * 100.0
+        be_status = "🟢 ACTIVE" if data.get("auto_breakeven") else "⚪ OFF"
+        trail_status = f"🟢 ACTIVE ({data.get('trailing_pct', 0.01)*100:.1f}%)" if data.get("trailing_sl") else "⚪ OFF"
+        multi_status = "🟢 ALLOWED" if data["allow_multiple_per_symbol"] else "⚪ 1 PER PAIR"
+
+        lines.extend([
+            "🛡️ <b>RISK MANAGEMENT RULES:</b>",
+            f"• <b>Capital Risk / Trade:</b> <code>{risk_pct:.1f}%</code>",
+            f"• <b>Breakeven SL on TP1:</b> {be_status} (Protects wins into risk-free trades)",
+            f"• <b>Trailing Stop-Loss:</b> {trail_status}",
+            f"• <b>Symbol Allocation:</b> {multi_status}",
+            f"• <b>Watched Pairs:</b> {', '.join(data['symbols'])}\n",
+        ])
+
+        # Self-learning
+        learn = data.get("learning", {})
+        l_score = learn.get("overall_score", 1.0)
+        l_supp = len(learn.get("suppressed_setups", []))
+        lines.extend([
+            "🧠 <b>SELF-LEARNING DESK:</b>",
+            f"• <b>Desk Health Score:</b> <code>{l_score:.2f}x</code> | Suppressed Setups: <code>{l_supp}</code>",
+            f"• <b>Optimization:</b> Deterministic (0 LLM tokens)\n",
+        ])
+
+        # APIs
+        delta_stat = "🟢 Connected" if data["delta_configured"] else "⚠️ Not Connected (Paper Mode Active)"
+        lines.extend([
+            "🔑 <b>API CONNECTIVITY:</b>",
+            f"• <b>Delta Exchange:</b> {delta_stat}",
+            "",
+            "⚡ <b>QUICK ACTIONS:</b>",
+            "• <code>/trade on</code> | <code>/trade off</code> — Toggle Bot",
+            "• <code>/trade be on</code> — Toggle Breakeven Protection",
+            "• <code>/trade trail on</code> — Toggle Trailing Stop",
+            "• <code>/btc</code> | <code>/gold</code> | <code>/amd</code> — Deep Hubs",
+        ])
+
+        return "\n".join(lines)
 
     def get_learning_report(self) -> str:
         """Get formatted HTML report from self-learning engine (0 tokens)."""
