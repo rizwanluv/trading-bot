@@ -3876,3 +3876,28 @@ def main():
 
 if __name__ == "__main__":
     main()
+import os
+import asyncio
+from telegram import Bot
+from backup import schedule_backups
+
+# Import your existing trading/dashboard loop function
+# from trading_engine import run_dashboard_daemon
+
+async def run_dashboard_daemon():
+    # Your existing trading/battlefield loop
+    while True:
+        # Trading logic...
+        await asyncio.sleep(900)
+
+async def main():
+    bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
+
+    # Launch both tasks concurrently
+    await asyncio.gather(
+        run_dashboard_daemon(),              # Main trading logic
+        schedule_backups(bot, interval_seconds=86400)  # Daily backup task
+    )
+
+if __name__ == "__main__":
+    asyncio.run(main())
