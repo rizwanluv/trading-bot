@@ -620,6 +620,22 @@ class TestChatRoutingAndAliases(unittest.TestCase):
         asyncio.run(set_base_url_cmd(mock_update, mock_ctx))
         self.assertEqual(delta_client.base_url, "https://api.india.delta.exchange")
 
+        # 6. /model and dynamic model switching
+        from main import gemini_model_cmd, get_gemini_model
+        mock_ctx.args = []
+        asyncio.run(gemini_model_cmd(mock_update, mock_ctx))
+        self.assertIn("Google Gemini AI Model Configuration", mock_update.message.reply_text.call_args[0][0])
+
+        mock_ctx.args = ["pro"]
+        asyncio.run(gemini_model_cmd(mock_update, mock_ctx))
+        self.assertEqual(get_gemini_model(), "gemini-2.5-pro")
+
+        mock_update.message.text = "update google model latest model"
+        mock_ctx.args = []
+        asyncio.run(chat(mock_update, mock_ctx))
+        self.assertEqual(get_gemini_model(), "gemini-2.5-flash")
+        self.assertIn("Google Gemini Model Updated", mock_update.message.reply_text.call_args[0][0])
+
 
 if __name__ == "__main__":
     unittest.main()

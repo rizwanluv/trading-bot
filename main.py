@@ -73,7 +73,73 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Gemini Setup
-MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+SUPPORTED_GEMINI_MODELS = [
+    "gemini-2.5-flash",       # Google's latest multimodal price-performance model (Default)
+    "gemini-2.5-pro",         # Google's latest deep-reasoning frontier model
+    "gemini-2.5-flash-lite",  # Google's ultra-fast lightweight model
+    "gemini-2.0-flash",       # Stable 2.0 release
+    "gemini-1.5-flash",       # Legacy fallback
+]
+MODEL = os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
+
+
+def get_gemini_model() -> str:
+    """Get active Gemini model name from environment or fallback default."""
+    global MODEL
+    return os.environ.get("GEMINI_MODEL", MODEL or DEFAULT_GEMINI_MODEL).strip()
+
+
+def save_gemini_credentials(
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    env_path: str = ".env",
+) -> bool:
+    """Save Gemini API Key and Model to .env file and update current process environment."""
+    global MODEL
+    if api_key:
+        clean_key = api_key.strip()
+        os.environ["GEMINI_API_KEY"] = clean_key
+    if model:
+        clean_model = model.strip()
+        os.environ["GEMINI_MODEL"] = clean_model
+        MODEL = clean_model
+
+    lines = []
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception as e:
+            logger.warning(f"Could not read existing {env_path}: {e}")
+
+    keys_set = set()
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if api_key and stripped.startswith("GEMINI_API_KEY="):
+            new_lines.append(f"GEMINI_API_KEY={api_key.strip()}\n")
+            keys_set.add("GEMINI_API_KEY")
+        elif model and stripped.startswith("GEMINI_MODEL="):
+            new_lines.append(f"GEMINI_MODEL={model.strip()}\n")
+            keys_set.add("GEMINI_MODEL")
+        else:
+            new_lines.append(line)
+
+    if api_key and "GEMINI_API_KEY" not in keys_set:
+        new_lines.append(f"GEMINI_API_KEY={api_key.strip()}\n")
+    if model and "GEMINI_MODEL" not in keys_set:
+        new_lines.append(f"GEMINI_MODEL={model.strip()}\n")
+
+    try:
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to write Gemini credentials to {env_path}: {e}")
+        return False
+
+
 SYSTEM = """You are an expert price-action trader following Gautam Jha style strictly.
 
 Core Principles:
@@ -136,119 +202,153 @@ histories: Dict[int, List[Dict[str, str]]] = {}
 
 
 def generate_ai_reply(messages: List[Dict[str, str]]) -> str:
-    """Generate response from Gemini via SDK or direct REST API."""
+    """Generate response from Gemini via SDK or direct REST API with auto-fallback."""
     api_key = os.environ.get("GEMINI_API_KEY")
+    active_model = get_gemini_model()
     if not api_key:
         return (
             "⚠️ <b>GEMINI_API_KEY is not set.</b>\n\n"
+            f"• <b>Active Model:</b> <code>{active_model}</code>\n\n"
             "You can still use all market features:\n"
             "• <code>/price [SYMBOL]</code> — Live prices\n"
             "• <code>/levels [SYMBOL]</code> — Automatic Level Analysis\n"
             "• <code>/alert [SYMBOL] &lt;PRICE&gt;</code> — Set price alerts\n"
             "• <code>/entry [SYMBOL]</code> — 1m, 5m, 15m candle entry scan\n"
             "• <code>/watch [SYMBOL]</code> — Automatic candle entry alerts\n\n"
-            "To chat with AI, set the <code>GEMINI_API_KEY</code> environment variable."
+            "To chat with AI, connect your key with <code>/setgemini &lt;API_KEY&gt;</code>."
         )
 
+    candidate_models = [active_model] + [m for m in SUPPORTED_GEMINI_MODELS if m != active_model]
+
     if HAS_GENAI_SDK:
-        try:
-            client = genai.Client(api_key=api_key)
-            formatted_contents = [
-                types.Content(role=m["role"], parts=[types.Part(text=m["text"])])
-                for m in messages
-            ]
-            reply = client.models.generate_content(
-                model=MODEL,
-                contents=formatted_contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM, max_output_tokens=800
-                ),
-            )
-            if reply.text:
-                return reply.text
-        except Exception as e:
-            logger.warning(f"google-genai SDK call failed: {e}. Falling back to REST API.")
+        for m_name in candidate_models:
+            try:
+                client = genai.Client(api_key=api_key)
+                formatted_contents = [
+                    types.Content(role=m["role"], parts=[types.Part(text=m["text"])])
+                    for m in messages
+                ]
+                reply = client.models.generate_content(
+                    model=m_name,
+                    contents=formatted_contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM, max_output_tokens=800
+                    ),
+                )
+                if reply.text:
+                    if m_name != active_model:
+                        save_gemini_credentials(model=m_name)
+                    return reply.text
+            except Exception as e:
+                logger.warning(f"google-genai SDK call failed with {m_name}: {e}. Trying fallback.")
 
     # REST fallback
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={api_key}"
-        payload = {
-            "contents": [
-                {"role": m["role"], "parts": [{"text": m["text"]}]}
-                for m in messages
-            ],
-            "systemInstruction": {"parts": [{"text": SYSTEM}]},
-            "generationConfig": {"maxOutputTokens": 800},
-        }
-        r = requests.post(url, json=payload, timeout=20)
-        r.raise_for_status()
-        data = r.json()
-        candidates = data.get("candidates", [])
-        if candidates:
-            parts = candidates[0].get("content", {}).get("parts", [])
-            if parts:
-                return parts[0].get("text", "No response text.")
-        return "No response received from Gemini API."
-    except Exception as e:
-        return f"Error contacting Gemini API: {e}"
+    last_err = ""
+    for m_name in candidate_models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:generateContent?key={api_key}"
+            payload = {
+                "contents": [
+                    {"role": m["role"], "parts": [{"text": m["text"]}]}
+                    for m in messages
+                ],
+                "systemInstruction": {"parts": [{"text": SYSTEM}]},
+                "generationConfig": {"maxOutputTokens": 800},
+            }
+            r = requests.post(url, json=payload, timeout=20)
+            if r.status_code == 200:
+                data = r.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts:
+                        if m_name != active_model:
+                            save_gemini_credentials(model=m_name)
+                        return parts[0].get("text", "No response text.")
+                return "No response received from Gemini API."
+            else:
+                last_err = f"HTTP {r.status_code}: {r.text[:100]}"
+                logger.warning(f"REST call with {m_name} failed ({last_err}). Trying fallback.")
+        except Exception as e:
+            last_err = str(e)
+            logger.warning(f"REST call error with {m_name}: {e}")
+
+    return f"Error contacting Gemini API ({active_model}): {last_err}"
 
 
 def generate_ai_vision_reply(prompt_text: str, image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
-    """Analyze chart photo using Gemini Multimodal Vision following Gautam Jha strategy."""
+    """Analyze chart photo using Gemini Multimodal Vision following Gautam Jha strategy with auto-fallback."""
     api_key = os.environ.get("GEMINI_API_KEY")
+    active_model = get_gemini_model()
     if not api_key:
         return (
             "⚠️ <b>GEMINI_API_KEY is not set.</b>\n\n"
+            f"• <b>Active Model:</b> <code>{active_model}</code>\n\n"
             "To enable chart screenshot analysis with Gautam Jha strategy, "
-            "please set the <code>GEMINI_API_KEY</code> environment variable."
+            "set your key via <code>/setgemini &lt;API_KEY&gt;</code>."
         )
 
+    candidate_models = [active_model] + [m for m in SUPPORTED_GEMINI_MODELS if m != active_model]
+
     if HAS_GENAI_SDK:
-        try:
-            client = genai.Client(api_key=api_key)
-            img_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
-            text_part = types.Part.from_text(text=prompt_text)
-            reply = client.models.generate_content(
-                model=MODEL,
-                contents=[types.Content(parts=[text_part, img_part])],
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM,
-                    max_output_tokens=1200,
-                ),
-            )
-            if reply.text:
-                return reply.text
-        except Exception as e:
-            logger.warning(f"google-genai vision call failed: {e}. Falling back to REST API.")
+        for m_name in candidate_models:
+            try:
+                client = genai.Client(api_key=api_key)
+                img_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+                text_part = types.Part.from_text(text=prompt_text)
+                reply = client.models.generate_content(
+                    model=m_name,
+                    contents=[types.Content(parts=[text_part, img_part])],
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM,
+                        max_output_tokens=1200,
+                    ),
+                )
+                if reply.text:
+                    if m_name != active_model:
+                        save_gemini_credentials(model=m_name)
+                    return reply.text
+            except Exception as e:
+                logger.warning(f"google-genai vision call with {m_name} failed: {e}. Trying fallback.")
 
     # REST fallback
-    try:
-        import base64
-        b64_img = base64.b64encode(image_bytes).decode("utf-8")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={api_key}"
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt_text},
-                        {"inline_data": {"mime_type": mime_type, "data": b64_img}},
-                    ]
-                }
-            ],
-            "systemInstruction": {"parts": [{"text": SYSTEM}]},
-            "generationConfig": {"maxOutputTokens": 1200},
-        }
-        r = requests.post(url, json=payload, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        candidates = data.get("candidates", [])
-        if candidates:
-            parts = candidates[0].get("content", {}).get("parts", [])
-            if parts:
-                return parts[0].get("text", "No response text.")
-        return "No response received from Gemini Vision API."
-    except Exception as e:
-        return f"Error contacting Gemini Vision API: {e}"
+    import base64
+    b64_img = base64.b64encode(image_bytes).decode("utf-8")
+    last_err = ""
+    for m_name in candidate_models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:generateContent?key={api_key}"
+            payload = {
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": prompt_text},
+                            {"inline_data": {"mime_type": mime_type, "data": b64_img}},
+                        ]
+                    }
+                ],
+                "systemInstruction": {"parts": [{"text": SYSTEM}]},
+                "generationConfig": {"maxOutputTokens": 1200},
+            }
+            r = requests.post(url, json=payload, timeout=30)
+            if r.status_code == 200:
+                data = r.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts:
+                        if m_name != active_model:
+                            save_gemini_credentials(model=m_name)
+                        return parts[0].get("text", "No response text.")
+                return "No response received from Gemini Vision API."
+            else:
+                last_err = f"HTTP {r.status_code}: {r.text[:100]}"
+                logger.warning(f"REST vision call with {m_name} failed ({last_err}). Trying fallback.")
+        except Exception as e:
+            last_err = str(e)
+            logger.warning(f"REST vision error with {m_name}: {e}")
+
+    return f"Error contacting Gemini Vision API ({active_model}): {last_err}"
 
 
 # ==================== Command Handlers ====================
@@ -330,6 +430,10 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <code>/watchers</code> — List active candle scanners\n\n"
         "📸 <b>Chart Photo Analysis:</b>\n"
         "• <i>Send Chart Photo</i> — Upload any screenshot for Gautam Jha vision analysis\n\n"
+        "🧠 <b>Google Gemini AI & Models:</b>\n"
+        "• <code>/model [MODEL]</code> — View or switch Gemini model (e.g. <code>/model pro</code>)\n"
+        "• <code>/setgemini &lt;KEY&gt;</code> — Set Google Gemini API Key\n"
+        "• <code>/gemini</code> — Check AI status and active model\n\n"
         "🤖 <b>Bot Controls & Chat:</b>\n"
         "• <code>/list</code> — Show this full commands list\n"
         "• <code>/help</code> — Detailed instructions & examples\n"
@@ -885,6 +989,32 @@ async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await keys_cmd(update, ctx)
         return
 
+    # Detection of pasted Google Gemini API key
+    match_gemini = re.search(r'(?:gemini[_\s-]*api[_\s-]*key|google[_\s-]*api[_\s-]*key|gemini[_\s-]*key)[:\s]+([A-Za-z0-9_-]{25,})', clean_text, re.IGNORECASE)
+    if match_gemini:
+        gkey = match_gemini.group(1).strip()
+        save_gemini_credentials(api_key=gkey)
+        await update.message.reply_text(
+            f"🔑 <b>Google Gemini API Key Saved!</b>\n• Active Model: <code>{get_gemini_model()}</code> 🟢",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # Google Gemini model queries & switches
+    if lower_text in ("model", "models", "gemini model", "google model", "check model", "what model", "ai model", "gemini"):
+        ctx.args = []
+        await gemini_model_cmd(update, ctx)
+        return
+    if ("update" in lower_text or "upgrade" in lower_text or "latest" in lower_text) and "model" in lower_text:
+        ctx.args = ["latest"]
+        await gemini_model_cmd(update, ctx)
+        return
+    if lower_text.startswith("model ") or lower_text.startswith("set model ") or lower_text.startswith("switch model "):
+        parts = clean_text.split()
+        ctx.args = [parts[-1]] if len(parts) > 1 else []
+        await gemini_model_cmd(update, ctx)
+        return
+
     # 2. Plain-text command routing (without leading '/')
     # Keys / connection checks
     if lower_text in (
@@ -1080,6 +1210,96 @@ def save_delta_credentials(
 def save_delta_keys_to_env(api_key: str, api_secret: str, base_url: Optional[str] = None, env_path: str = ".env") -> bool:
     """Backward compatibility wrapper."""
     return save_delta_credentials(api_key=api_key, api_secret=api_secret, base_url=base_url, env_path=env_path)
+
+
+async def gemini_model_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """View or switch Google Gemini AI model (/model [MODEL_NAME])."""
+    args = ctx.args or []
+    current_model = get_gemini_model()
+    has_key = bool(os.environ.get("GEMINI_API_KEY"))
+
+    if not args:
+        models_list = "\n".join([
+            f"  • <code>{m}</code> {'🟢 <b>(Active)</b>' if m == current_model else ''}"
+            for m in SUPPORTED_GEMINI_MODELS
+        ])
+        msg = (
+            "🤖 <b>Google Gemini AI Model Configuration</b>\n\n"
+            f"• <b>Active Model:</b> <code>{current_model}</code> ⚡\n"
+            f"• <b>API Key:</b> {'🟢 Configured' if has_key else '⚠️ Not Set (Use /setgemini <KEY>)'}\n\n"
+            f"<b>Supported Models:</b>\n{models_list}\n\n"
+            "<b>To Switch Models:</b>\n"
+            "• <code>/model gemini-2.5-flash</code> — Latest multimodal & price-performance (Default)\n"
+            "• <code>/model gemini-2.5-pro</code> — Deep reasoning & advanced analysis\n"
+            "• <code>/model gemini-2.5-flash-lite</code> — Ultra low-latency speed\n"
+            "• <code>/model gemini-2.0-flash</code> — 2.0 generation\n\n"
+            "💡 <i>Shortcuts work too: <code>/model pro</code>, <code>/model flash</code>, or <code>/model lite</code></i>"
+        )
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        return
+
+    req = args[0].strip().lower()
+    if req in ("flash", "2.5-flash", "fast", "latest"):
+        target_model = "gemini-2.5-flash"
+    elif req in ("pro", "2.5-pro", "reasoning", "deep"):
+        target_model = "gemini-2.5-pro"
+    elif req in ("lite", "flash-lite", "2.5-lite", "2.5-flash-lite"):
+        target_model = "gemini-2.5-flash-lite"
+    elif req in ("2.0", "2.0-flash", "2.0flash"):
+        target_model = "gemini-2.0-flash"
+    elif req in ("1.5", "1.5-flash"):
+        target_model = "gemini-1.5-flash"
+    else:
+        target_model = args[0].strip()
+
+    save_gemini_credentials(model=target_model)
+
+    await update.message.reply_text(
+        f"✅ <b>Google Gemini Model Updated!</b>\n\n"
+        f"• <b>New Model:</b> <code>{target_model}</code> 🚀\n"
+        f"• <b>Saved to:</b> <code>.env</code> file\n\n"
+        "Ask any question or upload a chart screenshot to analyze with the new model!",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def set_gemini_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Set Google Gemini API Key (/setgemini <API_KEY>)."""
+    args = ctx.args or []
+    current_model = get_gemini_model()
+    has_key = bool(os.environ.get("GEMINI_API_KEY"))
+
+    if not args:
+        await update.message.reply_text(
+            "🔑 <b>Google Gemini API Key Setup</b>\n\n"
+            f"• <b>Status:</b> {'🟢 Configured' if has_key else '⚠️ Not Set'}\n"
+            f"• <b>Active Model:</b> <code>{current_model}</code>\n\n"
+            "<b>Usage:</b>\n"
+            "<code>/setgemini &lt;API_KEY&gt;</code>\n\n"
+            "💡 <b>How to get your free key:</b>\n"
+            "1. Visit https://aistudio.google.com\n"
+            "2. Click <b>Get API key → Create API key</b>\n"
+            "3. Send <code>/setgemini YOUR_KEY</code> to this bot",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    api_key = args[0].strip()
+    save_gemini_credentials(api_key=api_key)
+
+    await update.message.reply_text(
+        "✅ <b>Google Gemini API Key Saved!</b>\n\n"
+        f"• <b>Status:</b> 🟢 Active & Configured\n"
+        f"• <b>Model:</b> <code>{current_model}</code>\n"
+        f"• <b>Storage:</b> Persisted to local <code>.env</code>\n\n"
+        "🚀 <i>You can now chat directly with the AI assistant and upload chart photos for Gautam Jha vision analysis!</i>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def gemini_status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """View Google Gemini AI status and model (/gemini, /ai)."""
+    await gemini_model_cmd(update, ctx)
 
 
 async def set_key_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2007,6 +2227,13 @@ def main():
     app.add_handler(CommandHandler("testkey", keys_cmd))
     app.add_handler(CommandHandler("key", keys_cmd))
     app.add_handler(CommandHandler("setbaseurl", set_base_url_cmd))
+    app.add_handler(CommandHandler("model", gemini_model_cmd))
+    app.add_handler(CommandHandler("geminimodel", gemini_model_cmd))
+    app.add_handler(CommandHandler("googlemodel", gemini_model_cmd))
+    app.add_handler(CommandHandler("setgemini", set_gemini_cmd))
+    app.add_handler(CommandHandler("setgeminikey", set_gemini_cmd))
+    app.add_handler(CommandHandler("gemini", gemini_status_cmd))
+    app.add_handler(CommandHandler("ai", gemini_status_cmd))
 
     # BTC Shortcuts
     app.add_handler(CommandHandler("btc", btc_cmd))

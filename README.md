@@ -87,6 +87,13 @@ An advanced algorithmic trading and market intelligence Telegram bot powered by 
 | `/setkeys <KEY> <SECRET>` | Configure both Delta Exchange API Key & Secret at once |
 | `/keys` | View Delta API connection status and masked key |
 
+### 🧠 Google Gemini AI & Model Commands
+| Command | Description |
+|---|---|
+| `/model [MODEL]` | View or switch Gemini model (e.g. `/model gemini-2.5-flash`, `/model pro`) |
+| `/setgemini <KEY>` | Configure Google Gemini API Key directly in chat |
+| `/gemini` | Check AI status and active model |
+
 ### 🔔 Automatic Market Alerts
 | Command | Description |
 |---|---|
