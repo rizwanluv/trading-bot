@@ -342,6 +342,9 @@ class TestBotCommands(unittest.TestCase):
         for cmd in expected_cmds:
             self.assertIn(cmd, sent_text, f"Command {cmd} should be in /list output")
 
+        # Telegram hard limit: message length must strictly not exceed 4096 characters
+        self.assertLessEqual(len(sent_text), 4096, "list_cmd must strictly not exceed Telegram 4096 character limit")
+
     def test_trading_commands(self):
         import asyncio
         from unittest.mock import AsyncMock, MagicMock
@@ -609,6 +612,11 @@ class TestChatRoutingAndAliases(unittest.TestCase):
         mock_update.message.text = "alerts on"
         asyncio.run(chat(mock_update, mock_ctx))
         self.assertIn("AUTOMATIC ALERTS: TURNED ON", mock_update.message.reply_text.call_args[0][0])
+
+        # Plain text "list command" and "menu"
+        mock_update.message.text = "list command"
+        asyncio.run(chat(mock_update, mock_ctx))
+        self.assertIn("UNIFIED COMMAND HUBS", mock_update.message.reply_text.call_args[0][0])
 
         # 4. Pasted API credentials in chat
         with patch("main.save_delta_credentials") as mock_save, patch("main.keys_cmd") as mock_keys:

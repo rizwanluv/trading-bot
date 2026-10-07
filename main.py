@@ -844,89 +844,60 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Show all bot commands in a quick, clean reference list featuring unified hubs."""
     msg = (
-        "📜 <b>UNIFIED MULTI-WORKING COMMAND HUBS:</b>\n"
+        "📜 <b>UNIFIED COMMAND HUBS:</b>\n"
         "<i>(Minimum Commands — Maximum Working Types!)</i>\n\n"
-        "🏛️ <b>0. Master Institutional Dashboard (/status or /dashboard):</b>\n"
-        "• <code>/status</code> (or <code>/dashboard</code>) — Single-card institutional command center\n"
-        "  └ Real-time bot state, live market session killzone, open positions with live PnL, risk rules, self-learning health, and API connectivity in 1 view!\n\n"
-        "🪙 <b>1. Bitcoin All-in-One Hub (/btc):</b>\n"
-        "• <code>/btc</code> — Comprehensive all-in-one Bitcoin card\n"
-        "• <code>/btc price</code> — Live ticker & volume\n"
-        "• <code>/btc levels</code> — Pivots, S/R & Fibs\n"
-        "• <code>/btc gj</code> — Gautam Jha liquidity & sweeps\n"
-        "• <code>/btc entry</code> — 1m, 5m, 15m candle setups\n"
-        "• <code>/btc watch</code> — Auto candle entry alerts\n"
-        "• <code>/btc book</code> — L2 order book depth & walls\n"
-        "• <code>/btc news</code> — Breaking news & sentiment score\n"
-        "• <code>/btc confluence</code> — Master 5-strategy score & plan\n"
-        "• <code>/btc analyze</code> — 18-Agent Institutional Desk\n"
-        "• <code>/btc buy [sz]</code> | <code>/btc sell [sz]</code> — Execute order with auto SL/TP\n\n"
-        "🥇 <b>2. Gold All-in-One Hub (/gold or /xau):</b>\n"
-        "• <code>/gold</code> — Comprehensive all-in-one Gold card\n"
-        "• <code>/gold price</code> | <code>/gold levels</code> | <code>/gold gj</code> | <code>/gold entry</code>\n"
-        "• <code>/gold watch</code> | <code>/gold book</code> | <code>/gold news</code> | <code>/gold confluence</code>\n"
-        "• <code>/gold analyze</code> — 18-Agent Institutional Desk\n"
-        "• <code>/gold buy [sz]</code> | <code>/gold sell [sz]</code> — Execute order with auto SL/TP\n\n"
-        "💼 <b>3. Master Trading & Portfolio Hub (/trade):</b>\n"
-        "• <code>/trade</code> — Portfolio & bot dashboard (balance, mode, win rate)\n"
-        "• <code>/trade status</code> — Detailed single-screen institutional command center 🏛️\n"
-        "• <code>/trade on</code> (or <code>start</code>) — START automated trading bot 🟢\n"
-        "• <code>/trade off</code> (or <code>stop</code>) — STOP / pause automated trading 🔴\n"
-        "• <code>/trade be [on|off]</code> — Toggle Breakeven Stop-Loss on TP1 (Risk-Free Trades) 🛡️\n"
-        "• <code>/trade trail [on|off|pct]</code> — Toggle Dynamic Trailing Stop-Loss ⚡\n"
-        "• <code>/trade size &lt;VAL&gt;</code> (or <code>/size &lt;VAL&gt;</code>) — Set Auto-Trade Lot Size (e.g. <code>/trade size 0.05</code>) 🎯\n"
-        "• <code>/trade size &lt;SYM&gt; &lt;VAL&gt;</code> — Set Pair Override (e.g. <code>/trade size BTC 0.01</code>)\n"
+        "🏛️ <b>Master Institutional Dashboard:</b>\n"
+        "• <code>/status</code> (or <code>/dashboard</code>, <code>/dash</code>) — Live Killzones, positions, risk & desk health\n\n"
+        "🪙 <b>Bitcoin Hub (/btc):</b>\n"
+        "• <code>/btc</code> — Summary | <code>/btc price</code> | <code>/btc levels</code> | <code>/btc gj</code>\n"
+        "• <code>/btc entry</code> | <code>/btc watch</code> | <code>/btc book</code> | <code>/btc news</code> | <code>/btc confluence</code>\n"
+        "• <code>/btc analyze</code> — 18-Agent Desk | <code>/btc buy [sz]</code> | <code>/btc sell [sz]</code>\n\n"
+        "🥇 <b>Gold Hub (/gold or /xau):</b>\n"
+        "• <code>/gold</code> — Summary | <code>/gold price</code> | <code>/gold levels</code> | <code>/gold gj</code>\n"
+        "• <code>/gold entry</code> | <code>/gold watch</code> | <code>/gold book</code> | <code>/gold news</code> | <code>/gold confluence</code>\n"
+        "• <code>/gold analyze</code> — 18-Agent Desk | <code>/gold buy [sz]</code> | <code>/gold sell [sz]</code>\n\n"
+        "💼 <b>Trading & Portfolio Hub (/trade):</b>\n"
+        "• <code>/trade</code> — Portfolio & balance | <code>/trade status</code> — Desk dashboard\n"
+        "• <code>/trade on</code> | <code>/trade off</code> — Start/stop auto bot 🟢🔴\n"
+        "• <code>/trade size &lt;VAL&gt;</code> | <code>/size &lt;VAL&gt;</code> — Set auto lot size (e.g. <code>0.05</code>) 🎯\n"
+        "• <code>/trade size &lt;SYM&gt; &lt;VAL&gt;</code> — Pair override (e.g. <code>BTC 0.01</code>) | <code>reset</code>\n"
+        "• <code>/trade be [on|off]</code> — Breakeven SL on TP1 (Risk-Free) 🛡️\n"
+        "• <code>/trade trail [on|off|pct]</code> — Dynamic Trailing SL ⚡\n"
         "• <code>/trade live</code> | <code>/trade paper</code> — Switch execution mode\n"
-        "• <code>/trade pos</code> — View active open positions & live PnL\n"
-        "• <code>/trade close [id|all]</code> — Close position(s) at market\n"
-        "• <code>/trade bal</code> — Wallet & account balances\n"
-        "• <code>/trade amd [sym]</code> — Execute/analyze 1m/5m/15m AMD Scalp\n"
-        "• <code>/trade maxpos &lt;N&gt;</code> — Set max concurrent trades (e.g. 5)\n"
-        "• <code>/trade risk &lt;PCT&gt;</code> — Set capital risk per trade (e.g. 1.5%)\n"
-        "• <code>/trade multi [on|off]</code> — Toggle multi-trade per symbol\n"
-        "• <code>/trade confluence &lt;sym&gt;</code> — Execute master confluence trade\n"
-        "• <code>/trade &lt;sym&gt; &lt;buy|sell&gt; [sz]</code> — Manual trade execution\n"
+        "• <code>/trade pos</code> | <code>/trade bal</code> | <code>/trade close [id|all]</code>\n"
+        "• <code>/trade amd [sym]</code> | <code>/trade confluence &lt;sym&gt;</code>\n"
+        "• <code>/trade &lt;sym&gt; &lt;buy|sell&gt; [sz]</code> — Manual market trade\n"
+        "• <code>/trade maxpos &lt;N&gt;</code> | <code>/trade risk &lt;PCT&gt;</code> | <code>/trade multi [on|off]</code>\n"
         "• <code>/trade learn</code> — Self-learning performance & insights\n\n"
-        "🔔 <b>4. Master Alerts Hub (/alert):</b>\n"
-        "• <code>/alert</code> — Alerts overview & active list\n"
-        "• <code>/alert on</code> — Turn ON automatic market alerts for BTC & Gold 🟢\n"
-        "• <code>/alert off</code> — Turn OFF automatic alerts 🔴\n"
-        "• <code>/alert list</code> — List your active price alerts\n"
-        "• <code>/alert &lt;sym&gt; &lt;price&gt;</code> — Set price alert (e.g. <code>/alert btc 85000</code>)\n"
-        "• <code>/alert &lt;price&gt;</code> — Set price alert (auto-detects symbol)\n"
-        "• <code>/alert del &lt;ID&gt;</code> — Remove an alert by ID\n"
-        "• <code>/alert clear</code> — Clear all price alerts\n"
-        "• <code>/alert watch &lt;sym&gt;</code> — Watch candle closes\n\n"
-        "⚡ <b>5. AMD Scalp Trading Desk (/amd or /scalp):</b>\n"
-        "• <code>/amd [symbol]</code> — 1m, 5m, 15m Multi-Timeframe Institutional Scalper\n"
-        "• Accumulation range detection + Judas Swing liquidity sweep + 1m MSS trigger\n"
-        "• Automated Stop-Loss, Take-Profit (TP1/TP2), and 1.5% capital risk management\n"
-        "• <code>/amd trade [symbol]</code> — Instant auto-scalp execution\n\n"
-        "🏛️ <b>6. 18-Agent Institutional Desk (/analyze):</b>\n"
-        "• <code>/analyze [symbol] [tf]</code> (or <code>/analysis</code>) — Deep 18-agent categorized report\n"
-        "• Categories: Price Action Core, Liquidity & Sessions, Market Context, News & Sentiment, Momentum & Strength, Decision Layer\n\n"
-        "🔐 <b>7. Master Keys & Bot Config (/keys):</b>\n"
-        "• <code>/keys</code> — Connection status & balances overview\n"
-        "• <code>/keys check</code> — Test live Delta Exchange connection\n"
-        "• <code>/keys set &lt;KEY&gt; &lt;SECRET&gt;</code> — Connect Delta API keys\n"
-        "• <code>/keys base [india|global]</code> — Switch Delta endpoint\n"
-        "• <code>/keys gemini &lt;KEY&gt;</code> — Set Google Gemini API Key\n"
-        "• <code>/keys model [flash|pro|lite]</code> — Switch Gemini AI Model\n\n"
-        "📸 <b>Chart Photo Analysis:</b>\n"
-        "• <i>Send Chart Photo</i> — Instant 18-Agent Multimodal Vision Analysis\n\n"
+        "🔔 <b>Alerts Hub (/alert):</b>\n"
+        "• <code>/alert on</code> | <code>/alert off</code> — Toggle auto BTC/Gold alerts\n"
+        "• <code>/alert list</code> | <code>/alert clear</code> | <code>/alert del &lt;ID&gt;</code>\n"
+        "• <code>/alert &lt;price&gt;</code> | <code>/alert &lt;sym&gt; &lt;price&gt;</code> — Price alerts\n"
+        "• <code>/alert watch &lt;sym&gt;</code> — Candle close alerts\n\n"
+        "⚡ <b>AMD Scalper Desk (/amd or /scalp):</b>\n"
+        "• <code>/amd [sym]</code> — 1m/5m/15m Multi-TF Scalper | <code>/amd trade [sym]</code>\n\n"
+        "🏛️ <b>18-Agent Institutional Desk (/analyze):</b>\n"
+        "• <code>/analyze [sym] [tf]</code> (or <code>/analysis</code>) — Deep 18-agent report\n\n"
+        "🔐 <b>API & Bot Keys (/keys):</b>\n"
+        "• <code>/keys</code> | <code>/keys check</code> — Status & live connection test\n"
+        "• <code>/keys set &lt;KEY&gt; &lt;SECRET&gt;</code> | <code>/keys base [india|global]</code>\n"
+        "• <code>/keys gemini &lt;KEY&gt;</code> | <code>/keys model [flash|pro|lite]</code>\n\n"
+        "📸 <b>Chart Photo Analysis:</b> Send screenshot for 18-agent vision report\n\n"
         "💡 <b>Direct Shortcuts & Aliases:</b>\n"
-        "• <code>/status</code>, <code>/dashboard</code>, <code>/dash</code>\n"
-        "• <code>/btc</code>, <code>/btclevels</code>, <code>/btcgj</code>, <code>/btcentry</code>, <code>/btcwatch</code>, <code>/btcamd</code>\n"
-        "• <code>/gold</code>, <code>/xau</code>, <code>/xauusd</code>, <code>/goldlevels</code>, <code>/goldgj</code>, <code>/goldentry</code>, <code>/goldwatch</code>, <code>/goldamd</code>\n"
-        "• <code>/amd</code>, <code>/scalp</code>, <code>/multitrade</code>\n"
-        "• <code>/price</code>, <code>/levels</code>, <code>/analysis</code>, <code>/gj</code>, <code>/liquidity</code>\n"
-        "• <code>/alert</code>, <code>/alerts</code>, <code>/delalert</code>, <code>/clearalerts</code>\n"
-        "• <code>/entry</code>, <code>/scan</code>, <code>/watch</code>, <code>/unwatch</code>, <code>/watchers</code>\n"
-        "• <code>/autotrade</code>, <code>/starttrade</code>, <code>/stoptrade</code>, <code>/trade</code>, <code>/positions</code>, <code>/closeposition</code>, <code>/balance</code>, <code>/mode</code>\n"
-        "• <code>/alertson</code>, <code>/alertsoff</code>, <code>/setkey</code>, <code>/setsecret</code>, <code>/setkeys</code>, <code>/keys</code>\n"
-        "• <code>/list</code>, <code>/help</code>, <code>/start</code>, <code>/reset</code>"
+        "• <code>/btc /btclevels /btcgj /btcentry /btcwatch</code>\n"
+        "• <code>/gold /xau /xauusd /goldlevels /goldgj /goldentry /goldwatch</code>\n"
+        "• <code>/price /levels /analysis /gj /liquidity</code>\n"
+        "• <code>/alert /alerts /delalert /clearalerts</code>\n"
+        "• <code>/entry /scan /watch /unwatch /watchers</code>\n"
+        "• <code>/autotrade /starttrade /stoptrade /trade /positions /closeposition /balance /mode</code>\n"
+        "• <code>/alertson /alertsoff /setkey /setsecret /setkeys /keys</code>\n"
+        "• <code>/list /help /start /reset</code>"
     )
-    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+    try:
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.error(f"Error sending list_cmd HTML: {e}")
+        await update.message.reply_text(msg)
 
 
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1811,7 +1782,11 @@ async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # Help & commands list
-    if lower_text in ("help", "commands", "cmd", "cmds", "list", "all commands"):
+    if lower_text in (
+        "help", "commands", "cmd", "cmds", "list", "all commands", "list command",
+        "list commands", "command list", "commands list", "list cmd", "list cmds",
+        "show commands", "show list", "menu", "features", "bot commands", "all cmds"
+    ) or lower_text.startswith("list command") or lower_text.startswith("show command"):
         await list_cmd(update, ctx)
         return
 
@@ -3657,6 +3632,9 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("list", list_cmd))
     app.add_handler(CommandHandler("commands", list_cmd))
+    app.add_handler(CommandHandler("cmd", list_cmd))
+    app.add_handler(CommandHandler("cmds", list_cmd))
+    app.add_handler(CommandHandler("menu", list_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("dashboard", status_cmd))
