@@ -379,5 +379,31 @@ class MemoryManager:
         self.save()
 
 
+    def record_trade_reflection(self, trade_summary: Dict[str, Any]):
+        """
+        Record and consolidate procedural lessons from a closed trade into memory.
+        Enables continuous self-learning across consecutive auto-trades.
+        """
+        sym = trade_summary.get("symbol", "TRADE")
+        strat = trade_summary.get("strategy", "Auto Execution")
+        pnl = trade_summary.get("pnl", 0.0)
+        is_win = bool(trade_summary.get("is_win", False))
+        reason = trade_summary.get("exit_reason", "")
+
+        lesson = f"Trade #{trade_summary.get('id', 0)} ({sym} {strat}): {'WIN' if is_win else 'LOSS'} ${pnl:+,.2f} via {reason}."
+        if not is_win and ("STOP" in reason.upper() or pnl < 0):
+            adaptation = f"Adaptive rule: Require stronger institutional confluence confirmation on {strat} before entry after stop loss hit."
+            if adaptation not in self.procedural_rules:
+                self.procedural_rules.append(adaptation)
+                self.procedural_rules = self.procedural_rules[-25:]
+        elif is_win and pnl > 0:
+            fact = f"High-probability edge confirmed: {strat} on {sym} yielded positive return (${pnl:+,.2f})."
+            if fact not in self.semantic_facts:
+                self.semantic_facts.append(fact)
+                self.semantic_facts = self.semantic_facts[-25:]
+        self.save()
+
+
 # Singleton instance
 memory_manager = MemoryManager()
+

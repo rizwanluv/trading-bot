@@ -1899,6 +1899,69 @@ class TestBackupAndBattlefieldCommands(unittest.TestCase):
         self.assertIn("AUTOMATED BACKUP STATUS", mock_update.message.reply_text.call_args[0][0])
 
 
+class TestInstitutionalTrackAndContinuousLearning(unittest.TestCase):
+    """Test suite for news analysis, big institute order flow tracking, and continuous trade learning."""
+
+    def test_news_and_institutional_snapshot(self):
+        from battlefield_engine import get_market_snapshot_sync
+        snapshot = get_market_snapshot_sync("BTCUSD")
+        self.assertIn("news", snapshot)
+        self.assertIn("score", snapshot["news"])
+        self.assertIn("label", snapshot["news"])
+        self.assertIn("catalyst", snapshot["news"])
+
+        self.assertIn("institutional", snapshot)
+        self.assertIn("imbalance_ratio", snapshot["institutional"])
+        self.assertIn("imbalance_bias", snapshot["institutional"])
+        self.assertIn("pdh_swept", snapshot["institutional"])
+        self.assertIn("pdl_swept", snapshot["institutional"])
+
+    def test_prior_trade_analysis_and_adaptation(self):
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        tmp.close()
+        try:
+            at = AutoTrader(store_file=tmp.name, mode="paper")
+            prior = at.analyze_prior_trades("BTCUSD")
+            self.assertIn("total_analyzed", prior)
+            self.assertIn("recent_win_rate", prior)
+            self.assertIn("adaptive_advice", prior)
+
+            # Execute trade with enriched metadata
+            pos = at.execute_trade(
+                symbol="BTCUSD",
+                side="buy",
+                size=0.01,
+                confidence="9/10",
+                news_sentiment={"label": "BULLISH", "score": 0.45},
+                institutional_flow={"imbalance_bias": "INSTITUTIONAL_BUY_PRESSURE", "imbalance_ratio": 0.35},
+                reason="Institutional L2 Depth Wall Absorption",
+            )
+            self.assertEqual(pos["confidence"], "9/10")
+            self.assertIn("BULLISH", pos["news_summary"])
+            self.assertIn("INSTITUTIONAL_BUY_PRESSURE", pos["institutional_flow"])
+
+            # Close position and verify continuous learning lesson
+            closed = at.close_position(pos["id"], reason="TAKE PROFIT (TP1 Hit)", exit_price=pos["entry_price"] + 500)
+            self.assertIn("learned_lesson", closed)
+            self.assertIn("Win", closed["learned_lesson"])
+        finally:
+            if os.path.exists(tmp.name):
+                os.remove(tmp.name)
+
+    def test_memory_trade_reflection(self):
+        from memory_manager import memory_manager
+        memory_manager.record_trade_reflection({
+            "id": 999,
+            "symbol": "BTCUSD",
+            "strategy": "Master Confluence",
+            "pnl": 125.0,
+            "is_win": True,
+            "exit_reason": "TAKE PROFIT Hit",
+        })
+        self.assertTrue(len(memory_manager.semantic_facts) > 0 or len(memory_manager.procedural_rules) > 0)
+
+
 if __name__ == "__main__":
     unittest.main()
 
