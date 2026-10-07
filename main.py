@@ -80,13 +80,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Gemini Setup
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
 SUPPORTED_GEMINI_MODELS = [
-    "gemini-2.5-flash",       # Google's latest multimodal price-performance model (Default)
-    "gemini-2.5-pro",         # Google's latest deep-reasoning frontier model
-    "gemini-2.5-flash-lite",  # Google's ultra-fast lightweight model
-    "gemini-2.0-flash",       # Stable 2.0 release
-    "gemini-1.5-flash",       # Legacy fallback
+    "gemini-1.5-flash",       # Standard price-performance model (Default)
+    "gemini-1.5-pro",         # Deep reasoning & advanced analysis
+    "gemini-1.5-flash-8b",    # Ultra low-latency speed
+    "gemini-2.0-flash-exp",   # Experimental 2.0 release
 ]
 MODEL = os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
 
@@ -455,10 +454,9 @@ def generate_ai_vision_reply(
     return f"Error contacting Gemini Vision API ({active_model}): {last_err}"
 
 
-def generate_compact_ai_insight(prompt_text: str, max_tokens: int = 250) -> str:
+def generate_compact_ai_insight(prompt_text: str, max_tokens: int = 800) -> str:
     """
-    Generate ultra-concise AI strategic insights strictly capping tokens to minimize API consumption.
-    Consumes minimal tokens (<100 input prompt) and caps output at max_tokens (default 250).
+    Generate AI strategic insights using normal token limits for robust learning.
     """
     api_key = os.environ.get("GEMINI_API_KEY")
     active_model = get_gemini_model()
@@ -467,8 +465,9 @@ def generate_compact_ai_insight(prompt_text: str, max_tokens: int = 250) -> str:
 
     candidate_models = [active_model] + [m for m in SUPPORTED_GEMINI_MODELS if m != active_model]
     system_instruction = (
-        "You are an elite quantitative trading researcher. "
-        "Provide ultra-concise, sharp (<70 words total) bulleted insights. No filler words."
+        "You are an elite quantitative trading researcher AI. "
+        "Provide a detailed, highly analytical review of the strategy's performance, "
+        "offering actionable steps to adapt and improve the self-learning engine on every trade."
     )
 
     if HAS_GENAI_SDK:
@@ -489,6 +488,8 @@ def generate_compact_ai_insight(prompt_text: str, max_tokens: int = 250) -> str:
                     return reply.text
             except Exception as e:
                 logger.warning(f"SDK compact insight failed with {m_name}: {e}")
+                with open("error_log.txt", "a") as f:
+                    f.write(f"SDK compact insight failed with {m_name}: {e}\n")
 
     # REST fallback
     for m_name in candidate_models:
@@ -509,10 +510,18 @@ def generate_compact_ai_insight(prompt_text: str, max_tokens: int = 250) -> str:
                         if m_name != active_model:
                             save_gemini_credentials(model=m_name)
                         return parts[0].get("text", "")
+            elif r.status_code == 400:
+                logger.warning(f"REST 400 Bad Request with {m_name}. Invalid API key?")
+                return "⚠️ <b>Gemini API Error:</b> Invalid API Key. Please update it using <code>/setgemini &lt;KEY&gt;</code>."
+            elif r.status_code == 429:
+                logger.warning(f"REST 429 Rate Limit with {m_name}.")
+                return "⚠️ <b>Gemini API Error:</b> Rate limit exceeded (429). Please try again later."
         except Exception as e:
             logger.warning(f"REST compact insight failed with {m_name}: {e}")
+            with open("error_log.txt", "a") as f:
+                f.write(f"REST compact insight failed with {m_name}: {e}\n")
 
-    return "⚠️ Unable to contact Gemini API for AI insight."
+    return f"⚠️ Unable to contact Gemini API for AI insight. (Tried {len(candidate_models)} models)"
 
 
 # ==================== 18-Agent Institutional Desk & Hub Engines ====================
@@ -2090,26 +2099,24 @@ async def gemini_model_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"• <b>API Key:</b> {'🟢 Configured' if has_key else '⚠️ Not Set (Use /setgemini <KEY>)'}\n\n"
             f"<b>Supported Models:</b>\n{models_list}\n\n"
             "<b>To Switch Models:</b>\n"
-            "• <code>/model gemini-2.5-flash</code> — Latest multimodal & price-performance (Default)\n"
-            "• <code>/model gemini-2.5-pro</code> — Deep reasoning & advanced analysis\n"
-            "• <code>/model gemini-2.5-flash-lite</code> — Ultra low-latency speed\n"
-            "• <code>/model gemini-2.0-flash</code> — 2.0 generation\n\n"
+            "• <code>/model gemini-1.5-flash</code> — Latest multimodal & price-performance (Default)\n"
+            "• <code>/model gemini-1.5-pro</code> — Deep reasoning & advanced analysis\n"
+            "• <code>/model gemini-1.5-flash-8b</code> — Ultra low-latency speed\n"
+            "• <code>/model gemini-2.0-flash-exp</code> — 2.0 generation\n\n"
             "💡 <i>Shortcuts work too: <code>/model pro</code>, <code>/model flash</code>, or <code>/model lite</code></i>"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
         return
 
     req = args[0].strip().lower()
-    if req in ("flash", "2.5-flash", "fast", "latest"):
-        target_model = "gemini-2.5-flash"
-    elif req in ("pro", "2.5-pro", "reasoning", "deep"):
-        target_model = "gemini-2.5-pro"
-    elif req in ("lite", "flash-lite", "2.5-lite", "2.5-flash-lite"):
-        target_model = "gemini-2.5-flash-lite"
-    elif req in ("2.0", "2.0-flash", "2.0flash"):
-        target_model = "gemini-2.0-flash"
-    elif req in ("1.5", "1.5-flash"):
+    if req in ("flash", "1.5-flash", "fast", "latest"):
         target_model = "gemini-1.5-flash"
+    elif req in ("pro", "1.5-pro", "reasoning", "deep"):
+        target_model = "gemini-1.5-pro"
+    elif req in ("lite", "8b", "flash-8b", "1.5-8b"):
+        target_model = "gemini-1.5-flash-8b"
+    elif req in ("2.0", "2.0-flash", "2.0flash", "exp"):
+        target_model = "gemini-2.0-flash-exp"
     else:
         target_model = args[0].strip()
 

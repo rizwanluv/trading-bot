@@ -664,13 +664,13 @@ class LearningEngine:
 
         prompt = (
             f"Review this trading algorithm's performance metrics: {json.dumps(compressed_payload)}. "
-            "In 3 concise bullet points (<70 words total), give sharp quant recommendations on: "
-            "1) Best edge to exploit, 2) Session risk, 3) Capital preservation tip."
+            "Provide a highly analytical, actionable quant review. "
+            "Highlight the best edge to exploit, session risks, and adapt the strategy to improve learning for every future trade."
         )
 
         try:
-            # We call the gemini caller with a strict token cap
-            ai_text = gemini_caller(prompt, max_tokens=250)
+            # We call the gemini caller with a normal token cap to allow detailed improvement analysis
+            ai_text = gemini_caller(prompt, max_tokens=800)
             self._ai_cache = {"summary": ai_text, "timestamp": now}
             return f"🤖 <b>AI Quantitative Insight (Compressed Review):</b>\n\n{ai_text}"
         except Exception as e:
