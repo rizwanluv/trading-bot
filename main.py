@@ -71,6 +71,11 @@ from amd_scalper import (
     format_amd_scalp_html_report,
     calculate_risk_managed_plan,
 )
+from memory_manager import (
+    memory_manager,
+    MemoryExtraction,
+    reflect_and_consolidate,
+)
 
 # Logging setup
 logging.basicConfig(
@@ -80,12 +85,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Gemini Setup
-DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 SUPPORTED_GEMINI_MODELS = [
-    "gemini-1.5-flash",       # Standard price-performance model (Default)
-    "gemini-1.5-pro",         # Deep reasoning & advanced analysis
-    "gemini-1.5-flash-8b",    # Ultra low-latency speed
-    "gemini-2.0-flash-exp",   # Experimental 2.0 release
+    "gemini-2.5-flash",       # Google's latest multimodal price-performance model (Default)
+    "gemini-2.5-pro",         # Google's latest deep-reasoning frontier model
+    "gemini-2.5-flash-lite",  # Google's ultra-fast lightweight model
+    "gemini-2.0-flash",       # Gemini 2.0 release
+    "gemini-1.5-flash",       # Fallback model
 ]
 MODEL = os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
 
@@ -302,6 +308,9 @@ def generate_ai_reply(messages: List[Dict[str, str]], system_prompt: Optional[st
     api_key = os.environ.get("GEMINI_API_KEY")
     active_model = get_gemini_model()
     sys_instruction = system_prompt or SYSTEM
+    mem_inject = memory_manager.get_system_instructions_injection()
+    if mem_inject:
+        sys_instruction = f"{sys_instruction}\n{mem_inject}"
     if not api_key:
         return (
             "⚠️ <b>GEMINI_API_KEY is not set.</b>\n\n"
@@ -511,8 +520,10 @@ def generate_compact_ai_insight(prompt_text: str, max_tokens: int = 800) -> str:
                             save_gemini_credentials(model=m_name)
                         return parts[0].get("text", "")
             elif r.status_code == 400:
-                logger.warning(f"REST 400 Bad Request with {m_name}. Invalid API key?")
-                return "⚠️ <b>Gemini API Error:</b> Invalid API Key. Please update it using <code>/setgemini &lt;KEY&gt;</code>."
+                err_lower = r.text.lower()
+                if "api_key_invalid" in err_lower or "api key not valid" in err_lower:
+                    return "⚠️ <b>Gemini API Error:</b> Invalid API Key. Please update it using <code>/setgemini &lt;KEY&gt;</code>."
+                logger.warning(f"REST 400 with {m_name}: {r.text[:80]}. Trying next fallback model.")
             elif r.status_code == 429:
                 logger.warning(f"REST 429 Rate Limit with {m_name}.")
                 return "⚠️ <b>Gemini API Error:</b> Rate limit exceeded (429). Please try again later."
@@ -891,6 +902,10 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <code>/keys</code> | <code>/keys check</code> — Status & live connection test\n"
         "• <code>/keys set &lt;KEY&gt; &lt;SECRET&gt;</code> | <code>/keys base [india|global]</code>\n"
         "• <code>/keys gemini &lt;KEY&gt;</code> | <code>/keys model [flash|pro|lite]</code>\n\n"
+        "🧠 <b>Cognitive Memory & Rules (/rules or /memory):</b>\n"
+        "• <code>/rules</code> (or <code>/memory</code>) — View learned rules & semantic facts\n"
+        "• <code>/rules add &lt;RULE&gt;</code> | <code>/rules del &lt;RULE&gt;</code> | <code>/rules reset</code>\n"
+        "• <code>/reflect</code> (or <code>/consolidate</code>) — Instant AI reflection loop\n\n"
         "📸 <b>Chart Photo Analysis:</b> Send screenshot for 18-agent vision report\n\n"
         "💡 <b>Direct Shortcuts & Aliases:</b>\n"
         "• <code>/btc /btclevels /btcgj /btcentry /btcwatch</code>\n"
@@ -900,7 +915,7 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <code>/entry /scan /watch /unwatch /watchers</code>\n"
         "• <code>/autotrade /starttrade /stoptrade /trade /positions /closeposition /balance /mode</code>\n"
         "• <code>/alertson /alertsoff /setkey /setsecret /setkeys /keys</code>\n"
-        "• <code>/list /help /start /reset</code>"
+        "• <code>/learn /rules /memory /reflect /confluence /orderbook /news /amd /list /help /start /reset</code>"
     )
     try:
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
@@ -1836,6 +1851,16 @@ async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await learn_cmd(update, ctx)
         return
 
+    # Cognitive Memory & Procedural Rules
+    if lower_text in ("rules", "memory", "my rules", "bot rules", "behavior", "behavioral rules", "show rules", "show memory"):
+        ctx.args = []
+        await rules_cmd(update, ctx)
+        return
+    if lower_text in ("reflect", "consolidate", "consolidation", "reflect dialogue", "update memory", "learn memory"):
+        ctx.args = []
+        await reflect_cmd(update, ctx)
+        return
+
     # News analysis queries
     if lower_text in (
         "news", "news analysis", "crypto news", "market news", "gold news", "btc news",
@@ -1960,6 +1985,11 @@ async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     answer = generate_ai_reply(hist)
     hist.append({"role": "model", "text": answer})
     await update.message.reply_text(answer)
+
+    # Autonomous Cognitive Memory: record dialogue turn and run background consolidation
+    memory_manager.record_interaction(text, bot_reply=answer)
+    if memory_manager.should_consolidate():
+        asyncio.create_task(memory_manager.consolidate_async(model=get_gemini_model()))
 
 
 async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2099,24 +2129,26 @@ async def gemini_model_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"• <b>API Key:</b> {'🟢 Configured' if has_key else '⚠️ Not Set (Use /setgemini <KEY>)'}\n\n"
             f"<b>Supported Models:</b>\n{models_list}\n\n"
             "<b>To Switch Models:</b>\n"
-            "• <code>/model gemini-1.5-flash</code> — Latest multimodal & price-performance (Default)\n"
-            "• <code>/model gemini-1.5-pro</code> — Deep reasoning & advanced analysis\n"
-            "• <code>/model gemini-1.5-flash-8b</code> — Ultra low-latency speed\n"
-            "• <code>/model gemini-2.0-flash-exp</code> — 2.0 generation\n\n"
+            "• <code>/model gemini-2.5-flash</code> — Latest multimodal & price-performance (Default)\n"
+            "• <code>/model gemini-2.5-pro</code> — Deep reasoning & advanced analysis\n"
+            "• <code>/model gemini-2.5-flash-lite</code> — Ultra low-latency speed\n"
+            "• <code>/model gemini-2.0-flash</code> — 2.0 generation\n\n"
             "💡 <i>Shortcuts work too: <code>/model pro</code>, <code>/model flash</code>, or <code>/model lite</code></i>"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
         return
 
     req = args[0].strip().lower()
-    if req in ("flash", "1.5-flash", "fast", "latest"):
+    if req in ("flash", "2.5-flash", "fast", "latest"):
+        target_model = "gemini-2.5-flash"
+    elif req in ("pro", "2.5-pro", "reasoning", "deep"):
+        target_model = "gemini-2.5-pro"
+    elif req in ("lite", "flash-lite", "2.5-lite", "2.5-flash-lite", "8b"):
+        target_model = "gemini-2.5-flash-lite"
+    elif req in ("2.0", "2.0-flash", "2.0flash"):
+        target_model = "gemini-2.0-flash"
+    elif req in ("1.5", "1.5-flash"):
         target_model = "gemini-1.5-flash"
-    elif req in ("pro", "1.5-pro", "reasoning", "deep"):
-        target_model = "gemini-1.5-pro"
-    elif req in ("lite", "8b", "flash-8b", "1.5-8b"):
-        target_model = "gemini-1.5-flash-8b"
-    elif req in ("2.0", "2.0-flash", "2.0flash", "exp"):
-        target_model = "gemini-2.0-flash-exp"
     else:
         target_model = args[0].strip()
 
@@ -2648,11 +2680,78 @@ async def learn_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f"⚠️ Setup <b>{target_setup}</b> not found in learning registry.",
                     parse_mode=ParseMode.HTML,
                 )
+        elif subcmd in ("memory", "rules", "cognitive"):
+            await rules_cmd(update, ctx)
+            return
+        elif subcmd in ("reflect", "consolidate"):
+            await reflect_cmd(update, ctx)
             return
 
     # Default: 0-token instant local analytics
     report = auto_trader.get_learning_report()
     await update.message.reply_text(report, parse_mode=ParseMode.HTML)
+
+
+async def rules_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """View and manage cognitive memory and procedural rules (/rules [add <RULE>|remove <RULE>|reset|reflect])."""
+    args = ctx.args or []
+    if args:
+        sub = args[0].lower().strip()
+        if sub == "reset":
+            memory_manager.reset()
+            await update.message.reply_text("🔄 <b>Cognitive Memory Reset!</b> All procedural rules and learned facts have been cleared.", parse_mode=ParseMode.HTML)
+            return
+        elif sub == "add" and len(args) > 1:
+            rule_text = " ".join(args[1:]).strip()
+            memory_manager.add_rule(rule_text)
+            await update.message.reply_text(f"✅ <b>Behavioral Rule Added!</b>\n• <i>{rule_text}</i>", parse_mode=ParseMode.HTML)
+            return
+        elif sub in ("remove", "del", "delete") and len(args) > 1:
+            rule_target = " ".join(args[1:]).strip()
+            ok = memory_manager.remove_rule(rule_target)
+            if ok:
+                await update.message.reply_text(f"🗑️ <b>Rule Removed:</b> <i>{rule_target}</i>", parse_mode=ParseMode.HTML)
+            else:
+                await update.message.reply_text(f"⚠️ Rule matching '<i>{rule_target}</i>' not found.", parse_mode=ParseMode.HTML)
+            return
+        elif sub in ("reflect", "consolidate"):
+            await reflect_cmd(update, ctx)
+            return
+
+    report = memory_manager.format_memory_report()
+    await update.message.reply_text(report, parse_mode=ParseMode.HTML)
+
+
+async def memory_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Alias for /rules (/memory)."""
+    await rules_cmd(update, ctx)
+
+
+async def reflect_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Trigger immediate AI memory reflection and consolidation loop (/reflect)."""
+    await update.message.reply_text("🧠 <b>Running Memory Reflection & Consolidation Loop...</b>\nAnalyzing recent dialogue and evolving procedural rules ⏳", parse_mode=ParseMode.HTML)
+    extraction = await memory_manager.consolidate_async(force=True, model=get_gemini_model())
+
+    parts = ["✨ <b>Memory Consolidation Complete!</b>\n"]
+    if extraction.behavioral_corrections:
+        parts.append("⚡ <b>New Procedural Rules Evolved:</b>")
+        for r in extraction.behavioral_corrections:
+            parts.append(f"• {r}")
+        parts.append("")
+    if extraction.new_facts:
+        parts.append("📌 <b>New Semantic Facts Learned:</b>")
+        for f in extraction.new_facts:
+            parts.append(f"• {f}")
+        parts.append("")
+    if extraction.conflicts_to_remove:
+        parts.append("🗑️ <b>Outdated Items Invalidated:</b>")
+        for c in extraction.conflicts_to_remove:
+            parts.append(f"• {c}")
+        parts.append("")
+    if not extraction.behavioral_corrections and not extraction.new_facts and not extraction.conflicts_to_remove:
+        parts.append("ℹ️ <i>No new facts or behavioral adjustments detected in current dialogue buffer. Active rules remain optimal.</i>")
+
+    await update.message.reply_text("\n".join(parts), parse_mode=ParseMode.HTML)
 
 
 async def insights_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -3673,6 +3772,10 @@ def main():
     app.add_handler(CommandHandler("selflearning", learn_cmd))
     app.add_handler(CommandHandler("insights", insights_cmd))
     app.add_handler(CommandHandler("insight", insights_cmd))
+    app.add_handler(CommandHandler("rules", rules_cmd))
+    app.add_handler(CommandHandler("memory", memory_cmd))
+    app.add_handler(CommandHandler("reflect", reflect_cmd))
+    app.add_handler(CommandHandler("consolidate", reflect_cmd))
     app.add_handler(CommandHandler("confluence", confluence_cmd))
     app.add_handler(CommandHandler("combine", confluence_cmd))
     app.add_handler(CommandHandler("master", confluence_cmd))

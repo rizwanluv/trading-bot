@@ -1618,8 +1618,108 @@ class TestAutoTradeLotSizeManagement(unittest.TestCase):
         self.assertIn("Lot Size for BTCUSD set to 0.015", text)
 
 
+class TestMemoryAndConsolidationEngine(unittest.TestCase):
+    """Test suite for autonomous cognitive memory, procedural rule adaptation, and reflection."""
+
+    def setUp(self):
+        self.tmp_store = "test_memory_store_tmp.json"
+        if os.path.exists(self.tmp_store):
+            os.remove(self.tmp_store)
+
+    def tearDown(self):
+        if os.path.exists(self.tmp_store):
+            os.remove(self.tmp_store)
+
+    def test_memory_extraction_schema_and_validation(self):
+        import json
+        from memory_manager import MemoryExtraction
+        raw_json = json.dumps({
+            "new_facts": ["User trades with $10,000 balance", "Prefers London session"],
+            "conflicts_to_remove": ["Old risk was 5%"],
+            "behavioral_corrections": ["Never risk more than 1.5%", "Always display R:R ratio"]
+        })
+        extracted = MemoryExtraction.model_validate_json(raw_json)
+        self.assertEqual(len(extracted.new_facts), 2)
+        self.assertEqual(len(extracted.conflicts_to_remove), 1)
+        self.assertEqual(len(extracted.behavioral_corrections), 2)
+        self.assertIn("Never risk more than 1.5%", extracted.behavioral_corrections)
+
+    def test_memory_manager_lifecycle_and_invalidation(self):
+        from unittest.mock import patch
+        from memory_manager import MemoryManager, MemoryExtraction
+        mgr = MemoryManager(store_path=self.tmp_store)
+        mgr.reset()
+
+        # Add initial rule and fact
+        mgr.add_rule("Old risk was 5%")
+        mgr.semantic_facts.append("User is beginner")
+        mgr.record_interaction("I am now an advanced trader with $20k balance", "Understood!")
+        mgr.record_interaction("Please never risk more than 1.5% and discard old risk rule", "Noted!")
+
+        # Mock reflect_and_consolidate
+        with patch("memory_manager.reflect_and_consolidate") as mock_reflect:
+            mock_reflect.return_value = MemoryExtraction(
+                new_facts=["User has $20k balance"],
+                conflicts_to_remove=["Old risk was 5%"],
+                behavioral_corrections=["Never risk more than 1.5%"]
+            )
+            extraction = mgr.consolidate(force=True)
+            self.assertEqual(len(extraction.behavioral_corrections), 1)
+            # Verify old rule removed and new rule added
+            self.assertNotIn("Old risk was 5%", mgr.procedural_rules)
+            self.assertIn("Never risk more than 1.5%", mgr.procedural_rules)
+            self.assertIn("User has $20k balance", mgr.semantic_facts)
+
+        # Check prompt injection
+        injection = mgr.get_system_instructions_injection()
+        self.assertIn("DYNAMIC PROCEDURAL MEMORY", injection)
+        self.assertIn("Never risk more than 1.5%", injection)
+
+        # Check report format
+        report = mgr.format_memory_report()
+        self.assertIn("Cognitive Memory & Behavioral Rules", report)
+        self.assertIn("Never risk more than 1.5%", report)
+
+    def test_rules_and_reflect_telegram_commands(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from main import rules_cmd, reflect_cmd, memory_manager, chat
+        mock_update = MagicMock()
+        mock_update.effective_chat.id = 12345
+        mock_update.message.reply_text = AsyncMock()
+        mock_ctx = MagicMock()
+
+        # 1. /rules report
+        mock_ctx.args = []
+        asyncio.run(rules_cmd(mock_update, mock_ctx))
+        text = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Cognitive Memory & Behavioral Rules", text)
+
+        # 2. /rules add <rule>
+        mock_update.message.reply_text.reset_mock()
+        mock_ctx.args = ["add", "Always", "confirm", "15m", "trend"]
+        asyncio.run(rules_cmd(mock_update, mock_ctx))
+        text = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Behavioral Rule Added", text)
+        self.assertIn("Always confirm 15m trend", memory_manager.procedural_rules)
+
+        # 3. Plain text chat routing "rules"
+        mock_update.message.reply_text.reset_mock()
+        mock_update.message.text = "rules"
+        asyncio.run(chat(mock_update, mock_ctx))
+        text = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Cognitive Memory & Behavioral Rules", text)
+
+        # 4. /rules del <rule>
+        mock_update.message.reply_text.reset_mock()
+        mock_ctx.args = ["del", "Always confirm 15m trend"]
+        asyncio.run(rules_cmd(mock_update, mock_ctx))
+        text = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Rule Removed", text)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

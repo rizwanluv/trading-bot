@@ -169,12 +169,17 @@ An advanced algorithmic trading and market intelligence Telegram bot powered by 
 | `/setkeys <KEY> <SECRET>` | Configure both Delta Exchange API Key & Secret at once |
 | `/keys` | View Delta API connection status and masked key |
 
-### 🧠 Self-Learning & Optimization Commands
+### 🧠 Self-Learning & Cognitive Memory Commands
 | Command | Description |
 |---|---|
 | `/learn` | View self-learning dashboard, win-rates & setup calibrations (0 tokens) 🟢 |
-| `/learn ai` | Ultra-compact quantitative AI review (&lt;250 tokens) |
-| `/learn reset` | Reset learning memory and recalibrate from scratch |
+| `/learn ai` | Quantitative AI reflection & strategic review |
+| `/learn reset` | Reset quantitative metrics and recalibrate from scratch |
+| `/rules` (or `/memory`) | View active behavioral rules (procedural) & user preferences (semantic) 🧠 |
+| `/rules add <RULE>` | Manually add a behavioral adaptation rule |
+| `/rules del <RULE>` | Remove a behavioral rule |
+| `/rules reset` | Clear all cognitive memory and procedural rules |
+| `/reflect` (or `/consolidate`) | Trigger immediate background memory reflection & consolidation loop |
 | `/insights` | Quick summary of strategy improvements & calibrations |
 
 ### 🤖 Google Gemini AI & Model Commands

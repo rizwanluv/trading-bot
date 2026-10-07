@@ -669,8 +669,7 @@ class LearningEngine:
         )
 
         try:
-            # We call the gemini caller with a normal token cap to allow detailed improvement analysis
-            ai_text = gemini_caller(prompt, max_tokens=800)
+            ai_text = gemini_caller(prompt, max_tokens=250)
             self._ai_cache = {"summary": ai_text, "timestamp": now}
             return f"🤖 <b>AI Quantitative Insight (Compressed Review):</b>\n\n{ai_text}"
         except Exception as e:

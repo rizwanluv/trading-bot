@@ -7,5 +7,7 @@ autotrade_store.json
 test_trader*.json
 learning_store.json
 test_learning*.json
+memory_store.json
+test_memory*.json
 .env
 attachments/
