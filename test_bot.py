@@ -1749,7 +1749,7 @@ class TestBackupScheduler(unittest.TestCase):
             f.write("sqlite test")
 
         try:
-            with patch.dict(os.environ, {"TELEGRAM_CHAT_ID": "999888", "DB_PATH": dummy_db}):
+            with patch.dict(os.environ, {"BACKUP_CHANNEL_ID": "999888", "TELEGRAM_CHAT_ID": "999888", "DB_PATH": dummy_db}):
                 asyncio.run(send_database_backup_to_telegram(mock_bot))
                 self.assertTrue(mock_bot.send_document.called)
                 call_kwargs = mock_bot.send_document.call_args[1]
@@ -1758,6 +1758,145 @@ class TestBackupScheduler(unittest.TestCase):
         finally:
             if os.path.exists(dummy_db):
                 os.remove(dummy_db)
+
+
+class TestBattlefieldEngine(unittest.TestCase):
+    def test_get_market_snapshot(self):
+        from battlefield_engine import get_market_snapshot_sync
+        snapshot = get_market_snapshot_sync("BTCUSD", "15m")
+        self.assertIn("symbol", snapshot)
+        self.assertIn("current_price", snapshot)
+        self.assertIn("candle_direction", snapshot)
+        self.assertIn("session_vwap", snapshot)
+
+    def test_run_battlefield_deterministic(self):
+        from battlefield_engine import run_battlefield_sync
+        bullish_data = {
+            "symbol": "BTCUSD",
+            "current_price": 85000.0,
+            "session_vwap": 84000.0,
+            "candle_direction": "Green",
+            "recent_high": 85500.0,
+            "recent_low": 83800.0,
+            "recent_volume": 120.0
+        }
+        bull, bear, decision = run_battlefield_sync(bullish_data, api_key=None)
+        self.assertEqual(decision["verdict"], "BUY")
+        self.assertGreaterEqual(decision["confidence"], 8)
+        self.assertIsNotNone(decision["stop_loss"])
+        self.assertIsNotNone(decision["take_profit"])
+
+        bearish_data = {
+            "symbol": "BTCUSD",
+            "current_price": 82000.0,
+            "session_vwap": 84000.0,
+            "candle_direction": "Red",
+            "recent_high": 84500.0,
+            "recent_low": 81500.0,
+            "recent_volume": 95.0
+        }
+        bull_b, bear_b, decision_b = run_battlefield_sync(bearish_data, api_key=None)
+        self.assertEqual(decision_b["verdict"], "SELL")
+        self.assertGreaterEqual(decision_b["confidence"], 8)
+
+    def test_evaluate_and_execute_battlefield(self):
+        from unittest.mock import MagicMock, AsyncMock
+        from battlefield_engine import evaluate_and_execute_battlefield
+        import tempfile
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        tmp.close()
+        try:
+            at = AutoTrader(store_file=tmp.name, mode="paper")
+            mock_bot = MagicMock()
+            mock_bot.send_message = AsyncMock()
+
+            res = asyncio.run(evaluate_and_execute_battlefield(
+                symbol="BTCUSD",
+                auto_trader_instance=at,
+                timeframe="15m",
+                min_confidence=8,
+                force=True,
+                broadcast_channel_id="999888",
+                bot_instance=mock_bot
+            ))
+            self.assertIn("symbol", res)
+            self.assertIn("formatted_message", res)
+            self.assertIn("decision", res)
+            self.assertTrue(mock_bot.send_message.called)
+        finally:
+            if os.path.exists(tmp.name):
+                os.remove(tmp.name)
+
+    def test_auto_trader_battlefield_methods(self):
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        tmp.close()
+        try:
+            at = AutoTrader(store_file=tmp.name, mode="paper")
+            cfg = at.set_battlefield_config(enabled=True, min_confidence=9)
+            self.assertTrue(cfg["battlefield_validation"])
+            self.assertEqual(cfg["battlefield_min_confidence"], 9)
+
+            c_id = at.set_backup_channel_id("-100999888")
+            self.assertEqual(c_id, "-100999888")
+            self.assertEqual(at.data["backup_channel_id"], "-100999888")
+
+            b_res = at.execute_battlefield_trade("BTCUSD", force=True)
+            self.assertIn("decision", b_res)
+        finally:
+            if os.path.exists(tmp.name):
+                os.remove(tmp.name)
+
+
+class TestBackupAndBattlefieldCommands(unittest.TestCase):
+    def tearDown(self):
+        import os, json
+        os.environ.pop("BACKUP_CHANNEL_ID", None)
+        if os.path.exists("autotrade_store.json"):
+            try:
+                with open("autotrade_store.json", "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                d.pop("backup_channel_id", None)
+                with open("autotrade_store.json", "w", encoding="utf-8") as f:
+                    json.dump(d, f, indent=2)
+            except Exception:
+                pass
+
+    def test_backup_status_and_helpers(self):
+        from backup import get_backup_status, set_backup_channel_id, _get_backup_chat_id
+        set_backup_channel_id("-10011223344")
+        self.assertEqual(_get_backup_chat_id(), "-10011223344")
+        st = get_backup_status()
+        self.assertEqual(st["backup_channel_id"], "-10011223344")
+        self.assertTrue(st["is_configured"])
+
+    def test_battlefield_command_flow(self):
+        from unittest.mock import MagicMock, AsyncMock
+        from main import battlefield_cmd, backup_status_cmd
+
+        mock_update = MagicMock()
+        mock_update.message.reply_text = AsyncMock()
+        mock_ctx = MagicMock()
+
+        # 1. /battlefield on
+        mock_ctx.args = ["on"]
+        asyncio.run(battlefield_cmd(mock_update, mock_ctx))
+        self.assertIn("ENABLED", mock_update.message.reply_text.call_args[0][0])
+
+        # 2. /battlefield minconf 9
+        mock_ctx.args = ["minconf", "9"]
+        asyncio.run(battlefield_cmd(mock_update, mock_ctx))
+        self.assertIn("9/10", mock_update.message.reply_text.call_args[0][0])
+
+        # 3. /battlefield status
+        mock_ctx.args = ["status"]
+        asyncio.run(battlefield_cmd(mock_update, mock_ctx))
+        self.assertIn("BATTLEFIELD AI ARBITER ENGINE STATUS", mock_update.message.reply_text.call_args[0][0])
+
+        # 4. /backupstatus
+        asyncio.run(backup_status_cmd(mock_update, mock_ctx))
+        self.assertIn("AUTOMATED BACKUP STATUS", mock_update.message.reply_text.call_args[0][0])
 
 
 if __name__ == "__main__":

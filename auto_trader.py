@@ -57,6 +57,9 @@ class AutoTrader:
             "trailing_pct": 0.01,         # 1.0% trail distance
             "trailing_activation_pct": 0.012,  # 1.2% profit before trail kicks in
             "paper_balance": 10000.0,  # $10,000 initial virtual capital
+            "battlefield_validation": True,    # Run Bull vs Bear debate before automated execution
+            "battlefield_min_confidence": 8,   # Minimum Arbiter confidence (1-10) to execute
+            "backup_channel_id": os.getenv("BACKUP_CHANNEL_ID", ""),
             "positions": {},           # position_id -> position dict
             "history": [],             # list of closed trades
             "stats": {"wins": 0, "losses": 0, "total_pnl": 0.0},
@@ -75,6 +78,12 @@ class AutoTrader:
             self.data["lot_size_mode"] = "custom"
         if "symbol_lot_sizes" not in self.data:
             self.data["symbol_lot_sizes"] = {}
+        if "battlefield_validation" not in self.data:
+            self.data["battlefield_validation"] = True
+        if "battlefield_min_confidence" not in self.data:
+            self.data["battlefield_min_confidence"] = 8
+        if "backup_channel_id" not in self.data:
+            self.data["backup_channel_id"] = os.getenv("BACKUP_CHANNEL_ID", "")
 
         # Bootstrap self-learning engine if it has no trades but history is present
         if self.data.get("history") and self.learning_engine.overall.total_trades == 0:
@@ -566,6 +575,31 @@ class AutoTrader:
                 logger.error(f"Error closing position {pos_key}: {e}")
         return results
 
+    def _is_vetoed_by_battlefield(self, symbol: str, side: str) -> bool:
+        """
+        Runs Bull vs Bear debate arbiter before execution.
+        If the Arbiter rules decisively against the trade direction (confidence >= 7),
+        vetoes the entry to protect capital.
+        """
+        if not self.data.get("battlefield_validation", True):
+            return False
+        try:
+            from battlefield_engine import get_market_snapshot_sync, run_battlefield_sync
+            data = get_market_snapshot_sync(symbol, timeframe="15m")
+            _, _, decision = run_battlefield_sync(data)
+            verdict = decision.get("verdict", "NO_TRADE")
+            confidence = int(decision.get("confidence") or 0)
+            order_side = side.lower()
+            if order_side in ("buy", "long") and verdict == "SELL" and confidence >= 7:
+                logger.info(f"⚔️ Battlefield Arbiter vetoed {symbol} LONG entry (Bear thesis won: Conf {confidence}/10 - {decision.get('reasoning')})")
+                return True
+            elif order_side in ("sell", "short") and verdict == "BUY" and confidence >= 7:
+                logger.info(f"⚔️ Battlefield Arbiter vetoed {symbol} SHORT entry (Bull thesis won: Conf {confidence}/10 - {decision.get('reasoning')})")
+                return True
+        except Exception as e:
+            logger.debug(f"Battlefield veto evaluation notice: {e}")
+        return False
+
     # ==================== Automated Background Scanners ====================
 
     def check_signals_and_auto_execute(self, symbol: str) -> Optional[Dict[str, Any]]:
@@ -599,36 +633,39 @@ class AutoTrader:
             )
             if amd_res.get("has_setup") and amd_res.get("is_executable") and amd_res.get("trade_plan"):
                 plan = amd_res["trade_plan"]
-                strat_desc = f"AMD Scalp ({amd_res.get('phase', 'DISTRIBUTION')} {plan['side'].upper()})"
-                can_run, lr_reason = self.learning_engine.can_execute(strat_desc, sym)
-                if can_run:
-                    base_sz = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else plan["suggested_size"]
-                    adapted_params = self.learning_engine.get_adapted_parameters(
-                        strat_desc, sym, default_size=base_sz
-                    )
-                    final_size = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else adapted_params.get("recommended_size", plan["suggested_size"])
-                    sl_mult = adapted_params.get("sl_buffer_multiplier", 1.0)
-                    final_sl = plan["sl"]
-                    if sl_mult > 1.0:
-                        dist = abs(plan["entry"] - final_sl)
-                        if plan["side"] == "buy":
-                            final_sl = round(plan["entry"] - (dist * sl_mult), 2)
-                        else:
-                            final_sl = round(plan["entry"] + (dist * sl_mult), 2)
-
-                    return self.execute_trade(
-                        symbol=sym,
-                        side=plan["side"],
-                        size=final_size,
-                        sl_price=final_sl,
-                        tp1_price=plan["tp1"],
-                        tp2_price=plan["tp2"],
-                        strategy=strat_desc,
-                        trade_type="amd_scalp",
-                        reason=f"1m/5m/15m AMD Trigger ({plan.get('rrr', '1:2')})",
-                    )
+                if self._is_vetoed_by_battlefield(sym, plan["side"]):
+                    logger.info(f"AMD Scalp entry vetoed by Battlefield Arbiter for {sym}")
                 else:
-                    logger.info(f"Self-Learning Filter skipped {sym} ({strat_desc}): {lr_reason}")
+                    strat_desc = f"AMD Scalp ({amd_res.get('phase', 'DISTRIBUTION')} {plan['side'].upper()})"
+                    can_run, lr_reason = self.learning_engine.can_execute(strat_desc, sym)
+                    if can_run:
+                        base_sz = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else plan["suggested_size"]
+                        adapted_params = self.learning_engine.get_adapted_parameters(
+                            strat_desc, sym, default_size=base_sz
+                        )
+                        final_size = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else adapted_params.get("recommended_size", plan["suggested_size"])
+                        sl_mult = adapted_params.get("sl_buffer_multiplier", 1.0)
+                        final_sl = plan["sl"]
+                        if sl_mult > 1.0:
+                            dist = abs(plan["entry"] - final_sl)
+                            if plan["side"] == "buy":
+                                final_sl = round(plan["entry"] - (dist * sl_mult), 2)
+                            else:
+                                final_sl = round(plan["entry"] + (dist * sl_mult), 2)
+
+                        return self.execute_trade(
+                            symbol=sym,
+                            side=plan["side"],
+                            size=final_size,
+                            sl_price=final_sl,
+                            tp1_price=plan["tp1"],
+                            tp2_price=plan["tp2"],
+                            strategy=strat_desc,
+                            trade_type="amd_scalp",
+                            reason=f"1m/5m/15m AMD Trigger ({plan.get('rrr', '1:2')})",
+                        )
+                    else:
+                        logger.info(f"Self-Learning Filter skipped {sym} ({strat_desc}): {lr_reason}")
         except Exception as e:
             logger.warning(f"Error evaluating AMD Scalp for {sym}: {e}")
 
@@ -638,19 +675,22 @@ class AutoTrader:
             if conf.get("is_executable") and conf.get("confluence_score", 0) >= 70.0:
                 plan = conf.get("trade_plan", {})
                 if plan:
-                    desc = f"Master Confluence ({conf['confluence_score']}% {conf['bias_signal']})"
-                    c_size = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else plan["size"]
-                    return self.execute_trade(
-                        symbol=sym,
-                        side=plan["side"],
-                        size=c_size,
-                        sl_price=plan["sl"],
-                        tp1_price=plan["tp1"],
-                        tp2_price=plan["tp2"],
-                        strategy=desc,
-                        trade_type="confluence_master",
-                        reason=conf.get("decision_reason", ""),
-                    )
+                    if self._is_vetoed_by_battlefield(sym, plan["side"]):
+                        logger.info(f"Confluence entry vetoed by Battlefield Arbiter for {sym}")
+                    else:
+                        desc = f"Master Confluence ({conf['confluence_score']}% {conf['bias_signal']})"
+                        c_size = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else plan["size"]
+                        return self.execute_trade(
+                            symbol=sym,
+                            side=plan["side"],
+                            size=c_size,
+                            sl_price=plan["sl"],
+                            tp1_price=plan["tp1"],
+                            tp2_price=plan["tp2"],
+                            strategy=desc,
+                            trade_type="confluence_master",
+                            reason=conf.get("decision_reason", ""),
+                        )
         except Exception as e:
             logger.warning(f"Error evaluating Confluence setup for {sym}: {e}")
 
@@ -660,43 +700,46 @@ class AutoTrader:
             setup = gj_analysis.get("setup")
             if setup and setup.get("type"):
                 side = setup.get("direction", "LONG").lower()
-                sl = setup.get("sl")
-                tp1 = setup.get("tp1")
-                tp2 = setup.get("tp2")
-                desc = f"Gautam Jha {setup.get('type')}"
-
-                # Self-learning gate check
-                can_run, reason = self.learning_engine.can_execute(desc, sym)
-                if not can_run:
-                    logger.info(f"Self-Learning Filter skipped {sym} ({desc}): {reason}")
+                if self._is_vetoed_by_battlefield(sym, side):
+                    logger.info(f"Gautam Jha entry vetoed by Battlefield Arbiter for {sym}")
                 else:
-                    base_sz = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else float(self.data.get("default_size", 1.0))
-                    adapted_params = self.learning_engine.get_adapted_parameters(
-                        desc, sym, default_size=base_sz
-                    )
-                    adapted_size = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else adapted_params.get("recommended_size", self.data.get("default_size", 1.0))
-                    sl_mult = adapted_params.get("sl_buffer_multiplier", 1.0)
-                    if sl is not None and sl_mult > 1.0:
-                        try:
-                            ticker = get_ticker(sym)
-                            mark = float(ticker["mark_price"] or ticker["close"])
-                            dist = abs(mark - sl)
-                            if side in ("buy", "long"):
-                                sl = round(mark - (dist * sl_mult), 2)
-                            else:
-                                sl = round(mark + (dist * sl_mult), 2)
-                        except Exception:
-                            pass
+                    sl = setup.get("sl")
+                    tp1 = setup.get("tp1")
+                    tp2 = setup.get("tp2")
+                    desc = f"Gautam Jha {setup.get('type')}"
 
-                    return self.execute_trade(
-                        symbol=sym,
-                        side=side,
-                        size=adapted_size,
-                        sl_price=sl,
-                        tp1_price=tp1,
-                        tp2_price=tp2,
-                        strategy=desc,
-                    )
+                    # Self-learning gate check
+                    can_run, reason = self.learning_engine.can_execute(desc, sym)
+                    if not can_run:
+                        logger.info(f"Self-Learning Filter skipped {sym} ({desc}): {reason}")
+                    else:
+                        base_sz = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else float(self.data.get("default_size", 1.0))
+                        adapted_params = self.learning_engine.get_adapted_parameters(
+                            desc, sym, default_size=base_sz
+                        )
+                        adapted_size = self.get_effective_lot_size(sym) if self.data.get("lot_size_mode", "custom") == "custom" else adapted_params.get("recommended_size", self.data.get("default_size", 1.0))
+                        sl_mult = adapted_params.get("sl_buffer_multiplier", 1.0)
+                        if sl is not None and sl_mult > 1.0:
+                            try:
+                                ticker = get_ticker(sym)
+                                mark = float(ticker["mark_price"] or ticker["close"])
+                                dist = abs(mark - sl)
+                                if side in ("buy", "long"):
+                                    sl = round(mark - (dist * sl_mult), 2)
+                                else:
+                                    sl = round(mark + (dist * sl_mult), 2)
+                            except Exception:
+                                pass
+
+                        return self.execute_trade(
+                            symbol=sym,
+                            side=side,
+                            size=adapted_size,
+                            sl_price=sl,
+                            tp1_price=tp1,
+                            tp2_price=tp2,
+                            strategy=desc,
+                        )
         except Exception as e:
             logger.warning(f"Error checking GJ setup for {sym}: {e}")
 
@@ -713,6 +756,10 @@ class AutoTrader:
                     elif "SELL" in sig or "SHORT" in sig:
                         side = "sell"
                     else:
+                        continue
+
+                    if self._is_vetoed_by_battlefield(sym, side):
+                        logger.info(f"Candle entry vetoed by Battlefield Arbiter for {sym}")
                         continue
 
                     desc = f"{tf.upper()} {tf_data.get('pattern', 'Candle Setup')}"
@@ -911,6 +958,9 @@ class AutoTrader:
             "delta_configured": self.delta_client.is_configured(),
             "masked_key": self.delta_client.get_masked_key(),
             "learning": self.learning_engine.get_learning_summary(),
+            "battlefield_validation": bool(self.data.get("battlefield_validation", True)),
+            "battlefield_min_confidence": int(self.data.get("battlefield_min_confidence", 8)),
+            "backup_channel_id": self.data.get("backup_channel_id", os.getenv("BACKUP_CHANNEL_ID", "")),
         }
 
     def get_account_summary(self) -> Dict[str, Any]:
@@ -1141,6 +1191,77 @@ class AutoTrader:
             "status": "executed",
             "trade": trade,
             "analysis": analysis,
+        }
+
+    def set_battlefield_config(
+        self,
+        enabled: Optional[bool] = None,
+        min_confidence: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Configure Battlefield multi-agent debate parameters."""
+        if enabled is not None:
+            self.data["battlefield_validation"] = bool(enabled)
+        if min_confidence is not None:
+            self.data["battlefield_min_confidence"] = max(1, min(10, int(min_confidence)))
+        self.save()
+        return {
+            "battlefield_validation": self.data.get("battlefield_validation", True),
+            "battlefield_min_confidence": int(self.data.get("battlefield_min_confidence", 8)),
+        }
+
+    def set_backup_channel_id(self, channel_id: str) -> str:
+        """Configure dedicated backup channel and persist across runtime and store."""
+        clean_id = str(channel_id).strip()
+        self.data["backup_channel_id"] = clean_id
+        self.save()
+        try:
+            from backup import set_backup_channel_id as persist_backup_channel
+            persist_backup_channel(clean_id)
+        except Exception as e:
+            logger.warning(f"Notice: Could not persist backup channel via backup module: {e}")
+        return clean_id
+
+    def execute_battlefield_trade(
+        self,
+        symbol: str,
+        force: bool = False,
+        min_confidence: int = 8
+    ) -> Dict[str, Any]:
+        """
+        Runs Bull vs Bear debate arbiter and executes trade on Delta Exchange if confidence >= min_confidence.
+        """
+        from battlefield_engine import get_market_snapshot_sync, run_battlefield_sync
+        sym = resolve_symbol(symbol)
+        data = get_market_snapshot_sync(sym, timeframe="15m")
+        bull, bear, decision = run_battlefield_sync(data)
+        verdict = decision.get("verdict", "NO_TRADE")
+        confidence = int(decision.get("confidence") or 0)
+        sl = decision.get("stop_loss")
+        tp = decision.get("take_profit")
+        reason = decision.get("reasoning", "")
+
+        executed_trade = None
+        should_trade = force or (verdict in ["BUY", "SELL"] and confidence >= min_confidence)
+        if should_trade and verdict in ["BUY", "SELL"]:
+            side = "buy" if verdict == "BUY" else "sell"
+            executed_trade = self.execute_trade(
+                symbol=sym,
+                side=side,
+                sl_price=sl,
+                tp1_price=tp,
+                strategy=f"Battlefield Arbiter ({verdict})",
+                trade_type="battlefield",
+                reason=f"Confidence {confidence}/10: {reason}",
+            )
+
+        return {
+            "symbol": sym,
+            "market_data": data,
+            "bull_thesis": bull,
+            "bear_counter": bear,
+            "decision": decision,
+            "executed": executed_trade is not None,
+            "trade": executed_trade,
         }
 
 

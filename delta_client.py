@@ -47,8 +47,8 @@ class DeltaClient:
         base_url: Optional[str] = None,
     ):
         _load_env_fallback()
-        self.api_key = api_key or os.environ.get("DELTA_API_KEY", "")
-        self.api_secret = api_secret or os.environ.get("DELTA_API_SECRET", "")
+        self.api_key = api_key or os.environ.get("DELTA_API_KEY") or os.environ.get("EXCHANGE_API_KEY", "")
+        self.api_secret = api_secret or os.environ.get("DELTA_API_SECRET") or os.environ.get("EXCHANGE_SECRET_KEY", "")
         self.base_url = (base_url or os.environ.get("DELTA_BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
         self._products_cache: Dict[str, Dict[str, Any]] = {}
         self._products_cache_time: float = 0.0

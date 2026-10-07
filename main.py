@@ -16,6 +16,7 @@ import asyncio
 import logging
 import requests
 from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime, timezone
 
 # Load .env file if present
 def load_env_file(filepath: str = ".env"):
@@ -868,46 +869,37 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "<i>(Minimum Commands — Maximum Working Types!)</i>\n\n"
         "🏛️ <b>Master Institutional Dashboard:</b>\n"
         "• <code>/status</code> (or <code>/dashboard</code>, <code>/dash</code>) — Live Killzones, positions, risk & desk health\n\n"
-        "🪙 <b>Bitcoin Hub (/btc):</b>\n"
-        "• <code>/btc</code> — Summary | <code>/btc price</code> | <code>/btc levels</code> | <code>/btc gj</code>\n"
-        "• <code>/btc entry</code> | <code>/btc watch</code> | <code>/btc book</code> | <code>/btc news</code> | <code>/btc confluence</code>\n"
-        "• <code>/btc analyze</code> — 18-Agent Desk | <code>/btc buy [sz]</code> | <code>/btc sell [sz]</code>\n\n"
-        "🥇 <b>Gold Hub (/gold or /xau):</b>\n"
-        "• <code>/gold</code> — Summary | <code>/gold price</code> | <code>/gold levels</code> | <code>/gold gj</code>\n"
-        "• <code>/gold entry</code> | <code>/gold watch</code> | <code>/gold book</code> | <code>/gold news</code> | <code>/gold confluence</code>\n"
-        "• <code>/gold analyze</code> — 18-Agent Desk | <code>/gold buy [sz]</code> | <code>/gold sell [sz]</code>\n\n"
-        "💼 <b>Trading & Portfolio Hub (/trade):</b>\n"
-        "• <code>/trade</code> — Portfolio & balance | <code>/trade status</code> — Desk dashboard\n"
-        "• <code>/trade on</code> | <code>/trade off</code> — Start/stop auto bot 🟢🔴\n"
+        "🪙 <b>Bitcoin & Gold Hubs:</b>\n"
+        "• <code>/btc</code> — Bitcoin Hub (price, levels, gj, entry, watch, book, news, confluence, buy, sell)\n"
+        "• <code>/gold</code> (or <code>/xau</code>) — Gold Hub (same 11 working modes)\n\n"
+        "💼 <b>Trading & Execution Hub (/trade):</b>\n"
+        "• <code>/trade on</code> | <code>/trade off</code> — Start / stop automated bot 🟢🔴\n"
         "• <code>/trade size &lt;VAL&gt;</code> | <code>/size &lt;VAL&gt;</code> — Set auto lot size (e.g. <code>0.05</code>) 🎯\n"
-        "• <code>/trade size &lt;SYM&gt; &lt;VAL&gt;</code> — Pair override (e.g. <code>BTC 0.01</code>) | <code>reset</code>\n"
-        "• <code>/trade be [on|off]</code> — Breakeven SL on TP1 (Risk-Free) 🛡️\n"
-        "• <code>/trade trail [on|off|pct]</code> — Dynamic Trailing SL ⚡\n"
+        "• <code>/trade size &lt;SYM&gt; &lt;VAL&gt;</code> — Pair lot override | <code>reset</code>\n"
+        "• <code>/trade be [on|off]</code> — Breakeven SL on TP1 🛡️ | <code>/trade trail</code> — Trailing SL\n"
         "• <code>/trade live</code> | <code>/trade paper</code> — Switch execution mode\n"
         "• <code>/trade pos</code> | <code>/trade bal</code> | <code>/trade close [id|all]</code>\n"
-        "• <code>/trade amd [sym]</code> | <code>/trade confluence &lt;sym&gt;</code>\n"
-        "• <code>/trade &lt;sym&gt; &lt;buy|sell&gt; [sz]</code> — Manual market trade\n"
-        "• <code>/trade maxpos &lt;N&gt;</code> | <code>/trade risk &lt;PCT&gt;</code> | <code>/trade multi [on|off]</code>\n"
-        "• <code>/trade learn</code> — Self-learning performance & insights\n\n"
+        "• <code>/trade amd [sym]</code> | <code>/trade confluence [sym]</code>\n"
+        "• <code>/trade &lt;sym&gt; &lt;buy|sell&gt; [sz]</code> — Manual market order\n"
+        "• <code>/trade battle [sym]</code> — AI Bull vs Bear debate arbiter ⚔️\n"
+        "• <code>/trade backup</code> — Instant state backup to channel 💾\n"
+        "• <code>/trade learn</code> — Self-learning performance\n\n"
+        "⚔️ <b>AI Battlefield Arbiter (/battlefield or /battle):</b>\n"
+        "• <code>/battlefield [sym]</code> — Bull vs Bear debate & Arbiter verdict\n"
+        "• <code>/battlefield trade [sym]</code> — Debate + auto-execution on Delta\n"
+        "• <code>/battlefield [on|off]</code> — Toggle debate gate | <code>/battlefield minconf &lt;N&gt;</code>\n\n"
+        "💾 <b>Automated Backups (/backup or /setbackup):</b>\n"
+        "• <code>/setbackup &lt;CHANNEL_ID&gt;</code> — Bind dedicated Telegram backup channel\n"
+        "• <code>/backup</code> — Immediately bundle SQLite DB & state stores to channel\n"
+        "• <code>/backupstatus</code> — View destination channel & schedule\n\n"
         "🔔 <b>Alerts Hub (/alert):</b>\n"
-        "• <code>/alert on</code> | <code>/alert off</code> — Toggle auto BTC/Gold alerts\n"
-        "• <code>/alert list</code> | <code>/alert clear</code> | <code>/alert del &lt;ID&gt;</code>\n"
-        "• <code>/alert &lt;price&gt;</code> | <code>/alert &lt;sym&gt; &lt;price&gt;</code> — Price alerts\n"
-        "• <code>/alert watch &lt;sym&gt;</code> — Candle close alerts\n\n"
-        "⚡ <b>AMD Scalper Desk (/amd or /scalp):</b>\n"
-        "• <code>/amd [sym]</code> — 1m/5m/15m Multi-TF Scalper | <code>/amd trade [sym]</code>\n\n"
-        "🏛️ <b>18-Agent Institutional Desk (/analyze):</b>\n"
-        "• <code>/analyze [sym] [tf]</code> (or <code>/analysis</code>) — Deep 18-agent report\n\n"
-        "🔐 <b>API & Bot Keys (/keys):</b>\n"
-        "• <code>/keys</code> | <code>/keys check</code> — Status & live connection test\n"
-        "• <code>/keys set &lt;KEY&gt; &lt;SECRET&gt;</code> | <code>/keys base [india|global]</code>\n"
-        "• <code>/keys gemini &lt;KEY&gt;</code> | <code>/keys model [flash|pro|lite]</code>\n\n"
-        "🧠 <b>Cognitive Memory & Rules (/rules or /memory):</b>\n"
-        "• <code>/rules</code> (or <code>/memory</code>) — View learned rules & semantic facts\n"
-        "• <code>/rules add &lt;RULE&gt;</code> | <code>/rules del &lt;RULE&gt;</code> | <code>/rules reset</code>\n"
-        "• <code>/reflect</code> (or <code>/consolidate</code>) — Instant AI reflection loop\n\n"
-        "📸 <b>Chart Photo Analysis:</b> Send screenshot for 18-agent vision report\n\n"
-        "💡 <b>Direct Shortcuts & Aliases:</b>\n"
+        "• <code>/alert on</code> | <code>/alert off</code> — Toggle auto alerts | <code>/alert list</code> | <code>/alert clear</code> | <code>/alert del &lt;ID&gt;</code>\n"
+        "• <code>/alert &lt;price&gt;</code> | <code>/alert &lt;sym&gt; &lt;price&gt;</code> | <code>/alert watch &lt;sym&gt;</code>\n\n"
+        "⚡ <b>Specialized Scanners:</b>\n"
+        "• <code>/amd [sym]</code> (or <code>/scalp</code>) — 1m/5m/15m Multi-TF Scalper | <code>/analyze [sym]</code> — 18-Agent Desk\n"
+        "• <code>/rules</code> | <code>/memory</code> | <code>/reflect</code> — Cognitive Memory & Rules\n"
+        "• <code>/keys</code> — API keys, base URL & model config (check, set, base, gemini, model)\n\n"
+        "💡 <b>All Direct Commands & Shortcuts:</b>\n"
         "• <code>/btc /btclevels /btcgj /btcentry /btcwatch</code>\n"
         "• <code>/gold /xau /xauusd /goldlevels /goldgj /goldentry /goldwatch</code>\n"
         "• <code>/price /levels /analysis /gj /liquidity</code>\n"
@@ -915,6 +907,7 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <code>/entry /scan /watch /unwatch /watchers</code>\n"
         "• <code>/autotrade /starttrade /stoptrade /trade /positions /closeposition /balance /mode</code>\n"
         "• <code>/alertson /alertsoff /setkey /setsecret /setkeys /keys</code>\n"
+        "• <code>/battlefield /battle /debate /setbackup /backupchannel /backup /backupstatus</code>\n"
         "• <code>/learn /rules /memory /reflect /confluence /orderbook /news /amd /list /help /start /reset</code>"
     )
     try:
@@ -2913,6 +2906,205 @@ async def multi_trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await trade_cmd(update, ctx)
 
 
+# ==================== AI Battlefield Debate & Arbiter Engine ====================
+
+async def battlefield_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    AI Battlefield Debate Engine & Arbiter (/battlefield [symbol|trade|on|off|minconf]).
+    Orchestrates an autonomous Bull vs. Bear debate with Trading Desk Arbiter verdict (BUY/SELL/NO_TRADE, confidence /10).
+    """
+    args = ctx.args or []
+    sym_arg = DEFAULT_SYMBOL
+    force_trade = False
+
+    # Check subcommands: on, off, minconf, status, trade
+    if args:
+        first = args[0].lower().strip()
+        if first in ("on", "enable", "start"):
+            cfg = auto_trader.set_battlefield_config(enabled=True)
+            await update.message.reply_text(
+                "⚔️ <b>Battlefield AI Arbiter Gate: ENABLED</b> 🟢\n"
+                "The bot will now debate Bull vs. Bear before executing automated trades.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        elif first in ("off", "disable", "stop"):
+            cfg = auto_trader.set_battlefield_config(enabled=False)
+            await update.message.reply_text(
+                "⚔️ <b>Battlefield AI Arbiter Gate: DISABLED</b> 🔴\n"
+                "Automated trades will execute standard setups without requiring Battlefield Arbiter validation.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        elif first in ("minconf", "conf", "confidence"):
+            if len(args) > 1 and args[1].isdigit():
+                val = int(args[1])
+                cfg = auto_trader.set_battlefield_config(min_confidence=val)
+                await update.message.reply_text(
+                    f"⚔️ <b>Battlefield Arbiter Threshold:</b> Min Confidence set to <b>{cfg['battlefield_min_confidence']}/10</b> 🎯",
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                curr = auto_trader.data.get("battlefield_min_confidence", 8)
+                await update.message.reply_text(f"Current threshold: <b>{curr}/10</b>. Set via: <code>/battlefield minconf 8</code>", parse_mode=ParseMode.HTML)
+            return
+        elif first in ("status", "info", "check"):
+            val_en = auto_trader.data.get("battlefield_validation", True)
+            min_c = auto_trader.data.get("battlefield_min_confidence", 8)
+            b_chan = auto_trader.data.get("backup_channel_id") or os.getenv("BACKUP_CHANNEL_ID", "Not set")
+            await update.message.reply_text(
+                f"⚔️ <b>BATTLEFIELD AI ARBITER ENGINE STATUS</b>\n\n"
+                f"• <b>Gate Active:</b> {'🟢 YES' if val_en else '🔴 NO'}\n"
+                f"• <b>Execution Threshold:</b> <b>{min_c}/10</b> confidence\n"
+                f"• <b>Timeframe:</b> <code>15m</code> (Multi-TF VWAP/OHLCV)\n"
+                f"• <b>Debate Agents:</b> Bull Trader vs Bear Risk Manager\n"
+                f"• <b>Arbiter:</b> Gemini AI Desk Arbiter\n"
+                f"• <b>Backup Channel:</b> <code>{b_chan}</code>\n\n"
+                "<i>Run <code>/battlefield BTCUSD</code> to test a live debate.</i>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        elif first in ("trade", "execute", "run", "force"):
+            force_trade = True
+            if len(args) > 1:
+                sym_arg = args[1]
+        else:
+            sym_arg = args[0]
+            if len(args) > 1 and args[1].lower().strip() in ("trade", "execute", "run", "force"):
+                force_trade = True
+
+    sym = resolve_symbol(sym_arg)
+    await update.message.reply_text(f"⚔️ <i>Summoning Bull & Bear agents for #{sym} battlefield debate...</i>", parse_mode=ParseMode.HTML)
+
+    try:
+        from battlefield_engine import evaluate_and_execute_battlefield
+        min_conf = int(auto_trader.data.get("battlefield_min_confidence", 8))
+        backup_chan = auto_trader.data.get("backup_channel_id") or os.getenv("BACKUP_CHANNEL_ID")
+        res = await evaluate_and_execute_battlefield(
+            symbol=sym,
+            auto_trader_instance=auto_trader,
+            timeframe="15m",
+            min_confidence=min_conf,
+            force=force_trade,
+            broadcast_channel_id=backup_chan,
+            bot_instance=ctx.bot,
+        )
+        await update.message.reply_text(res["formatted_message"], parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.error(f"Error executing battlefield_cmd for {sym}: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Battlefield Error: {e}")
+
+
+# ==================== Automated State Backups to Dedicated Channel ====================
+
+async def set_backup_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Set dedicated Telegram backup channel for state archives (/setbackup <CHANNEL_ID>).
+    """
+    args = ctx.args or []
+    if not args:
+        curr = auto_trader.data.get("backup_channel_id") or os.getenv("BACKUP_CHANNEL_ID")
+        status_txt = f"<code>{curr}</code>" if curr else "<i>None configured</i>"
+        await update.message.reply_text(
+            f"💾 <b>BACKUP CHANNEL CONFIGURATION</b>\n\n"
+            f"• <b>Active Backup Channel:</b> {status_txt}\n\n"
+            "<b>Usage:</b>\n"
+            "<code>/setbackup &lt;CHANNEL_ID&gt;</code>\n\n"
+            "<b>Example:</b>\n"
+            "• <code>/setbackup -1002345678901</code>\n"
+            "• <code>/setbackup @my_trading_backups</code>\n\n"
+            "<i>Make sure this bot is added as an <b>Admin</b> to the channel!</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    channel_id = args[0].strip()
+    auto_trader.set_backup_channel_id(channel_id)
+    await update.message.reply_text(
+        f"💾 Saving backup channel <code>{channel_id}</code> and testing dispatch...",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        from backup import send_database_backup_to_telegram
+        result = await send_database_backup_to_telegram(ctx.bot, chat_id=channel_id)
+        if result.get("success"):
+            files_str = ", ".join(result.get("files", []))
+            await update.message.reply_text(
+                f"✅ <b>DEDICATED BACKUP CHANNEL CONFIGURED!</b> 🚀\n\n"
+                f"• <b>Channel:</b> <code>{channel_id}</code>\n"
+                f"• <b>Test Backup:</b> Delivered successfully\n"
+                f"• <b>Archive:</b> <code>{result.get('archive_name')}</code> ({result.get('size_kb')} KB)\n"
+                f"• <b>Included Files:</b> <code>{files_str}</code>\n"
+                f"• <b>Schedule:</b> Automated daily sync active 🔄",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            err = result.get("error", "Unknown error")
+            await update.message.reply_text(
+                f"⚠️ <b>Channel Saved, but Test Dispatch Failed!</b>\n\n"
+                f"• <b>Channel:</b> <code>{channel_id}</code>\n"
+                f"• <b>Error:</b> <code>{err}</code>\n\n"
+                f"<i>Please verify that the bot has been invited into the channel as an <b>Administrator</b> with permission to post messages.</i>",
+                parse_mode=ParseMode.HTML,
+            )
+    except Exception as e:
+        logger.error(f"Error testing backup channel {channel_id}: {e}")
+        await update.message.reply_text(f"⚠️ Error verifying backup channel: {e}")
+
+
+async def backup_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Manually trigger instant database & state stores backup to Telegram (/backup).
+    """
+    await update.message.reply_text("💾 <i>Creating hot database snapshot and state archive...</i>", parse_mode=ParseMode.HTML)
+    try:
+        from backup import send_database_backup_to_telegram, _get_backup_chat_id
+        target_id = _get_backup_chat_id()
+        if not target_id:
+            # Fallback to current chat
+            target_id = str(update.effective_chat.id)
+
+        result = await send_database_backup_to_telegram(ctx.bot, chat_id=target_id)
+        if result.get("success"):
+            files_str = ", ".join(result.get("files", []))
+            await update.message.reply_text(
+                f"✅ <b>STATE BACKUP DISPATCHED!</b> 💾\n\n"
+                f"• <b>Destination:</b> <code>{result.get('chat_id')}</code>\n"
+                f"• <b>Archive:</b> <code>{result.get('archive_name')}</code> ({result.get('size_kb')} KB)\n"
+                f"• <b>Files Included:</b> <code>{files_str}</code>\n"
+                f"• <b>Timestamp:</b> <code>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            err = result.get("error", "No files found to backup")
+            await update.message.reply_text(f"❌ Backup failed: {err}")
+    except Exception as e:
+        logger.error(f"Error during backup_cmd: {e}")
+        await update.message.reply_text(f"❌ Backup Error: {e}")
+
+
+async def backup_status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show status of automated backup engine (/backupstatus)."""
+    try:
+        from backup import get_backup_status
+        status = get_backup_status()
+        chan = status.get("backup_channel_id") or "Not configured"
+        files = ", ".join(status.get("files_available", []))
+        await update.message.reply_text(
+            f"💾 <b>AUTOMATED BACKUP STATUS</b>\n\n"
+            f"• <b>Destination Channel:</b> <code>{chan}</code>\n"
+            f"• <b>Configured:</b> {'🟢 YES' if status.get('is_configured') else '🔴 NO'}\n"
+            f"• <b>SQLite DB:</b> {'Found' if status.get('db_exists') else 'Not created yet'}\n"
+            f"• <b>State Files:</b> <code>{files}</code>\n"
+            f"• <b>Interval:</b> Every 24 hours (86,400s)\n\n"
+            "<i>Use <code>/setbackup &lt;ID&gt;</code> to change channel or <code>/backup</code> to trigger now.</i>",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Error fetching backup status: {e}")
+
+
 async def confluence_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
     Evaluate all strategies combined (Gautam Jha + Candles + OrderBook + News + Self-Learning).
@@ -3148,6 +3340,16 @@ async def trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             val = auto_trader.set_allow_multiple_per_symbol(True)
         status_text = "🟢 ENABLED (Multiple trades per symbol allowed)" if val else "🔴 DISABLED (1 trade per symbol limit)"
         await update.message.reply_text(f"🔄 Multi-Trade Per Symbol: <b>{status_text}</b>", parse_mode=ParseMode.HTML)
+    elif sub in ("battle", "battlefield", "debate"):
+        ctx.args = rest
+        await battlefield_cmd(update, ctx)
+    elif sub in ("backup", "autobackup"):
+        await backup_cmd(update, ctx)
+    elif sub in ("setbackup", "backupchannel"):
+        ctx.args = rest
+        await set_backup_cmd(update, ctx)
+    elif sub in ("backupstatus",):
+        await backup_status_cmd(update, ctx)
     elif sub in ("size", "lotsize", "lot", "qty"):
         # Auto-trade lot size configuration & overrides
         if not rest:
@@ -3683,8 +3885,32 @@ async def auto_trade_loop(application):
                     except Exception as send_err:
                         logger.warning(f"Failed to send exit notification to {chat_id}: {send_err}")
 
-            # 2. If autotrade is enabled, scan for high-probability setups
+            # 2. If autotrade is enabled, run Battlefield AI Arbiter debate FIRST!
             if auto_trader.enabled:
+                if auto_trader.data.get("battlefield_validation", True):
+                    from battlefield_engine import evaluate_and_execute_battlefield
+                    for sym in symbols_to_scan:
+                        allow_multi = auto_trader.data.get("allow_multiple_per_symbol", False)
+                        if not allow_multi and any(p.get("symbol") == sym for p in auto_trader.data.get("positions", {}).values()):
+                            continue
+                        if len(auto_trader.data.get("positions", {})) >= int(auto_trader.data.get("max_open_positions", 5)):
+                            break
+                        try:
+                            min_conf = int(auto_trader.data.get("battlefield_min_confidence", 8))
+                            backup_chan = auto_trader.data.get("backup_channel_id") or os.getenv("BACKUP_CHANNEL_ID")
+                            await evaluate_and_execute_battlefield(
+                                symbol=sym,
+                                auto_trader_instance=auto_trader,
+                                timeframe="15m",
+                                min_confidence=min_conf,
+                                force=False,
+                                broadcast_channel_id=backup_chan,
+                                bot_instance=application.bot,
+                            )
+                        except Exception as b_err:
+                            logger.error(f"Error in battlefield auto_trade_loop for {sym}: {b_err}")
+
+                # Secondary scan for multi-timeframe candle / AMD scalp / Confluence setups
                 new_trades = auto_trader.scan_and_auto_trade(symbols=symbols_to_scan)
                 for tr in new_trades:
                     side_emoji = "🟢 LONG" if tr.get("side") == "buy" else "🔴 SHORT"
@@ -3853,6 +4079,16 @@ def main():
     app.add_handler(CommandHandler("goldamd", gold_amd_cmd))
     app.add_handler(CommandHandler("xauamd", gold_amd_cmd))
     app.add_handler(CommandHandler("multitrade", multi_trade_cmd))
+
+    # AI Battlefield Debate Engine & Dedicated Channel Backups
+    app.add_handler(CommandHandler("battlefield", battlefield_cmd))
+    app.add_handler(CommandHandler("battle", battlefield_cmd))
+    app.add_handler(CommandHandler("debate", battlefield_cmd))
+    app.add_handler(CommandHandler("setbackup", set_backup_cmd))
+    app.add_handler(CommandHandler("backupchannel", set_backup_cmd))
+    app.add_handler(CommandHandler("backup", backup_cmd))
+    app.add_handler(CommandHandler("autobackup", backup_cmd))
+    app.add_handler(CommandHandler("backupstatus", backup_status_cmd))
 
     # General Market Commands
     app.add_handler(CommandHandler("price", price_cmd))
