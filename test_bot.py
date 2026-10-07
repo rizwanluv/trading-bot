@@ -1644,6 +1644,13 @@ class TestMemoryAndConsolidationEngine(unittest.TestCase):
         self.assertEqual(len(extracted.behavioral_corrections), 2)
         self.assertIn("Never risk more than 1.5%", extracted.behavioral_corrections)
 
+        # Also test with markdown code fence wrapping
+        from memory_manager import _clean_json_text
+        markdown_json = f"```json\n{raw_json}\n```"
+        cleaned = _clean_json_text(markdown_json)
+        extracted_md = MemoryExtraction.model_validate_json(cleaned)
+        self.assertEqual(len(extracted_md.new_facts), 2)
+
     def test_memory_manager_lifecycle_and_invalidation(self):
         from unittest.mock import patch
         from memory_manager import MemoryManager, MemoryExtraction

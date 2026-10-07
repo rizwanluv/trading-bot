@@ -5,6 +5,7 @@ detect user corrections/preferences/frustrations, and dynamically evolve bot beh
 """
 
 import os
+import re
 import json
 import time
 import logging
@@ -27,6 +28,17 @@ try:
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
+
+
+def _clean_json_text(raw_text: str) -> str:
+    """Strip markdown code block fences and trailing formatting from LLM JSON output."""
+    if not raw_text:
+        return "{}"
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    return cleaned.strip()
 
 
 # ==================== Schema for Memory Consolidation ====================
@@ -96,7 +108,8 @@ Dialogue:
                     }
                 )
                 if response and response.text:
-                    parsed = MemoryExtraction.model_validate_json(response.text)
+                    cleaned_str = _clean_json_text(response.text)
+                    parsed = MemoryExtraction.model_validate_json(cleaned_str)
                     logger.info(f"Memory consolidation succeeded via SDK model {m_name}")
                     return parsed
             except Exception as e:
@@ -132,7 +145,8 @@ Dialogue:
                         parts = candidates[0].get("content", {}).get("parts", [])
                         if parts:
                             raw_json = parts[0].get("text", "{}")
-                            parsed = MemoryExtraction.model_validate_json(raw_json)
+                            cleaned_str = _clean_json_text(raw_json)
+                            parsed = MemoryExtraction.model_validate_json(cleaned_str)
                             logger.info(f"Memory consolidation succeeded via REST model {m_name}")
                             return parsed
                 elif r.status_code in (400, 404):
