@@ -13,6 +13,11 @@ from self_learning import LearningEngine
 from confluence_engine import ConfluenceEngine, format_confluence_html_report
 from orderbook_analysis import analyze_orderbook, format_orderbook_html_report
 from news_analysis import get_news_sentiment, format_news_html_report
+from amd_scalper import (
+    analyze_amd_scalp,
+    format_amd_scalp_html_report,
+    calculate_risk_managed_plan,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +42,12 @@ class AutoTrader:
             "enabled": False,
             "mode": (mode or os.environ.get("TRADING_MODE", "paper")).lower(),
             "symbols": ["BTCUSD", "XAUTUSD"],
-            "timeframes": ["5m", "15m"],
+            "timeframes": ["1m", "5m", "15m"],
             "default_size": float(default_size or os.environ.get("DEFAULT_ORDER_SIZE", 1)),
-            "max_open_positions": 2,
+            "max_open_positions": 5,
+            "risk_per_trade_pct": 0.015,  # 1.5% auto capital risk per trade
+            "allow_multiple_per_symbol": False,
+            "auto_tp_sl": True,
             "paper_balance": 10000.0,  # $10,000 initial virtual capital
             "positions": {},           # position_id -> position dict
             "history": [],             # list of closed trades
@@ -172,7 +180,59 @@ class AutoTrader:
             "mode": self.data["mode"],
             "symbols": self.data["symbols"],
             "size": self.data["default_size"],
+            "max_open_positions": self.data.get("max_open_positions", 5),
+            "risk_per_trade_pct": self.data.get("risk_per_trade_pct", 0.015),
         }
+
+    def set_max_positions(self, count: int) -> int:
+        """Set maximum allowable concurrent open positions."""
+        c = max(1, min(int(count), 20))
+        self.data["max_open_positions"] = c
+        self.save()
+        return c
+
+    def set_risk_per_trade(self, risk_pct: float) -> float:
+        """Set capital risk percentage per trade (e.g. 0.015 for 1.5%)."""
+        val = max(0.001, min(float(risk_pct), 0.10))
+        self.data["risk_per_trade_pct"] = val
+        self.save()
+        return val
+
+    def set_allow_multiple_per_symbol(self, allow: bool) -> bool:
+        """Enable or disable multiple concurrent positions on the same symbol."""
+        self.data["allow_multiple_per_symbol"] = bool(allow)
+        self.save()
+        return self.data["allow_multiple_per_symbol"]
+
+    def calculate_risk_position_size(
+        self,
+        symbol: str,
+        entry_price: float,
+        sl_price: Optional[float] = None,
+        risk_pct: Optional[float] = None,
+    ) -> float:
+        """Calculate position size according to capital risk management."""
+        sym = resolve_symbol(symbol)
+        pct = float(risk_pct if risk_pct is not None else self.data.get("risk_per_trade_pct", 0.015))
+        balance = self.balance if self.mode == "paper" else 10000.0
+        risk_capital = balance * pct
+        if sl_price is None:
+            dist = entry_price * 0.01
+        else:
+            dist = abs(entry_price - sl_price)
+
+        if dist <= 0:
+            return float(self.data.get("default_size", 1.0))
+
+        raw_size = risk_capital / dist
+        if "BTC" in sym:
+            return max(0.001, min(round(raw_size, 3), 5.0))
+        elif "XAU" in sym or "GOLD" in sym:
+            return max(0.01, min(round(raw_size, 2), 25.0))
+        elif "ETH" in sym:
+            return max(0.01, min(round(raw_size, 2), 50.0))
+        else:
+            return max(0.1, min(round(raw_size, 1), 100.0))
 
     # ==================== Trade Execution ====================
 
@@ -201,13 +261,21 @@ class AutoTrader:
             raise ValueError("Side must be BUY, SELL, LONG, or SHORT.")
 
         order_side = "buy" if side_clean in ("BUY", "LONG") else "sell"
-        order_size = float(size or self.data.get("default_size", 1.0))
         trade_mode = (mode or self.data.get("mode", "paper")).lower()
 
+        # Check maximum open positions limit
+        max_positions = int(self.data.get("max_open_positions", 5))
+        if len(self.data.get("positions", {})) >= max_positions:
+            raise ValueError(f"Max open positions limit ({max_positions}) reached. Close an active position before opening a new trade.")
+
         # Check existing position for this symbol
+        allow_multi_sym = self.data.get("allow_multiple_per_symbol", False)
         for pos in self.data.get("positions", {}).values():
-            if pos.get("symbol") == sym:
+            if pos.get("symbol") == sym and not allow_multi_sym:
                 raise ValueError(f"An open position already exists for {sym}. Close it first before opening a new trade.")
+            elif pos.get("symbol") == sym and allow_multi_sym:
+                if pos.get("side") == order_side and pos.get("strategy") == (strategy or reason or trade_type):
+                    raise ValueError(f"An identical position already exists for {sym}.")
 
         # Get current price
         ticker = get_ticker(sym)
@@ -225,6 +293,12 @@ class AutoTrader:
             effective_tp1 = mark_price * 1.015 if order_side == "buy" else mark_price * 0.985
         if effective_tp2 is None:
             effective_tp2 = effective_tp1 * 1.01 if order_side == "buy" else effective_tp1 * 0.99
+
+        # Auto-calculate risk-managed order size if not explicitly provided
+        if size is not None and float(size) > 0:
+            order_size = float(size)
+        else:
+            order_size = self.calculate_risk_position_size(sym, mark_price, effective_sl)
 
         risk_amount = abs(mark_price - effective_sl)
         reward_amount = abs(effective_tp1 - mark_price)
@@ -410,14 +484,58 @@ class AutoTrader:
             return None
 
         # Check if already in trade for this symbol
-        for pos in self.data.get("positions", {}).values():
-            if pos.get("symbol") == sym:
-                return None
+        allow_multi_sym = self.data.get("allow_multiple_per_symbol", False)
+        if not allow_multi_sym:
+            for pos in self.data.get("positions", {}).values():
+                if pos.get("symbol") == sym:
+                    return None
 
-        if len(self.data.get("positions", {})) >= self.data.get("max_open_positions", 2):
+        max_positions = int(self.data.get("max_open_positions", 5))
+        if len(self.data.get("positions", {})) >= max_positions:
             return None
 
-        # 1. Master Multi-Strategy Confluence Check (Every Strategy Combined)
+        # 1. High-Probability AMD Scalp Strategy (1m, 5m, 15m Multi-Timeframe)
+        try:
+            amd_res = analyze_amd_scalp(
+                sym,
+                balance=self.balance,
+                risk_pct=float(self.data.get("risk_per_trade_pct", 0.015)),
+            )
+            if amd_res.get("has_setup") and amd_res.get("is_executable") and amd_res.get("trade_plan"):
+                plan = amd_res["trade_plan"]
+                strat_desc = f"AMD Scalp ({amd_res.get('phase', 'DISTRIBUTION')} {plan['side'].upper()})"
+                can_run, lr_reason = self.learning_engine.can_execute(strat_desc, sym)
+                if can_run:
+                    adapted_params = self.learning_engine.get_adapted_parameters(
+                        strat_desc, sym, default_size=plan["suggested_size"]
+                    )
+                    final_size = adapted_params.get("recommended_size", plan["suggested_size"])
+                    sl_mult = adapted_params.get("sl_buffer_multiplier", 1.0)
+                    final_sl = plan["sl"]
+                    if sl_mult > 1.0:
+                        dist = abs(plan["entry"] - final_sl)
+                        if plan["side"] == "buy":
+                            final_sl = round(plan["entry"] - (dist * sl_mult), 2)
+                        else:
+                            final_sl = round(plan["entry"] + (dist * sl_mult), 2)
+
+                    return self.execute_trade(
+                        symbol=sym,
+                        side=plan["side"],
+                        size=final_size,
+                        sl_price=final_sl,
+                        tp1_price=plan["tp1"],
+                        tp2_price=plan["tp2"],
+                        strategy=strat_desc,
+                        trade_type="amd_scalp",
+                        reason=f"1m/5m/15m AMD Trigger ({plan.get('rrr', '1:2')})",
+                    )
+                else:
+                    logger.info(f"Self-Learning Filter skipped {sym} ({strat_desc}): {lr_reason}")
+        except Exception as e:
+            logger.warning(f"Error evaluating AMD Scalp for {sym}: {e}")
+
+        # 2. Master Multi-Strategy Confluence Check (Every Strategy Combined)
         try:
             conf = self.confluence_engine.evaluate_confluence(sym, self.learning_engine)
             if conf.get("is_executable") and conf.get("confluence_score", 0) >= 70.0:
@@ -627,6 +745,9 @@ class AutoTrader:
             "symbols": self.data.get("symbols", []),
             "open_positions": self.data.get("positions", {}),
             "open_positions_count": len(self.data.get("positions", {})),
+            "max_open_positions": int(self.data.get("max_open_positions", 5)),
+            "risk_per_trade_pct": float(self.data.get("risk_per_trade_pct", 0.015)),
+            "allow_multiple_per_symbol": bool(self.data.get("allow_multiple_per_symbol", False)),
             "paper_balance": self.data.get("paper_balance", 10000.0),
             "balance": self.data.get("paper_balance", 10000.0),
             "initial_balance": 10000.0,
@@ -709,5 +830,64 @@ class AutoTrader:
         """Get formatted HTML report for News and Macro Sentiment."""
         news = get_news_sentiment(symbol)
         return format_news_html_report(news)
+
+    def get_amd_report(self, symbol: str) -> str:
+        """Get formatted HTML report for 1m, 5m, 15m AMD Scalp analysis."""
+        analysis = analyze_amd_scalp(
+            symbol,
+            balance=self.balance,
+            risk_pct=float(self.data.get("risk_per_trade_pct", 0.015)),
+        )
+        return format_amd_scalp_html_report(analysis)
+
+    def execute_amd_trade(self, symbol: str, force: bool = False) -> Dict[str, Any]:
+        """Manually trigger AMD Scalp execution if setup is valid or force is requested."""
+        analysis = analyze_amd_scalp(
+            symbol,
+            balance=self.balance,
+            risk_pct=float(self.data.get("risk_per_trade_pct", 0.015)),
+        )
+        if not analysis.get("has_setup") and not force:
+            return {
+                "status": "rejected",
+                "reason": f"No valid AMD Scalp trigger found ({analysis.get('phase')}).",
+                "analysis": analysis,
+            }
+
+        plan = analysis.get("trade_plan")
+        if not plan:
+            sym = resolve_symbol(symbol)
+            t = get_ticker(sym)
+            mark = float(t["mark_price"] or t["close"])
+            plan = calculate_risk_managed_plan(
+                symbol=sym,
+                side="buy" if analysis.get("direction") == "LONG" else "sell",
+                entry_price=mark,
+                invalidation_level=mark * 0.99,
+                range_target=mark * 1.02,
+                external_target=mark * 1.03,
+                atr_1m=mark * 0.001,
+                balance=self.balance,
+                risk_pct=float(self.data.get("risk_per_trade_pct", 0.015)),
+            )
+
+        strat_desc = f"AMD Scalp ({analysis.get('phase', 'DISTRIBUTION')} {plan['side'].upper()})"
+        trade = self.execute_trade(
+            symbol=symbol,
+            side=plan["side"],
+            size=plan["suggested_size"],
+            sl_price=plan["sl"],
+            tp1_price=plan["tp1"],
+            tp2_price=plan["tp2"],
+            strategy=strat_desc,
+            trade_type="amd_scalp",
+            reason=f"AMD Scalp Trigger ({plan.get('rrr', '1:2')})",
+        )
+        return {
+            "status": "executed",
+            "trade": trade,
+            "analysis": analysis,
+        }
+
 
 

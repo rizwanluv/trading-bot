@@ -66,6 +66,11 @@ from delta_client import DeltaClient, DEFAULT_BASE_URL
 from auto_trader import AutoTrader
 from news_analysis import get_news_sentiment
 from orderbook_analysis import analyze_orderbook
+from amd_scalper import (
+    analyze_amd_scalp,
+    format_amd_scalp_html_report,
+    calculate_risk_managed_plan,
+)
 
 # Logging setup
 logging.basicConfig(
@@ -867,6 +872,10 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <code>/trade pos</code> — View active open positions & live PnL\n"
         "• <code>/trade close [id|all]</code> — Close position(s) at market\n"
         "• <code>/trade bal</code> — Wallet & account balances\n"
+        "• <code>/trade amd [sym]</code> — Execute/analyze 1m/5m/15m AMD Scalp\n"
+        "• <code>/trade maxpos &lt;N&gt;</code> — Set max concurrent trades (e.g. 5)\n"
+        "• <code>/trade risk &lt;PCT&gt;</code> — Set capital risk per trade (e.g. 1.5%)\n"
+        "• <code>/trade multi [on|off]</code> — Toggle multi-trade per symbol\n"
         "• <code>/trade confluence &lt;sym&gt;</code> — Execute master confluence trade\n"
         "• <code>/trade &lt;sym&gt; &lt;buy|sell&gt; [sz]</code> — Manual trade execution\n"
         "• <code>/trade learn</code> — Self-learning performance & insights\n\n"
@@ -880,10 +889,15 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <code>/alert del &lt;ID&gt;</code> — Remove an alert by ID\n"
         "• <code>/alert clear</code> — Clear all price alerts\n"
         "• <code>/alert watch &lt;sym&gt;</code> — Watch candle closes\n\n"
-        "🏛️ <b>5. 18-Agent Institutional Desk (/analyze):</b>\n"
+        "⚡ <b>5. AMD Scalp Trading Desk (/amd or /scalp):</b>\n"
+        "• <code>/amd [symbol]</code> — 1m, 5m, 15m Multi-Timeframe Institutional Scalper\n"
+        "• Accumulation range detection + Judas Swing liquidity sweep + 1m MSS trigger\n"
+        "• Automated Stop-Loss, Take-Profit (TP1/TP2), and 1.5% capital risk management\n"
+        "• <code>/amd trade [symbol]</code> — Instant auto-scalp execution\n\n"
+        "🏛️ <b>6. 18-Agent Institutional Desk (/analyze):</b>\n"
         "• <code>/analyze [symbol] [tf]</code> (or <code>/analysis</code>) — Deep 18-agent categorized report\n"
         "• Categories: Price Action Core, Liquidity & Sessions, Market Context, News & Sentiment, Momentum & Strength, Decision Layer\n\n"
-        "🔐 <b>6. Master Keys & Bot Config (/keys):</b>\n"
+        "🔐 <b>7. Master Keys & Bot Config (/keys):</b>\n"
         "• <code>/keys</code> — Connection status & balances overview\n"
         "• <code>/keys check</code> — Test live Delta Exchange connection\n"
         "• <code>/keys set &lt;KEY&gt; &lt;SECRET&gt;</code> — Connect Delta API keys\n"
@@ -893,8 +907,9 @@ async def list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "📸 <b>Chart Photo Analysis:</b>\n"
         "• <i>Send Chart Photo</i> — Instant 18-Agent Multimodal Vision Analysis\n\n"
         "💡 <b>Direct Shortcuts & Aliases:</b>\n"
-        "• <code>/btc</code>, <code>/btclevels</code>, <code>/btcgj</code>, <code>/btcentry</code>, <code>/btcwatch</code>\n"
-        "• <code>/gold</code>, <code>/xau</code>, <code>/xauusd</code>, <code>/goldlevels</code>, <code>/goldgj</code>, <code>/goldentry</code>, <code>/goldwatch</code>\n"
+        "• <code>/btc</code>, <code>/btclevels</code>, <code>/btcgj</code>, <code>/btcentry</code>, <code>/btcwatch</code>, <code>/btcamd</code>\n"
+        "• <code>/gold</code>, <code>/xau</code>, <code>/xauusd</code>, <code>/goldlevels</code>, <code>/goldgj</code>, <code>/goldentry</code>, <code>/goldwatch</code>, <code>/goldamd</code>\n"
+        "• <code>/amd</code>, <code>/scalp</code>, <code>/multitrade</code>\n"
         "• <code>/price</code>, <code>/levels</code>, <code>/analysis</code>, <code>/gj</code>, <code>/liquidity</code>\n"
         "• <code>/alert</code>, <code>/alerts</code>, <code>/delalert</code>, <code>/clearalerts</code>\n"
         "• <code>/entry</code>, <code>/scan</code>, <code>/watch</code>, <code>/unwatch</code>, <code>/watchers</code>\n"
@@ -1049,6 +1064,9 @@ async def btc_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif sub in ("analyze", "analysis", "desk", "agents", "18"):
         ctx.args = ["BTCUSD"] + rest
         await analyze_cmd(update, ctx)
+    elif sub in ("amd", "scalp", "po3"):
+        ctx.args = ["BTCUSD"] + rest
+        await amd_cmd(update, ctx)
     elif sub in ("buy", "long"):
         size = rest[0] if rest else None
         ctx.args = ["BTCUSD", "buy"] + ([size] if size else [])
@@ -1135,6 +1153,9 @@ async def gold_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif sub in ("analyze", "analysis", "desk", "agents", "18"):
         ctx.args = ["XAUTUSD"] + rest
         await analyze_cmd(update, ctx)
+    elif sub in ("amd", "scalp", "po3"):
+        ctx.args = ["XAUTUSD"] + rest
+        await amd_cmd(update, ctx)
     elif sub in ("buy", "long"):
         size = rest[0] if rest else None
         ctx.args = ["XAUTUSD", "buy"] + ([size] if size else [])
@@ -1775,6 +1796,26 @@ async def chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         sym = "XAUTUSD" if ("gold" in lower_text or "xau" in lower_text) else "BTCUSD"
         ctx.args = [sym]
         await analyze_cmd(update, ctx)
+        return
+
+    # AMD Scalp & Multi-Timeframe (1m, 5m, 15m) queries
+    if lower_text in (
+        "amd", "scalp", "amd scalp", "amd trading", "po3", "power of 3",
+        "accumulation manipulation distribution", "scalping", "amd trade",
+        "1m 5m 15m", "1m 5m", "scalp trade",
+    ) or "amd scalp" in lower_text or "scalp trading" in lower_text or "amd trade" in lower_text:
+        sym = "XAUTUSD" if ("gold" in lower_text or "xau" in lower_text) else "BTCUSD"
+        ctx.args = [sym]
+        await amd_cmd(update, ctx)
+        return
+
+    # Multi-trade status & control
+    if lower_text in (
+        "multiple trade", "multi trade", "auto multiple trade", "multiple trades",
+        "multi trades", "concurrent trades",
+    ) or "multiple trade" in lower_text or "multi trade" in lower_text:
+        ctx.args = ["multi"]
+        await trade_cmd(update, ctx)
         return
 
     # Master hub quick access
@@ -2611,6 +2652,90 @@ async def gold_book_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await orderbook_cmd(update, ctx)
 
 
+async def amd_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Multi-Timeframe AMD Scalp Trading Command (1m, 5m, 15m).
+    Analyzes Accumulation (A), Manipulation Judas Sweeps (M), and Distribution triggers (D)
+    with automated SL, TP1, TP2, and capital risk management.
+    Usage:
+    • /amd [symbol] — 1m/5m/15m AMD Scalp analysis
+    • /amd trade [symbol] — Execute AMD scalp setup immediately
+    • /scalp [symbol]
+    """
+    args = ctx.args or []
+    is_trade = False
+    symbol_arg = DEFAULT_SYMBOL
+
+    filtered_args = []
+    for a in args:
+        if a.lower().strip() in ("trade", "execute", "run", "buy", "sell"):
+            is_trade = True
+        else:
+            filtered_args.append(a)
+
+    if filtered_args:
+        symbol_arg = filtered_args[0]
+
+    sym = resolve_symbol(symbol_arg)
+
+    try:
+        if is_trade:
+            await update.message.reply_text(
+                f"⚡ <b>Analyzing 1m/5m/15m AMD Scalp setup for {sym}...</b>",
+                parse_mode=ParseMode.HTML,
+            )
+            res = auto_trader.execute_amd_trade(sym, force=False)
+            if res.get("status") == "executed":
+                trade = res["trade"]
+                side_tag = "🟢 LONG" if trade["side"] == "buy" else "🔴 SHORT"
+                msg = (
+                    f"🚀 <b>AMD SCALP TRADE EXECUTED!</b> 🎯\n\n"
+                    f"🪙 <b>Symbol:</b> <code>#{trade['symbol']}</code>\n"
+                    f"🚦 <b>Side:</b> {side_tag}\n"
+                    f"📦 <b>Size:</b> <code>{trade['size']}</code>\n"
+                    f"⚡ <b>Entry:</b> <code>${trade['entry_price']:,.2f}</code>\n"
+                    f"🛑 <b>Stop Loss:</b> <code>${trade['sl_price']:,.2f}</code>\n"
+                    f"🎯 <b>Take Profit 1:</b> <code>${trade['tp1_price']:,.2f}</code> (Range Target)\n"
+                    f"🎯 <b>Take Profit 2:</b> <code>${trade['tp2_price']:,.2f}</code> (Expansion Target)\n"
+                    f"⚖️ <b>Risk/Reward:</b> <code>{trade.get('rrr', '1:2')}</code>\n"
+                    f"💡 <b>Strategy:</b> <code>{trade.get('strategy')}</code>\n"
+                    f"⚙️ <b>Mode:</b> <code>{trade.get('mode', '').upper()}</code>\n"
+                    f"🆔 <b>Position ID:</b> <code>{trade.get('position_id')}</code>"
+                )
+                await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+            else:
+                reason = res.get("reason", "No executable trigger.")
+                report = auto_trader.get_amd_report(sym)
+                await update.message.reply_text(
+                    f"⏸️ <b>AMD Scalp Execution Skipped:</b> {reason}\n\n{report}",
+                    parse_mode=ParseMode.HTML,
+                )
+        else:
+            report = auto_trader.get_amd_report(sym)
+            await update.message.reply_text(report, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.error(f"Error in amd_cmd for {sym}: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Error analyzing AMD scalp for {sym}: {e}")
+
+
+async def btc_amd_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut: /btcamd -> Bitcoin 1m/5m/15m AMD Scalp."""
+    ctx.args = ["BTCUSD"] + (ctx.args or [])
+    await amd_cmd(update, ctx)
+
+
+async def gold_amd_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut: /goldamd -> Gold 1m/5m/15m AMD Scalp."""
+    ctx.args = ["XAUTUSD"] + (ctx.args or [])
+    await amd_cmd(update, ctx)
+
+
+async def multi_trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Shortcut: /multitrade -> Multi-Trade configuration & positions status."""
+    ctx.args = ["multi"] + (ctx.args or [])
+    await trade_cmd(update, ctx)
+
+
 async def confluence_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
     Evaluate all strategies combined (Gautam Jha + Candles + OrderBook + News + Self-Learning).
@@ -2712,12 +2837,17 @@ async def trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"• <b>Execution Mode:</b> <code>{mode_str}</code> "
             + ("(Connected to Delta Exchange ⚡)" if auto_trader.mode == "live" else "($10,000 Paper Demo 🎮)") + "\n"
             f"• <b>Account Balance:</b> <code>${auto_trader.balance:,.2f}</code>\n"
-            f"• <b>Open Positions:</b> <code>{summary['open_positions_count']}</code>\n"
+            f"• <b>Open Positions:</b> <code>{summary['open_positions_count']}/{summary.get('max_open_positions', 5)}</code>\n"
+            f"• <b>Risk Per Trade:</b> <code>{summary.get('risk_per_trade_pct', 0.015)*100:.1f}%</code>\n"
             f"• <b>Win Rate:</b> <code>{summary['win_rate_pct']}%</code> ({summary['total_trades']} closed trades)\n"
             f"• <b>Top Learned Setup:</b> <code>{top_setup_str}</code>\n\n"
             "⚡ <b>1-Command Working Modes:</b>\n"
             "• <code>/trade on</code> (or <code>/trade start</code>) — Start auto trading 🟢\n"
             "• <code>/trade off</code> (or <code>/trade stop</code>) — Stop / pause auto trading 🔴\n"
+            "• <code>/trade amd [btc|gold]</code> — 1m/5m/15m AMD Scalp execution\n"
+            "• <code>/trade maxpos &lt;N&gt;</code> — Set max concurrent positions (e.g. 5)\n"
+            "• <code>/trade risk &lt;PCT&gt;</code> — Set capital risk per trade (e.g. 1.5%)\n"
+            "• <code>/trade multi [on|off]</code> — Toggle multi-trade per symbol\n"
             "• <code>/trade live</code> / <code>/trade paper</code> — Switch execution mode\n"
             "• <code>/trade pos</code> — View active open positions & live PnL\n"
             "• <code>/trade close all</code> — Close all positions at market\n"
@@ -2764,6 +2894,38 @@ async def trade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         sym = rest[0] if rest else "BTCUSD"
         ctx.args = ["trade", sym]
         await confluence_cmd(update, ctx)
+    elif sub in ("amd", "scalp", "po3"):
+        ctx.args = rest
+        await amd_cmd(update, ctx)
+    elif sub in ("maxpos", "limit", "maxpositions"):
+        if rest:
+            try:
+                cnt = int(rest[0])
+                new_cnt = auto_trader.set_max_positions(cnt)
+                await update.message.reply_text(f"✅ Max concurrent open positions set to <b>{new_cnt}</b>.", parse_mode=ParseMode.HTML)
+            except Exception as e:
+                await update.message.reply_text(f"⚠️ Invalid number: {e}")
+        else:
+            await update.message.reply_text(f"📊 Current max concurrent positions: <b>{auto_trader.data.get('max_open_positions', 5)}</b>\nTo update: <code>/trade maxpos &lt;N&gt;</code>", parse_mode=ParseMode.HTML)
+    elif sub in ("risk", "riskpct"):
+        if rest:
+            try:
+                raw_pct = float(rest[0].replace("%", ""))
+                dec_pct = raw_pct / 100.0 if raw_pct >= 1.0 else raw_pct
+                new_pct = auto_trader.set_risk_per_trade(dec_pct)
+                await update.message.reply_text(f"✅ Capital risk per trade set to <b>{new_pct*100:.1f}%</b>.", parse_mode=ParseMode.HTML)
+            except Exception as e:
+                await update.message.reply_text(f"⚠️ Invalid risk percent: {e}")
+        else:
+            pct = auto_trader.data.get("risk_per_trade_pct", 0.015)
+            await update.message.reply_text(f"🛡️ Current capital risk per trade: <b>{pct*100:.1f}%</b>\nTo update: <code>/trade risk &lt;PCT%&gt;</code>", parse_mode=ParseMode.HTML)
+    elif sub in ("multi", "multitrade", "multiple"):
+        if rest and rest[0].lower() in ("off", "disable", "false", "0"):
+            val = auto_trader.set_allow_multiple_per_symbol(False)
+        else:
+            val = auto_trader.set_allow_multiple_per_symbol(True)
+        status_text = "🟢 ENABLED (Multiple trades per symbol allowed)" if val else "🔴 DISABLED (1 trade per symbol limit)"
+        await update.message.reply_text(f"🔄 Multi-Trade Per Symbol: <b>{status_text}</b>", parse_mode=ParseMode.HTML)
     else:
         # Manual Trade execution:
         # Format 1: /trade <symbol> <side> [size]
@@ -3187,7 +3349,7 @@ async def entry_alert_loop(application):
 async def auto_trade_loop(application):
     """Background engine: monitors open positions for exits and auto-executes high-probability setups."""
     logger.info("Automated trading background loop started.")
-    symbols_to_scan = ["BTCUSD", "XAUTUSD"]
+    symbols_to_scan = auto_trader.data.get("symbols", ["BTCUSD", "XAUTUSD"])
 
     while True:
         try:
@@ -3228,9 +3390,9 @@ async def auto_trade_loop(application):
                         f"📦 <b>Size:</b> <code>{tr.get('size')}</code>\n"
                         f"⚡ <b>Entry:</b> <code>${tr.get('entry_price', 0):,.2f}</code>\n"
                         f"🛑 <b>Stop Loss:</b> <code>${tr.get('sl_price', 0):,.2f}</code>\n"
-                        f"🎯 <b>Take Profit 1:</b> <code>${tr.get('tp1_price', 0):,.2f}</code> (1:1.5)\n"
-                        f"🎯 <b>Take Profit 2:</b> <code>${tr.get('tp2_price', 0):,.2f}</code> (1:2.5)\n"
-                        f"💡 <b>Strategy:</b> Gautam Jha Liquidity ({tr.get('reason')})\n"
+                        f"🎯 <b>Take Profit 1:</b> <code>${tr.get('tp1_price', 0):,.2f}</code>\n"
+                        f"🎯 <b>Take Profit 2:</b> <code>${tr.get('tp2_price', 0):,.2f}</code>\n"
+                        f"💡 <b>Strategy:</b> <code>{tr.get('strategy', 'Auto Execution')}</code> ({tr.get('reason')})\n"
                         f"⚙️ <b>Mode:</b> <code>{tr.get('mode', '').upper()}</code>\n"
                         f"🆔 <b>Position ID:</b> <code>{tr.get('position_id')}</code>"
                     )
@@ -3359,6 +3521,14 @@ def main():
     app.add_handler(CommandHandler("analysis", analyze_cmd))
     app.add_handler(CommandHandler("desk", analyze_cmd))
     app.add_handler(CommandHandler("agents", analyze_cmd))
+
+    # AMD Scalp (1m, 5m, 15m) Commands & Multi-Trade
+    app.add_handler(CommandHandler("amd", amd_cmd))
+    app.add_handler(CommandHandler("scalp", amd_cmd))
+    app.add_handler(CommandHandler("btcamd", btc_amd_cmd))
+    app.add_handler(CommandHandler("goldamd", gold_amd_cmd))
+    app.add_handler(CommandHandler("xauamd", gold_amd_cmd))
+    app.add_handler(CommandHandler("multitrade", multi_trade_cmd))
 
     # General Market Commands
     app.add_handler(CommandHandler("price", price_cmd))

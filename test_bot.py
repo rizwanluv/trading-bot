@@ -3,6 +3,7 @@ Automated test suite verifying price alerts, level analysis, and multi-timeframe
 """
 import os
 import unittest
+from unittest.mock import MagicMock, AsyncMock
 from indicators import TechnicalAnalysis
 from market_data import (
     get_ticker,
@@ -1121,7 +1122,194 @@ class Test18AgentsAndUnifiedHubs(unittest.TestCase):
         self.assertTrue(any("18 Institutional Agents Analyzing" in c for c in reply_calls))
 
 
+class TestAMDScalpAndMultiTrade(unittest.TestCase):
+    """Test suite for AMD Scalp Engine (1m/5m/15m), automated risk management, and multi-trade execution."""
+
+    def setUp(self):
+        self.mock_update = MagicMock()
+        self.mock_update.effective_chat.id = 12345
+        self.mock_update.message.text = ""
+        self.mock_update.message.reply_text = AsyncMock()
+        self.mock_ctx = MagicMock()
+        self.mock_ctx.args = []
+
+    def test_amd_accumulation_detection(self):
+        from amd_scalper import detect_accumulation_range
+
+        # Generate 15 candles in a consolidation range [85,000, 85,300]
+        candles = []
+        for i in range(20):
+            candles.append({
+                "open": 85100.0,
+                "high": 85300.0,
+                "low": 85000.0,
+                "close": 85150.0,
+                "volume": 10.0,
+            })
+
+        res = detect_accumulation_range(candles, window=10)
+        self.assertIsNotNone(res)
+        self.assertEqual(res["range_high"], 85300.0)
+        self.assertEqual(res["range_low"], 85000.0)
+        self.assertEqual(res["range_eq"], 85150.0)
+        self.assertTrue(res["is_compressed"])
+
+    def test_amd_manipulation_sweep(self):
+        from amd_scalper import detect_manipulation_sweep
+
+        range_info = {
+            "range_high": 85300.0,
+            "range_low": 85000.0,
+            "range_eq": 85150.0,
+            "range_height": 300.0,
+        }
+
+        # 5m candle that sweeps below 85000 (e.g. low 84920) but rejects back to 85080
+        candles = [
+            {"open": 85100.0, "high": 85200.0, "low": 85050.0, "close": 85120.0},
+            {"open": 85120.0, "high": 85150.0, "low": 84920.0, "close": 85080.0},
+            {"open": 85080.0, "high": 85100.0, "low": 85060.0, "close": 85090.0},
+        ]
+
+        manip = detect_manipulation_sweep(candles, range_info, atr_5m=50.0)
+        self.assertIsNotNone(manip)
+        self.assertEqual(manip["bias"], "BULLISH")
+        self.assertEqual(manip["phase"], "MANIPULATION")
+        self.assertEqual(manip["sweep_level"], 84920.0)
+
+    def test_amd_1m_distribution_trigger(self):
+        from amd_scalper import detect_1m_distribution_trigger
+
+        # 1m candles displaying bullish displacement and breaking recent swing high
+        candles_1m = []
+        for i in range(12):
+            candles_1m.append({
+                "open": 85000.0 + i * 5,
+                "high": 85020.0 + i * 5,
+                "low": 84990.0 + i * 5,
+                "close": 85010.0 + i * 5,
+            })
+        # Add strong green displacement candle breaking above EMA9
+        candles_1m.append({
+            "open": 85060.0,
+            "high": 85140.0,
+            "low": 85055.0,
+            "close": 85135.0,
+        })
+        candles_1m.append({
+            "open": 85135.0,
+            "high": 85150.0,
+            "low": 85120.0,
+            "close": 85145.0,
+        })
+
+        trigger = detect_1m_distribution_trigger(candles_1m, bias="BULLISH", manipulation_sweep_level=84920.0, atr_1m=20.0)
+        self.assertIsNotNone(trigger)
+        self.assertTrue(trigger["triggered"])
+        self.assertEqual(trigger["side"], "buy")
+        self.assertGreater(trigger["entry_price"], 85100.0)
+
+    def test_calculate_risk_managed_plan(self):
+        from amd_scalper import calculate_risk_managed_plan
+
+        plan = calculate_risk_managed_plan(
+            symbol="BTCUSD",
+            side="buy",
+            entry_price=85100.0,
+            invalidation_level=84950.0,
+            range_target=85400.0,
+            external_target=85700.0,
+            atr_1m=25.0,
+            balance=10000.0,
+            risk_pct=0.015,
+        )
+
+        self.assertEqual(plan["side"], "buy")
+        self.assertEqual(plan["entry"], 85100.0)
+        self.assertLess(plan["sl"], 84950.0)
+        self.assertGreaterEqual(plan["tp1"], 85400.0)
+        self.assertGreaterEqual(plan["tp2"], 85700.0)
+        self.assertGreater(plan["suggested_size"], 0.0)
+        self.assertEqual(plan["capital_at_risk"], 150.0)
+
+    def test_auto_trader_multi_positions_and_risk(self):
+        from auto_trader import AutoTrader
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            temp_path = f.name
+
+        trader = AutoTrader(store_file=temp_path, mode="paper")
+        trader.data["positions"] = {}
+
+        # 1. Test set_max_positions and set_risk_per_trade
+        self.assertEqual(trader.set_max_positions(5), 5)
+        self.assertEqual(trader.set_risk_per_trade(0.02), 0.02)
+
+        # 2. Test calculate_risk_position_size
+        size_btc = trader.calculate_risk_position_size("BTCUSD", entry_price=85000.0, sl_price=84500.0)
+        self.assertGreater(size_btc, 0.0)
+
+        # 3. Test multi-trade execution on distinct symbols
+        pos1 = trader.execute_trade("BTCUSD", "BUY", size=0.01)
+        pos2 = trader.execute_trade("XAUTUSD", "SELL", size=0.05)
+
+        self.assertEqual(len(trader.positions), 2)
+        summary = trader.get_summary()
+        self.assertEqual(summary["open_positions_count"], 2)
+        self.assertEqual(summary["max_open_positions"], 5)
+
+        # Clean up
+        trader.close_all_positions()
+        import os
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+    def test_amd_commands_and_hub_dispatch(self):
+        import asyncio
+        from main import amd_cmd, btc_cmd, gold_cmd, trade_cmd, chat
+
+        # 1. /amd
+        self.mock_ctx.args = ["BTCUSD"]
+        asyncio.run(amd_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("AMD SCALP TRADING DESK", text)
+        self.assertIn("Multi-Timeframe", text)
+
+        # 2. /btc amd
+        self.mock_ctx.args = ["amd"]
+        asyncio.run(btc_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("AMD SCALP TRADING DESK", text)
+
+        # 3. /gold amd
+        self.mock_ctx.args = ["amd"]
+        asyncio.run(gold_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("AMD SCALP TRADING DESK", text)
+
+        # 4. /trade maxpos 4
+        self.mock_ctx.args = ["maxpos", "4"]
+        asyncio.run(trade_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Max concurrent open positions set to", text)
+
+        # 5. /trade risk 2
+        self.mock_ctx.args = ["risk", "2"]
+        asyncio.run(trade_cmd(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Capital risk per trade set to", text)
+
+        # 6. Plain-text "amd scalp" in chat
+        self.mock_update.message.reply_text.reset_mock()
+        self.mock_update.message.text = "amd scalp"
+        asyncio.run(chat(self.mock_update, self.mock_ctx))
+        text = self.mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("AMD SCALP TRADING DESK", text)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
