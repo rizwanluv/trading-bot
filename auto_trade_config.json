@@ -1,6 +1,6 @@
 {
   "enabled": false,
-  "symbol": "XAUTUSD",
+  "symbol": "BTCUSD",
   "lot_size": 2.0,
   "lot_mode": "risk_pct",
   "risk_pct": 2.0,

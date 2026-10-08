@@ -193,7 +193,11 @@ class MarketDataFeed:
             if self.source == "delta":
                 now = int(time_module.time())
                 from_ts = now - (limit + 30) * 60
-                sym = self.symbol.replace("/", "").replace("-", "")
+                sym = self.symbol.upper().replace("/", "").replace("-", "")
+                if sym in ("BTC", "BITCOIN"):
+                    sym = "BTCUSD"
+                elif sym in ("XAU", "GOLD"):
+                    sym = "XAUTUSD"
                 r = requests.get(
                     f"https://api.india.delta.exchange/v2/chart/history?symbol={sym}&resolution=1&from={from_ts}&to={now}",
                     timeout=8,
@@ -215,17 +219,26 @@ class MarketDataFeed:
                         return df.tail(limit)
                 return self._demo(limit)
             if self.source in ("ccxt", "binance") and self._exchange:
-                sym = "XAU/USDT" if self.symbol == "XAUUSD" else self.symbol
-                if "/" not in sym and sym.endswith("USD"):
+                sym = self.symbol
+                if sym in ("XAUUSD", "GOLD", "XAU"):
+                    sym = "XAU/USDT"
+                elif sym in ("BTCUSD", "BTC", "BITCOIN"):
+                    sym = "BTC/USDT"
+                elif "/" not in sym and sym.endswith("USD"):
                     sym = sym.replace("USD", "/USDT")
                 raw = self._exchange.fetch_ohlcv(sym, timeframe=tf, limit=limit)
                 df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
                 df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
                 return df.set_index("timestamp")[["open", "high", "low", "close", "volume"]].astype(float)
             if self.source == "yfinance":
-                yf_sym = "GC=F" if self.symbol in ("XAUUSD", "GOLD", "XAU") else self.symbol
-                if self.symbol == "EURUSD":
+                if any(c in self.symbol.upper() for c in ("BTC", "BITCOIN")):
+                    yf_sym = "BTC-USD"
+                elif self.symbol.upper() in ("XAUUSD", "GOLD", "XAU", "XAUTUSD"):
+                    yf_sym = "GC=F"
+                elif self.symbol.upper() == "EURUSD":
                     yf_sym = "EURUSD=X"
+                else:
+                    yf_sym = self.symbol
                 t = self._yf.Ticker(yf_sym)
                 period = "7d" if tf == "1m" else "60d"
                 df = t.history(period=period, interval={"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h"}.get(tf, "1m"))
@@ -250,12 +263,18 @@ class MarketDataFeed:
 
     def _demo(self, limit=500):
         dates = pd.date_range(end=datetime.now(timezone.utc), periods=limit, freq="1min")
-        p = 2650 + np.cumsum(np.random.randn(limit) * 0.28)
+        is_btc = "BTC" in str(self.symbol).upper()
+        base = 82000.0 if is_btc else 4135.0
+        scale = 12.0 if is_btc else 0.4
+        spread_min = 5.0 if is_btc else 0.1
+        spread_max = 45.0 if is_btc else 1.6
+        p = base + np.cumsum(np.random.randn(limit) * scale)
         return pd.DataFrame({
-            "open": p, "high": p + np.random.uniform(0.1, 1.6, limit),
-            "low": p - np.random.uniform(0.1, 1.6, limit),
-            "close": p + np.random.randn(limit) * 0.09,
-            "volume": np.random.randint(40, 1400, limit)
+            "open": p,
+            "high": p + np.random.uniform(spread_min, spread_max, limit),
+            "low": p - np.random.uniform(spread_min, spread_max, limit),
+            "close": p + np.random.randn(limit) * (scale * 0.3),
+            "volume": np.random.randint(40, 1400, limit),
         }, index=dates)
 
     def get_multi_tf(self, limit_1m=600) -> Dict[str, pd.DataFrame]:
@@ -501,7 +520,9 @@ class AdaptiveAI:
 
 
 class AIBotLearning:
-    def __init__(self, memory_path=MEMORY_FILE):
+    def __init__(self, memory_path=MEMORY_FILE, symbol="BTCUSD"):
+        self.symbol = str(symbol).upper()
+        self.is_crypto = any(c in self.symbol for c in ("BTC", "ETH", "SOL", "XRP"))
         self.mem = AIBotMemory(memory_path)
         self.ai = AdaptiveAI(self.mem)
         self.consec_loss = 0
@@ -530,6 +551,10 @@ class AIBotLearning:
     def set_lot_size(self, lot_size: float, mode: str = "fixed") -> None:
         self.lot_size = max(0.0001, float(lot_size))
         self.lot_mode = mode
+
+    def set_symbol(self, symbol: str) -> None:
+        self.symbol = str(symbol).upper()
+        self.is_crypto = any(c in self.symbol for c in ("BTC", "ETH", "SOL", "XRP"))
 
     @property
     def min_q(self): return self.mem.stats.best_quality
@@ -576,6 +601,8 @@ class AIBotLearning:
         return "other"
 
     def session_ok(self, ts):
+        if getattr(self, "is_crypto", False):
+            return True
         t = ts.time() if hasattr(ts, "time") else ts
         return (time(7, 0) <= t <= time(16, 45)) or (time(12, 0) <= t <= time(21, 0))
 
@@ -967,7 +994,7 @@ def auto_start_live():
     EXCHANGE_ID = os.getenv("BOT_EXCHANGE", "binance")
     POLL = int(os.getenv("BOT_POLL", "30"))
     EQUITY = float(os.getenv("BOT_EQUITY", "10000"))
-    strategy = AIBotLearning()
+    strategy = AIBotLearning(symbol=SYMBOL)
     print(f"\n[Auto] {SYMBOL} | {DATA_SOURCE} | poll {POLL}s | equity {EQUITY}")
     print(f"[Auto] Memory → {MEMORY_FILE}")
     print("[Auto] Starting live now...\n")

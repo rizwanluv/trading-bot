@@ -78,6 +78,7 @@ are uncertain and the user makes the final decision. Never promise profits."""
 
 SYMBOL_ALIASES: Dict[str, str] = {
     "BTC": "BTCUSD",
+    "BITCOIN": "BTCUSD",
     "BTCUSDT": "BTCUSD",
     "ETH": "ETHUSD",
     "ETHUSDT": "ETHUSD",
@@ -154,6 +155,51 @@ def get_price(symbol: str) -> str:
         )
     except Exception as e:
         return f"Price unavailable ({e})"
+
+
+def get_ticker_card(symbol: str) -> str:
+    """Fetch live ticker data from Delta Exchange API and format as a rich HTML card."""
+    cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
+    target = SYMBOL_ALIASES.get(cleaned, cleaned)
+    try:
+        r = requests.get(f"{DELTA_API}/{target}", timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        t = data.get("result")
+        if not t:
+            return f"❌ Symbol <b>{symbol.upper()}</b> not found on Delta Exchange."
+        mark_price = float(t.get("mark_price") or 0.0)
+        close_price = float(t.get("close") or 0.0)
+        high_price = float(t.get("high") or 0.0)
+        low_price = float(t.get("low") or 0.0)
+        open_price = float(t.get("open") or 0.0)
+        volume = float(t.get("volume") or 0.0)
+
+        if open_price > 0:
+            change_pct = ((close_price - open_price) / open_price) * 100.0
+        else:
+            change_pct = 0.0
+
+        arrow = "🟢 +" if change_pct >= 0 else "🔴 "
+        display_name = "Bitcoin (BTC)" if "BTC" in target else ("Gold (XAU)" if "XAU" in target else target)
+        icon = "⚡" if "BTC" in target else ("🥇" if "XAU" in target else "📊")
+
+        return (
+            f"{icon} <b>{display_name} Market Ticker</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Symbol</b>: <code>{target}</code>\n"
+            f"• <b>Mark Price</b>: <code>${mark_price:,.2f}</code>\n"
+            f"• <b>Last Price</b>: <code>${close_price:,.2f}</code>\n"
+            f"• <b>24h Change</b>: {arrow}{change_pct:.2f}%\n"
+            f"• <b>24h High</b>: <code>${high_price:,.2f}</code>\n"
+            f"• <b>24h Low</b>: <code>${low_price:,.2f}</code>\n"
+            f"• <b>24h Volume</b>: <code>{volume:,.2f}</code>\n"
+            f"• <b>Exchange</b>: Delta Exchange\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>💡 Use /autotrade symbol {target} to trade this pair</i>"
+        )
+    except Exception as e:
+        return f"⚠️ Price unavailable for {symbol.upper()} ({e})"
 
 
 def call_gemini_rest(
@@ -280,12 +326,17 @@ async def reply_safely(update: Update, text: str, parse_mode: Optional[str] = No
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await reply_safely(
         update,
-        "Trading assistant ready. Ask me about setups, risk, or use live market & auto-trade commands.\n\n"
-        "Commands:\n"
-        "• /price [SYMBOL] - Live price from Delta Exchange (default: XAUTUSD)\n"
+        "Trading assistant ready. Real-time analysis and automated trading for Bitcoin (BTC) & Gold (XAU).\n\n"
+        "Market Commands:\n"
+        "• /btc - Live Bitcoin (BTC) ticker, 24h stats & range\n"
+        "• /gold - Live Gold (XAU) ticker, 24h stats & range\n"
+        "• /price [SYMBOL] - Price check on any Delta Exchange pair (default: XAUTUSD)\n"
+        "• /symbol [SYMBOL] - View or switch active auto-trading symbol\n\n"
+        "Auto-Trade Controls:\n"
         "• /autotrade [on|off|status|close] - Control automated trading\n"
-        "• /lotsize [SIZE] - View or update order lot size\n"
-        "• /tpsl [TP] [SL] [MODE] - Set strategy Take Profit and Stop Loss\n"
+        "• /lotsize [SIZE|risk %] - View or update order lot sizing\n"
+        "• /tpsl [TP] [SL] [MODE] - Set strategy Take Profit and Stop Loss\n\n"
+        "Assistant Commands:\n"
         "• /reset - Clear conversation history\n"
         "• /help - Show this guide\n\n"
         "Send any message to chat with market context.",
@@ -447,6 +498,46 @@ async def price(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await reply_safely(update, get_price(symbol))
 
 
+async def btc_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show live Bitcoin market ticker and stats card."""
+    card = get_ticker_card("BTCUSD")
+    await reply_safely(update, card, parse_mode="HTML")
+
+
+async def gold_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show live Gold market ticker and stats card."""
+    card = get_ticker_card("XAUTUSD")
+    await reply_safely(update, card, parse_mode="HTML")
+
+
+async def symbol_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """View or switch active auto-trade symbol."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+    if not args:
+        card = get_ticker_card(trader.config.symbol)
+        await reply_safely(
+            update,
+            f"🔄 <b>Active Auto-Trade Symbol:</b> <code>{trader.config.symbol}</code>\n\n"
+            f"{card}\n\n"
+            f"<b>Switch symbol:</b>\n"
+            f"• <code>/symbol btc</code> (Trade Bitcoin BTCUSD)\n"
+            f"• <code>/symbol gold</code> (Trade Gold XAUTUSD)\n"
+            f"• <code>/symbol [ANY_SYMBOL]</code> (e.g. ETHUSD, SOLUSD)",
+            parse_mode="HTML",
+        )
+        return
+
+    sym_req = args[0]
+    msg = trader.set_symbol(sym_req)
+    card = get_ticker_card(trader.config.symbol)
+    await reply_safely(
+        update,
+        f"✅ <b>{msg}</b>\n\n{card}",
+        parse_mode="HTML",
+    )
+
+
 async def reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat:
         return
@@ -602,6 +693,10 @@ def main() -> None:
     )
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("btc", btc_command))
+    app.add_handler(CommandHandler("gold", gold_command))
+    app.add_handler(CommandHandler("xau", gold_command))
+    app.add_handler(CommandHandler("symbol", symbol_command))
     app.add_handler(CommandHandler("price", price))
     app.add_handler(CommandHandler("autotrade", autotrade_command))
     app.add_handler(CommandHandler("lotsize", lotsize_command))

@@ -179,6 +179,7 @@ class AutoTrader:
 
     def _init_strategy(self) -> None:
         self._strategy_pro = IndicatorsProStrategy(
+            symbol=self.config.symbol,
             risk_per_trade=self.config.risk_pct,
             tp_mode=self.config.tp_mode,
             sl_mode=self.config.sl_mode,
@@ -264,7 +265,25 @@ class AutoTrader:
 
     def set_symbol(self, symbol: str) -> str:
         cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
-        self.config.symbol = cleaned
+        alias_map = {
+            "BTC": "BTCUSD",
+            "BITCOIN": "BTCUSD",
+            "BTCUSDT": "BTCUSD",
+            "XAU": "XAUTUSD",
+            "GOLD": "XAUTUSD",
+            "PAXG": "XAUTUSD",
+            "XAUUSD": "XAUTUSD",
+            "ETH": "ETHUSD",
+            "ETHUSDT": "ETHUSD",
+            "SOL": "SOLUSD",
+            "SOLUSDT": "SOLUSD",
+            "XRP": "XRPUSD",
+            "XRPUSDT": "XRPUSD",
+        }
+        target = alias_map.get(cleaned, cleaned)
+        self.config.symbol = target
+        if self._strategy_pro:
+            self._strategy_pro.set_symbol(target)
         self.config.save()
         return f"Auto trade symbol set to: {self.config.symbol}"
 
@@ -279,9 +298,19 @@ class AutoTrader:
     def fetch_candles(self, symbol: str, count: int = 120) -> pd.DataFrame:
         """Fetch 1m candle series from Delta Exchange API with fallback to synthetic data."""
         cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
+        alias_map = {
+            "BTC": "BTCUSD",
+            "BITCOIN": "BTCUSD",
+            "BTCUSDT": "BTCUSD",
+            "XAU": "XAUTUSD",
+            "GOLD": "XAUTUSD",
+            "PAXG": "XAUTUSD",
+            "XAUUSD": "XAUTUSD",
+        }
+        target = alias_map.get(cleaned, cleaned)
         now = int(time.time())
         from_ts = now - (count + 30) * 60
-        url = f"{DELTA_CHART_API}?symbol={cleaned}&resolution=1&from={from_ts}&to={now}"
+        url = f"{DELTA_CHART_API}?symbol={target}&resolution=1&from={from_ts}&to={now}"
 
         try:
             resp = requests.get(url, timeout=8)
@@ -301,18 +330,21 @@ class AutoTrader:
                     ).astype(float)
                     return df
         except Exception as exc:
-            logger.warning("Delta candle fetch error for %s: %s", cleaned, exc)
+            logger.warning("Delta candle fetch error for %s: %s", target, exc)
 
         # Fallback synthetic series for offline resilience and tests
         dates = pd.date_range(end=datetime.now(timezone.utc), periods=count, freq="1min")
-        base = 2650.0 if "XAU" in cleaned else 80000.0
-        p = base + pd.Series(range(count)) * 0.1
+        is_btc = "BTC" in target
+        base = 82000.0 if is_btc else (4135.0 if "XAU" in target else 2650.0)
+        scale = 10.0 if is_btc else 0.4
+        spread = 15.0 if is_btc else 1.0
+        p = base + np.arange(count, dtype=float) * scale
         return pd.DataFrame(
             {
                 "open": p,
-                "high": p + 1.0,
-                "low": p - 1.0,
-                "close": p + 0.2,
+                "high": p + spread,
+                "low": p - spread,
+                "close": p + (scale * 0.5),
                 "volume": 500.0,
             },
             index=dates,
@@ -409,18 +441,19 @@ class AutoTrader:
             )
             if len(daily) < 2:
                 # Synthetic daily support
+                spread_d = 400.0 if "BTC" in self.config.symbol else 10.0
                 daily = pd.DataFrame(
                     [
                         {
-                            "open": curr_close - 5,
-                            "high": curr_close + 10,
-                            "low": curr_close - 10,
+                            "open": curr_close - (spread_d * 0.5),
+                            "high": curr_close + spread_d,
+                            "low": curr_close - spread_d,
                             "close": curr_close,
                         },
                         {
                             "open": curr_close,
-                            "high": curr_close + 5,
-                            "low": curr_close - 5,
+                            "high": curr_close + (spread_d * 0.5),
+                            "low": curr_close - (spread_d * 0.5),
                             "close": curr_close,
                         },
                     ],
@@ -561,8 +594,10 @@ def run_backtest(args):
     print("=" * 64)
     pro = load_module("pro_strat", PRO_FILE)
 
-    dfs = pro.make_data(args.bars)
+    sym = getattr(args, "symbol", "BTCUSD")
+    dfs = pro.make_data(args.bars, symbol=sym)
     strat = pro.IndicatorsProStrategy(
+        symbol=sym,
         risk_per_trade=args.risk,
         min_quality=args.min_q,
         min_indicator_score=2.0,
@@ -596,7 +631,8 @@ def run_backtest_ai(args):
     if os.path.exists(tmp_mem):
         os.remove(tmp_mem)
 
-    bot = ai.AIBotLearning(memory_path=tmp_mem)
+    sym = getattr(args, "symbol", "BTCUSD")
+    bot = ai.AIBotLearning(memory_path=tmp_mem, symbol=sym)
     if getattr(args, "lotsize", None) is not None:
         bot.set_lot_size(args.lotsize, "fixed")
     if getattr(args, "tp", None) is not None and getattr(args, "sl", None) is not None:
@@ -606,9 +642,8 @@ def run_backtest_ai(args):
             tp_mode=getattr(args, "tp_mode", "rr"),
             sl_mode=getattr(args, "sl_mode", "swing"),
         )
-
     pro = load_module("pro_strat", PRO_FILE)  # reuse demo data generator
-    dfs = pro.make_data(args.bars)
+    dfs = pro.make_data(args.bars, symbol=sym)
 
     equity = args.equity
     peak = equity
@@ -721,6 +756,7 @@ class LiveProBot:
         self.ai_mod = ai_mod
         self.args = args
         self.strat = pro.IndicatorsProStrategy(
+            symbol=args.symbol,
             risk_per_trade=args.risk,
             min_quality=args.min_q,
             min_indicator_score=2.0,

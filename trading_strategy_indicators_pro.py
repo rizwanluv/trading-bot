@@ -389,6 +389,8 @@ class IndicatorsProStrategy:
         self.use_killzone = kw.get("use_killzone", True)
         self.use_adx_filter = kw.get("use_adx_filter", True)
         self.min_adx = kw.get("min_adx", 18)
+        self.symbol = str(kw.get("symbol", "BTCUSD")).upper()
+        self.is_crypto = any(c in self.symbol for c in ("BTC", "ETH", "SOL", "XRP"))
         self.tp_mode = kw.get("tp_mode", "rr")
         self.sl_mode = kw.get("sl_mode", "swing")
         self.tp_value = float(kw.get("tp_value", 2.0))
@@ -417,6 +419,10 @@ class IndicatorsProStrategy:
     def set_lot_size(self, lot_size: float, mode: str = "fixed") -> None:
         self.lot_size = max(0.0001, float(lot_size))
         self.lot_mode = mode
+
+    def set_symbol(self, symbol: str) -> None:
+        self.symbol = str(symbol).upper()
+        self.is_crypto = any(c in self.symbol for c in ("BTC", "ETH", "SOL", "XRP"))
 
     def calculate_tp_sl(self, df, d: Direction, entry: float) -> Tuple[float, float, Optional[float], float]:
         atr = self.atr(df)
@@ -476,12 +482,13 @@ class IndicatorsProStrategy:
         return Regime.RANGE
 
     def killzone(self, ts):
-        if not self.use_killzone: return True
+        if not self.use_killzone or self.is_crypto: return True
         t = ts.time() if hasattr(ts,"time") else ts
         if time(7,0)<=t<time(7,12) or time(12,30)<=t<time(12,42): return False
         return (time(7,12)<=t<=time(10,30)) or (time(12,42)<=t<=time(16,0)) or (time(8,0)<=t<=time(16,30))
 
     def session_ok(self, ts):
+        if self.is_crypto: return True
         t = ts.time() if hasattr(ts,"time") else ts
         return (time(7,0)<=t<=time(16,45)) or (time(12,0)<=t<=time(21,0))
 
@@ -764,16 +771,26 @@ class Backtester:
         print("="*64)
 
 
-def make_data(n=7000):
+def make_data(n=7000, symbol="BTCUSD"):
     np.random.seed(42)
     d = pd.date_range("2025-01-01", periods=n, freq="1min")
-    p = 2000 + np.cumsum(np.random.randn(n)*0.4)
-    df1 = pd.DataFrame({"open":p,"high":p+np.random.uniform(0.15,2.6,n),"low":p-np.random.uniform(0.15,2.6,n),
-                        "close":p+np.random.randn(n)*0.11,"volume":np.random.randint(40,2000,n)}, index=d)
-    df5 = df1.resample("5min").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
-    df15 = df1.resample("15min").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
-    df1h = df1.resample("1h").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
-    daily = df1.resample("1D").agg({"open":"first","high":"max","low":"min","close":"last"}).dropna()
+    is_btc = "BTC" in str(symbol).upper()
+    base = 82000.0 if is_btc else 4135.0
+    scale = 12.0 if is_btc else 0.4
+    spread_min = 5.0 if is_btc else 0.15
+    spread_max = 45.0 if is_btc else 2.6
+    p = base + np.cumsum(np.random.randn(n) * scale)
+    df1 = pd.DataFrame({
+        "open": p,
+        "high": p + np.random.uniform(spread_min, spread_max, n),
+        "low": p - np.random.uniform(spread_min, spread_max, n),
+        "close": p + np.random.randn(n) * (scale * 0.3),
+        "volume": np.random.randint(40, 2000, n),
+    }, index=d)
+    df5 = df1.resample("5min").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
+    df15 = df1.resample("15min").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
+    df1h = df1.resample("1h").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
+    daily = df1.resample("1D").agg({"open": "first", "high": "max", "low": "min", "close": "last"}).dropna()
     return df1, df5, df15, df1h, daily
 
 

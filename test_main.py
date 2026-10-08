@@ -477,9 +477,152 @@ class TestAutoTradeTelegramHandlers(unittest.IsolatedAsyncioTestCase):
         ctx = SimpleNamespace(args=[])
         await main.help_command(mock_update, ctx)
         sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("/btc", sent)
+        self.assertIn("/gold", sent)
+        self.assertIn("/symbol", sent)
         self.assertIn("/autotrade", sent)
         self.assertIn("/lotsize", sent)
         self.assertIn("/tpsl", sent)
+
+    @patch("requests.get")
+    async def test_btc_command(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "success": True,
+            "result": {
+                "mark_price": "82500.00",
+                "close": 82510.0,
+                "high": 83000.0,
+                "low": 81000.0,
+                "open": 82000.0,
+                "volume": 2500.0,
+            },
+        }
+        mock_get.return_value = mock_resp
+
+        mock_update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+        ctx = SimpleNamespace(args=[])
+        await main.btc_command(mock_update, ctx)
+        mock_update.message.reply_text.assert_called_once()
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Bitcoin (BTC)", sent)
+        self.assertIn("82,500.00", sent)
+
+    @patch("requests.get")
+    async def test_gold_command(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "success": True,
+            "result": {
+                "mark_price": "4135.50",
+                "close": 4135.0,
+                "high": 4150.0,
+                "low": 4100.0,
+                "open": 4110.0,
+                "volume": 500.0,
+            },
+        }
+        mock_get.return_value = mock_resp
+
+        mock_update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+        ctx = SimpleNamespace(args=[])
+        await main.gold_command(mock_update, ctx)
+        mock_update.message.reply_text.assert_called_once()
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Gold (XAU)", sent)
+        self.assertIn("4,135.50", sent)
+
+    @patch("requests.get")
+    async def test_symbol_command(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "success": True,
+            "result": {
+                "mark_price": "82000.00",
+                "close": 82000.0,
+                "high": 83000.0,
+                "low": 81000.0,
+                "open": 81500.0,
+                "volume": 1200.0,
+            },
+        }
+        mock_get.return_value = mock_resp
+
+        mock_update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+
+        # 1. Query current symbol
+        ctx = SimpleNamespace(args=[])
+        await main.symbol_command(mock_update, ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Active Auto-Trade Symbol", sent)
+
+        # 2. Switch symbol to btc
+        mock_update.message.reply_text.reset_mock()
+        ctx = SimpleNamespace(args=["btc"])
+        await main.symbol_command(mock_update, ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Auto trade symbol set to: BTCUSD", sent)
+        self.assertIn("Bitcoin (BTC)", sent)
+
+
+class TestCryptoAndBtcStrategies(unittest.TestCase):
+    def test_indicators_pro_crypto_sessions(self):
+        from trading_strategy_indicators_pro import IndicatorsProStrategy, make_data
+        from datetime import datetime, time
+
+        # Crypto (BTC) trades 24/7 without forex killzone gating
+        strat = IndicatorsProStrategy(symbol="BTCUSD")
+        self.assertTrue(strat.is_crypto)
+        # Any arbitrary time (e.g. Asian session / midnight) is OK for crypto
+        t_asian = datetime(2026, 1, 1, 3, 15)
+        self.assertTrue(strat.session_ok(t_asian))
+        self.assertTrue(strat.killzone(t_asian))
+
+        # Check symbol update
+        strat.set_symbol("XAUTUSD")
+        self.assertFalse(strat.is_crypto)
+
+    def test_ai_learning_crypto_support(self):
+        import ai_bot_learning
+        bot = ai_bot_learning.AIBotLearning(symbol="BTCUSD")
+        self.assertTrue(bot.is_crypto)
+        from datetime import datetime
+        t_weekend = datetime(2026, 1, 3, 4, 0)
+        self.assertTrue(bot.session_ok(t_weekend))
+
+    def test_make_data_btc_scaling(self):
+        from trading_strategy_indicators_pro import make_data
+        dfs = make_data(100, symbol="BTCUSD")
+        df1 = dfs[0]
+        self.assertGreater(df1["close"].mean(), 50000.0)
+
+    def test_auto_trade_symbol_btc_switching(self):
+        import auto_trade
+        cfg = auto_trade.AutoTradeConfig(config_file="/workspace/bright-darwin/.test_switch_cfg.json")
+        trader = auto_trade.AutoTrader(config=cfg)
+        try:
+            msg = trader.set_symbol("btc")
+            self.assertEqual(trader.config.symbol, "BTCUSD")
+            self.assertTrue(trader._strategy_pro.is_crypto)
+            self.assertIn("BTCUSD", msg)
+
+            # Test synthetic candles generation for BTC
+            with patch("requests.get", side_effect=Exception("offline")):
+                candles = trader.fetch_candles("BTCUSD", count=50)
+                self.assertEqual(len(candles), 50)
+                self.assertGreater(candles["close"].iloc[0], 50000.0)
+        finally:
+            if os.path.exists(cfg.config_file):
+                os.remove(cfg.config_file)
 
 
 if __name__ == "__main__":
