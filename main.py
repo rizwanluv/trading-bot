@@ -3,8 +3,8 @@ Telegram trading assistant powered by Gemini.
 
 Setup:
   pip install google-genai python-telegram-bot requests
-  export GEMINI_API_KEY=...      # from aistudio.google.com
-  export TELEGRAM_TOKEN=...      # from @BotFather
+  export GEMINI_API_KEY=  AQ.Ab8RN6Ixz0Zy3PRY52JIaYnhixast7Qd0kCYsFB3dKjdxG7Utw    # from aistudio.google.com
+  export TELEGRAM_TOKEN=     8993862862:AAGaQeh2yx0ICO4y040FySjK2_ASJ8x4vx8   # from @BotFather
 Run:
   python trading_bot_gemini.py
 
