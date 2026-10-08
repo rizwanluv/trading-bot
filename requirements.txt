@@ -1,0 +1,3 @@
+python-telegram-bot
+requests
+google-genai; python_version >= '3.10'
