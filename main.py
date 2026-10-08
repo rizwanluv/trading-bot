@@ -327,16 +327,24 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await reply_safely(
         update,
         "Trading assistant ready. Real-time analysis and automated trading for Bitcoin (BTC) & Gold (XAU).\n\n"
-        "Market Commands:\n"
+        "Market & Analysis Commands:\n"
         "• /btc - Live Bitcoin (BTC) ticker, 24h stats & range\n"
         "• /gold - Live Gold (XAU) ticker, 24h stats & range\n"
-        "• /price [SYMBOL] - Price check on any Delta Exchange pair (default: XAUTUSD)\n"
+        "• /eth - Live Ethereum (ETH) ticker & stats\n"
+        "• /sol - Live Solana (SOL) ticker & stats\n"
+        "• /analyze [SYMBOL] - Full technical analysis & signal report\n"
+        "• /price [SYMBOL] - Price check on any Delta Exchange pair\n"
         "• /symbol [SYMBOL] - View or switch active auto-trading symbol\n\n"
-        "Auto-Trade Controls:\n"
+        "Auto-Trade & Risk Controls:\n"
         "• /autotrade [on|off|status|close] - Control automated trading\n"
+        "• /position - Live active position dashboard & PnL\n"
+        "• /pnl - Performance report & closed trades history\n"
         "• /lotsize [SIZE|risk %] - View or update order lot sizing\n"
-        "• /tpsl [TP] [SL] [MODE] - Set strategy Take Profit and Stop Loss\n\n"
+        "• /tpsl [TP] [SL] [MODE] - Set strategy Take Profit and Stop Loss\n"
+        "• /trailing [on|off] - Dynamic trailing stop loss protection\n"
+        "• /risk [PCT] - Max daily loss risk limit protection\n\n"
         "Assistant Commands:\n"
+        "• /menu - Quick command directory\n"
         "• /reset - Clear conversation history\n"
         "• /help - Show this guide\n\n"
         "Send any message to chat with market context.",
@@ -538,6 +546,135 @@ async def symbol_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     )
 
 
+async def eth_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show live Ethereum market ticker and stats card."""
+    card = get_ticker_card("ETHUSD")
+    await reply_safely(update, card, parse_mode="HTML")
+
+
+async def sol_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show live Solana market ticker and stats card."""
+    card = get_ticker_card("SOLUSD")
+    await reply_safely(update, card, parse_mode="HTML")
+
+
+async def analyze_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Run 10-indicator technical analysis engine and report signals."""
+    trader = get_auto_trader()
+    symbol = ctx.args[0] if ctx.args else trader.config.symbol
+    report = trader.analyze_market(symbol)
+    await reply_safely(update, report, parse_mode="HTML")
+
+
+async def position_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show active position dashboard or idle status."""
+    trader = get_auto_trader()
+    text = trader.get_position_text()
+    await reply_safely(update, text, parse_mode="HTML")
+
+
+async def pnl_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show historical trading performance and closed trades PnL."""
+    trader = get_auto_trader()
+    report = trader.get_performance_report()
+    await reply_safely(update, report, parse_mode="HTML")
+
+
+async def trailing_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Configure dynamic trailing stop loss."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+    if not args:
+        state = "🟢 ENABLED (ON)" if trader.config.trailing_sl else "⚪ DISABLED (OFF)"
+        await reply_safely(
+            update,
+            f"🛡️ <b>Trailing Stop Loss Status</b>\n"
+            f"• <b>Status</b>: {state}\n\n"
+            f"<b>Usage:</b>\n"
+            f"• <code>/trailing on</code> - Enable trailing SL (locks in profits at 1R+)\n"
+            f"• <code>/trailing off</code> - Disable trailing SL",
+            parse_mode="HTML",
+        )
+        return
+
+    sub = args[0].lower()
+    if sub in ("on", "enable", "start", "1", "true"):
+        msg = trader.set_trailing_sl(True)
+        await reply_safely(update, f"✅ <b>{msg}</b>", parse_mode="HTML")
+    elif sub in ("off", "disable", "stop", "0", "false"):
+        msg = trader.set_trailing_sl(False)
+        await reply_safely(update, f"⚪ <b>{msg}</b>", parse_mode="HTML")
+    else:
+        await reply_safely(update, "Usage: /trailing on or /trailing off")
+
+
+async def risk_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Configure maximum daily loss drawdown protection limit."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+    if not args:
+        await reply_safely(
+            update,
+            f"🛡️ <b>Capital Risk Protection</b>\n"
+            f"• <b>Max Daily Loss Limit</b>: <code>{trader.config.max_daily_loss_pct}%</code> equity\n"
+            f"• <b>Account Equity</b>: <code>${trader.config.equity:,.2f}</code>\n"
+            f"• <b>Max Daily Drawdown</b>: <code>${trader.config.equity * trader.config.max_daily_loss_pct / 100.0:,.2f}</code>\n\n"
+            f"<i>When daily loss reaches this threshold, auto-trading pauses automatically.</i>\n\n"
+            f"<b>Change limit:</b>\n"
+            f"• <code>/risk 2.5</code> (Set max daily drawdown to 2.5%)\n"
+            f"• <code>/risk 5.0</code> (Set max daily drawdown to 5.0%)",
+            parse_mode="HTML",
+        )
+        return
+
+    raw = args[0].replace("%", "").strip()
+    try:
+        val = float(raw)
+        ok, msg = trader.set_max_daily_loss(val)
+        if ok:
+            await reply_safely(update, f"✅ <b>{msg}</b>", parse_mode="HTML")
+        else:
+            await reply_safely(update, f"❌ {msg}")
+    except ValueError:
+        await reply_safely(update, "Error: Invalid number. Example: /risk 3.0")
+
+
+async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Interactive command directory and quick dashboard."""
+    trader = get_auto_trader()
+    status_str = "🟢 AUTO-TRADING ON" if trader.config.enabled else "🔴 AUTO-TRADING OFF"
+    pos_str = f"Active: {trader.position.direction} {trader.position.symbol}" if trader.position else "No open position"
+    await reply_safely(
+        update,
+        f"🎛️ <b>TRADING BOT COMMAND MENU</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Engine Status</b>: <b>{status_str}</b>\n"
+        f"• <b>Trading Pair</b>: <code>{trader.config.symbol}</code>\n"
+        f"• <b>Position</b>: <i>{pos_str}</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>Market & Analysis:</b>\n"
+        f"• /btc - Bitcoin Ticker Card\n"
+        f"• /gold - Gold Ticker Card\n"
+        f"• /eth - Ethereum Ticker Card\n"
+        f"• /sol - Solana Ticker Card\n"
+        f"• /analyze [SYM] - Technical Analysis & Confluence\n"
+        f"• /symbol [SYM] - Switch Traded Symbol\n\n"
+        f"<b>Auto-Trading & Risk:</b>\n"
+        f"• /autotrade on|off - Start/Stop Automated Trades\n"
+        f"• /position - Live Active Position Dashboard\n"
+        f"• /pnl - Performance Report & Trades History\n"
+        f"• /lotsize [SIZE] - Set Order Sizing\n"
+        f"• /tpsl [TP] [SL] - Set Strategy Targets\n"
+        f"• /trailing on|off - Dynamic Trailing Stop Loss\n"
+        f"• /risk [PCT] - Max Daily Drawdown Protection\n\n"
+        f"<b>General:</b>\n"
+        f"• /price [SYM] - Custom Pair Price Check\n"
+        f"• /reset - Clear Dialogue History\n"
+        f"• /help - Full Guide",
+        parse_mode="HTML",
+    )
+
+
 async def reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat:
         return
@@ -693,12 +830,24 @@ def main() -> None:
     )
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CommandHandler("btc", btc_command))
     app.add_handler(CommandHandler("gold", gold_command))
     app.add_handler(CommandHandler("xau", gold_command))
+    app.add_handler(CommandHandler("eth", eth_command))
+    app.add_handler(CommandHandler("sol", sol_command))
+    app.add_handler(CommandHandler("analyze", analyze_command))
+    app.add_handler(CommandHandler("signal", analyze_command))
     app.add_handler(CommandHandler("symbol", symbol_command))
     app.add_handler(CommandHandler("price", price))
     app.add_handler(CommandHandler("autotrade", autotrade_command))
+    app.add_handler(CommandHandler("position", position_command))
+    app.add_handler(CommandHandler("pos", position_command))
+    app.add_handler(CommandHandler("pnl", pnl_command))
+    app.add_handler(CommandHandler("performance", pnl_command))
+    app.add_handler(CommandHandler("trades", pnl_command))
+    app.add_handler(CommandHandler("trailing", trailing_command))
+    app.add_handler(CommandHandler("risk", risk_command))
     app.add_handler(CommandHandler("lotsize", lotsize_command))
     app.add_handler(CommandHandler("tpsl", tpsl_command))
     app.add_handler(CommandHandler("reset", reset))

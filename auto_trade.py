@@ -49,7 +49,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-from trading_strategy_indicators_pro import Direction, IndicatorsProStrategy
+from trading_strategy_indicators_pro import Direction, IndicatorsProStrategy, IndicatorEngine
 
 logger = logging.getLogger("trading_bot.auto_trade")
 
@@ -57,6 +57,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 AI_FILE = os.path.join(BASE, "ai_bot_learning.py")
 PRO_FILE = os.path.join(BASE, "trading_strategy_indicators_pro.py")
 CONFIG_FILE_PATH = os.path.join(BASE, "auto_trade_config.json")
+TRADES_HISTORY_PATH = os.path.join(BASE, "trades_history.json")
 DELTA_CHART_API = os.getenv(
     "DELTA_CHART_API", "https://api.india.delta.exchange/v2/chart/history"
 )
@@ -73,7 +74,7 @@ DELTA_TICKER_API = os.getenv(
 @dataclass
 class AutoTradeConfig:
     enabled: bool = False
-    symbol: str = "XAUTUSD"
+    symbol: str = "BTCUSD"
     lot_size: float = 0.01
     lot_mode: str = "fixed"  # "fixed" or "risk_pct"
     risk_pct: float = 1.0  # used if lot_mode is "risk_pct"
@@ -81,11 +82,14 @@ class AutoTradeConfig:
     sl_value: float = 1.0  # multiplier, points, or percentage
     tp_mode: str = "rr"  # "rr", "pts", "pct", "atr"
     sl_mode: str = "swing"  # "swing", "pts", "pct", "atr"
+    trailing_sl: bool = False
+    max_daily_loss_pct: float = 3.0
     strategy_type: str = "indicators_pro"  # "indicators_pro" or "ai_learning"
     poll_seconds: int = 15
     equity: float = 10000.0
     notify_chat_id: Optional[int] = None
     config_file: str = CONFIG_FILE_PATH
+    trades_history_file: str = TRADES_HISTORY_PATH
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -98,6 +102,8 @@ class AutoTradeConfig:
             "sl_value": self.sl_value,
             "tp_mode": self.tp_mode,
             "sl_mode": self.sl_mode,
+            "trailing_sl": self.trailing_sl,
+            "max_daily_loss_pct": self.max_daily_loss_pct,
             "strategy_type": self.strategy_type,
             "poll_seconds": self.poll_seconds,
             "equity": self.equity,
@@ -172,10 +178,35 @@ class AutoTrader:
     def __init__(self, config: Optional[AutoTradeConfig] = None):
         self.config = config or AutoTradeConfig.load()
         self.position: Optional[AutoTradePosition] = None
-        self.closed_trades: List[AutoTradePosition] = []
+        self.closed_trades: List[AutoTradePosition] = self._load_trades_history()
         self.is_running: bool = False
         self._strategy_pro: Optional[IndicatorsProStrategy] = None
         self._init_strategy()
+
+    def _load_trades_history(self) -> List[AutoTradePosition]:
+        history_path = getattr(self.config, "trades_history_file", TRADES_HISTORY_PATH)
+        if os.path.exists(history_path):
+            try:
+                with open(history_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                trades = []
+                for item in data:
+                    if isinstance(item, dict):
+                        trades.append(AutoTradePosition(**item))
+                logger.info("Loaded %d historical trades from %s", len(trades), history_path)
+                return trades
+            except Exception as exc:
+                logger.warning("Could not read trades history %s: %s", history_path, exc)
+        return []
+
+    def _save_trades_history(self) -> None:
+        history_path = getattr(self.config, "trades_history_file", TRADES_HISTORY_PATH)
+        try:
+            with open(history_path, "w", encoding="utf-8") as f:
+                json.dump([asdict(t) for t in self.closed_trades[-100:]], f, indent=2)
+            logger.info("Saved %d trades to history %s", len(self.closed_trades), history_path)
+        except Exception as exc:
+            logger.warning("Could not save trades history %s: %s", history_path, exc)
 
     def _init_strategy(self) -> None:
         self._strategy_pro = IndicatorsProStrategy(
@@ -295,6 +326,19 @@ class AutoTrader:
         self.config.save()
         return True, f"Strategy switched to: {st}"
 
+    def set_trailing_sl(self, enabled: bool) -> str:
+        self.config.trailing_sl = bool(enabled)
+        self.config.save()
+        state = "ENABLED (ON)" if self.config.trailing_sl else "DISABLED (OFF)"
+        return f"Trailing Stop Loss is now {state}."
+
+    def set_max_daily_loss(self, pct: float) -> Tuple[bool, str]:
+        if pct <= 0 or pct > 50:
+            return False, "Error: Max daily loss limit must be between 0.1% and 50%."
+        self.config.max_daily_loss_pct = float(pct)
+        self.config.save()
+        return True, f"Max daily loss risk limit updated to: {self.config.max_daily_loss_pct}% equity."
+
     def fetch_candles(self, symbol: str, count: int = 120) -> pd.DataFrame:
         """Fetch 1m candle series from Delta Exchange API with fallback to synthetic data."""
         cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
@@ -369,6 +413,7 @@ class AutoTrader:
         self.config.equity += pnl
         self.config.save()
         self.closed_trades.append(pos)
+        self._save_trades_history()
         self.position = None
 
         if self._strategy_pro:
@@ -431,6 +476,41 @@ class AutoTrader:
                     msg = self.close_current_position(pos.stop_loss, reason="SL")
                     if msg:
                         notifications.append(f"🛑 <b>STOP LOSS HIT</b>\n{msg}")
+
+            # Trailing Stop Loss dynamic update
+            if self.position is not None and self.config.trailing_sl:
+                pos = self.position
+                risk_amt = abs(pos.entry_price - pos.stop_loss)
+                if pos.direction == "LONG" and curr_close > pos.entry_price + risk_amt:
+                    trail_target = round(curr_close - risk_amt, 2)
+                    if trail_target > pos.stop_loss:
+                        old_sl = pos.stop_loss
+                        pos.stop_loss = trail_target
+                        notifications.append(
+                            f"🛡️ <b>Trailing Stop Moved Up:</b> SL updated from {old_sl:.2f} ➔ <b>{pos.stop_loss:.2f}</b>"
+                        )
+                elif pos.direction == "SHORT" and curr_close < pos.entry_price - risk_amt:
+                    trail_target = round(curr_close + risk_amt, 2)
+                    if trail_target < pos.stop_loss:
+                        old_sl = pos.stop_loss
+                        pos.stop_loss = trail_target
+                        notifications.append(
+                            f"🛡️ <b>Trailing Stop Moved Down:</b> SL updated from {old_sl:.2f} ➔ <b>{pos.stop_loss:.2f}</b>"
+                        )
+
+        # Risk Management: check max daily loss limit
+        today_losses = sum(
+            t.pnl for t in self.closed_trades
+            if t.pnl < 0 and t.exit_time and datetime.now(timezone.utc).strftime("%Y-%m-%d") in str(t.exit_time)
+        )
+        max_allowed_loss = (self.config.equity * self.config.max_daily_loss_pct / 100.0)
+        if abs(today_losses) >= max_allowed_loss and self.config.enabled:
+            self.config.enabled = False
+            self.config.save()
+            notifications.append(
+                f"🛑 <b>Risk Guard Triggered:</b> Daily loss reached {self.config.max_daily_loss_pct}% "
+                f"(${abs(today_losses):.2f}). Auto-trade paused to preserve capital."
+            )
 
         # 2. Check for New Entry if no active position and auto-trade is ON
         if self.position is None and self.config.enabled:
@@ -530,6 +610,8 @@ class AutoTrader:
             f"• <b>Lot Size</b>: {self.config.lot_size} ({lot_mode_str})",
             f"• <b>Take Profit</b>: {self.config.tp_value} ({self.config.tp_mode.upper()})",
             f"• <b>Stop Loss</b>: {self.config.sl_value} ({self.config.sl_mode.upper()})",
+            f"• <b>Trailing Stop</b>: {'🟢 ON' if self.config.trailing_sl else '⚪ OFF'}",
+            f"• <b>Daily Risk Guard</b>: {self.config.max_daily_loss_pct}% equity",
             f"• <b>Account Equity</b>: ${self.config.equity:.2f}",
             "━━━━━━━━━━━━━━━━━━━━━━",
         ]
@@ -564,6 +646,210 @@ class AutoTrader:
         )
 
         return "\n".join(text)
+
+    def get_position_text(self) -> str:
+        """Return formatted dashboard text of current open position or idle status."""
+        if not self.position:
+            return (
+                "💼 <b>Active Position Dashboard</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "• <b>Status</b>: No active open position\n"
+                f"• <b>Trading Pair</b>: <code>{self.config.symbol}</code>\n"
+                f"• <b>Auto-Trading</b>: {'🟢 ENABLED' if self.config.enabled else '🔴 DISABLED'}\n"
+                f"• <b>Account Equity</b>: <code>${self.config.equity:,.2f}</code>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "<i>💡 Market is continuously scanned for high-probability setups.</i>"
+            )
+
+        pos = self.position
+        df = self.fetch_candles(pos.symbol, count=5)
+        current_price = float(df["close"].iloc[-1]) if not df.empty else pos.entry_price
+        pnl = pos.current_pnl(current_price)
+        pnl_pct = (
+            ((current_price - pos.entry_price) / pos.entry_price * 100.0)
+            if pos.direction == "LONG"
+            else ((pos.entry_price - current_price) / pos.entry_price * 100.0)
+        )
+        sign = "+" if pnl >= 0 else ""
+        pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+
+        return (
+            f"💼 <b>Active Position: {pos.symbol}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Direction</b>: <b>{pos.direction}</b> {'🟢' if pos.direction == 'LONG' else '🔴'}\n"
+            f"• <b>Entry Price</b>: <code>${pos.entry_price:,.2f}</code>\n"
+            f"• <b>Current Price</b>: <code>${current_price:,.2f}</code>\n"
+            f"• <b>Unrealized PnL</b>: {pnl_emoji} <b>{sign}${pnl:,.2f}</b> ({sign}{pnl_pct:.2f}%)\n"
+            f"• <b>Take Profit</b>: <code>${pos.take_profit_1:,.2f}</code>\n"
+            f"• <b>Stop Loss</b>: <code>${pos.stop_loss:,.2f}</code>\n"
+            f"• <b>Lot Size</b>: <code>{pos.lot_size}</code>\n"
+            f"• <b>Strategy</b>: {pos.strategy}\n"
+            f"• <b>Opened At</b>: {pos.entry_time}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<i>💡 Use /autotrade close to close this position manually at market price.</i>"
+        )
+
+    def get_performance_report(self) -> str:
+        """Generate comprehensive performance analytics and PnL breakdown."""
+        total = len(self.closed_trades)
+        if total == 0:
+            return (
+                "📈 <b>Trading Performance & PnL Report</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "• <b>Total Closed Trades</b>: 0\n"
+                f"• <b>Current Equity</b>: <code>${self.config.equity:,.2f}</code>\n"
+                f"• <b>Auto-Trading</b>: {'🟢 ENABLED' if self.config.enabled else '🔴 DISABLED'}\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "<i>No closed trades recorded yet. Run /autotrade on to begin.</i>"
+            )
+
+        wins = [t for t in self.closed_trades if t.pnl > 0]
+        losses = [t for t in self.closed_trades if t.pnl <= 0]
+        win_rate = (len(wins) / total) * 100.0 if total > 0 else 0.0
+        net_pnl = sum(t.pnl for t in self.closed_trades)
+        win_sum = sum(t.pnl for t in wins)
+        loss_sum = abs(sum(t.pnl for t in losses))
+        profit_factor = (win_sum / loss_sum) if loss_sum > 0 else (99.0 if win_sum > 0 else 1.0)
+        sign = "+" if net_pnl >= 0 else ""
+        pnl_emoji = "🟢" if net_pnl >= 0 else "🔴"
+
+        recent_lines = []
+        for t in self.closed_trades[-5:]:
+            t_sign = "+" if t.pnl >= 0 else ""
+            t_icon = "🟢" if t.pnl >= 0 else "🔴"
+            recent_lines.append(
+                f"  • {t.symbol} {t.direction}: {t_icon} {t_sign}${t.pnl:.2f} ({t.exit_reason or 'CLOSED'})"
+            )
+        recent_text = "\n".join(recent_lines)
+
+        return (
+            f"📈 <b>Trading Performance & PnL Report</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Total Trades</b>: <code>{total}</code> (Wins: {len(wins)} | Losses: {len(losses)})\n"
+            f"• <b>Win Rate</b>: <b>{win_rate:.1f}%</b>\n"
+            f"• <b>Realized Net PnL</b>: {pnl_emoji} <b>{sign}${net_pnl:,.2f}</b>\n"
+            f"• <b>Profit Factor</b>: <code>{profit_factor:.2f}</code>\n"
+            f"• <b>Account Equity</b>: <code>${self.config.equity:,.2f}</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<b>Recent Closed Trades:</b>\n"
+            f"{recent_text}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        )
+
+    def analyze_market(self, symbol: str) -> str:
+        """
+        Runs full 10-indicator technical analysis engine on the specified symbol
+        and generates an actionable technical report with confluence score,
+        key indicator readings, and recommended trade setups.
+        """
+        cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
+        alias_map = {
+            "BTC": "BTCUSD",
+            "BITCOIN": "BTCUSD",
+            "BTCUSDT": "BTCUSD",
+            "ETH": "ETHUSD",
+            "ETHUSDT": "ETHUSD",
+            "SOL": "SOLUSD",
+            "SOLUSDT": "SOLUSD",
+            "XRP": "XRPUSD",
+            "XRPUSDT": "XRPUSD",
+            "XAU": "XAUTUSD",
+            "GOLD": "XAUTUSD",
+            "PAXG": "XAUTUSD",
+            "XAUUSD": "XAUTUSD",
+        }
+        target = alias_map.get(cleaned, cleaned)
+        df1 = self.fetch_candles(target, count=120)
+        if df1.empty:
+            return f"⚠️ Unable to fetch market candles for <b>{target}</b>."
+
+        eng = IndicatorEngine()
+        snap = eng.compute(df1)
+        curr_price = float(df1["close"].iloc[-1])
+        recent_high = float(df1["high"].tail(20).max())
+        recent_low = float(df1["low"].tail(20).min())
+
+        score = snap.score
+        if score >= 2.0:
+            rec = "STRONG BUY 🟢"
+            direction = "LONG"
+            risk = max(curr_price - recent_low, curr_price * 0.005)
+            stop = curr_price - risk
+            tp1 = curr_price + (risk * 2.0)
+            tp2 = curr_price + (risk * 3.5)
+        elif score >= 0.7:
+            rec = "BUY 🟢"
+            direction = "LONG"
+            risk = max(curr_price - recent_low, curr_price * 0.005)
+            stop = curr_price - risk
+            tp1 = curr_price + (risk * 2.0)
+            tp2 = curr_price + (risk * 3.0)
+        elif score <= -2.0:
+            rec = "STRONG SELL 🔴"
+            direction = "SHORT"
+            risk = max(recent_high - curr_price, curr_price * 0.005)
+            stop = curr_price + risk
+            tp1 = curr_price - (risk * 2.0)
+            tp2 = curr_price - (risk * 3.5)
+        elif score <= -0.7:
+            rec = "SELL 🔴"
+            direction = "SHORT"
+            risk = max(recent_high - curr_price, curr_price * 0.005)
+            stop = curr_price + risk
+            tp1 = curr_price - (risk * 2.0)
+            tp2 = curr_price - (risk * 3.0)
+        else:
+            rec = "NEUTRAL / RANGE ⚪"
+            direction = "HOLD"
+            risk = curr_price * 0.008
+            stop = curr_price - risk
+            tp1 = curr_price + (risk * 2.0)
+            tp2 = curr_price + (risk * 3.0)
+
+        # Status strings
+        if snap.rsi >= 70:
+            rsi_txt = f"{snap.rsi:.1f} (Overbought ⚠️)"
+        elif snap.rsi <= 30:
+            rsi_txt = f"{snap.rsi:.1f} (Oversold 🟢)"
+        else:
+            rsi_txt = f"{snap.rsi:.1f} (Neutral ⚪)"
+
+        if snap.ema9 > snap.ema21 > snap.ema50:
+            ema_txt = "Bullish Alignment (9 > 21 > 50) 🟢"
+        elif snap.ema9 < snap.ema21 < snap.ema50:
+            ema_txt = "Bearish Alignment (9 < 21 < 50) 🔴"
+        else:
+            ema_txt = "Consolidation / Mixed ⚪"
+
+        st_txt = "Bullish Uptrend 🟢" if snap.supertrend_dir == 1 else "Bearish Downtrend 🔴"
+        macd_txt = "Bullish Cross 🟢" if snap.macd_hist > 0 else "Bearish Cross 🔴"
+        adx_txt = f"{snap.adx:.1f} ({'Strong Trend' if snap.adx > 25 else 'Ranging'})"
+
+        return (
+            f"📊 <b>TECHNICAL ANALYSIS: {target}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Signal</b>: <b>{rec}</b>\n"
+            f"• <b>Confluence Score</b>: <code>{score:+.2f} / 5.0</code>\n"
+            f"• <b>Current Price</b>: <code>${curr_price:,.2f}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Indicator Readings:</b>\n"
+            f"• <b>RSI (14)</b>: {rsi_txt}\n"
+            f"• <b>EMAs</b>: {ema_txt}\n"
+            f"• <b>Supertrend</b>: {st_txt}\n"
+            f"• <b>MACD Hist</b>: {macd_txt} (<code>{snap.macd_hist:+.2f}</code>)\n"
+            f"• <b>ADX (14)</b>: <code>{adx_txt}</code>\n"
+            f"• <b>Bollinger Bands</b>: <code>${snap.bb_lower:,.1f}</code> – <code>${snap.bb_upper:,.1f}</code>\n"
+            f"• <b>Stochastic K/D</b>: <code>{snap.stoch_k:.1f} / {snap.stoch_d:.1f}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Suggested Setup ({direction}):</b>\n"
+            f"• <b>Entry Target</b>: <code>${curr_price:,.2f}</code>\n"
+            f"• <b>Stop Loss</b>: <code>${stop:,.2f}</code>\n"
+            f"• <b>Take Profit 1</b>: <code>${tp1:,.2f}</code>\n"
+            f"• <b>Take Profit 2</b>: <code>${tp2:,.2f}</code>\n"
+            f"• <b>Risk:Reward Ratio</b>: <code>2.0 : 1</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>💡 Quick switch: /symbol {target} | Auto trade: /autotrade on</i>"
+        )
 
 
 _GLOBAL_AUTO_TRADER: Optional[AutoTrader] = None

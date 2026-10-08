@@ -220,12 +220,18 @@ class TestAutoTradeModule(unittest.TestCase):
     def setUp(self):
         import auto_trade
         self.tmp_config = "/workspace/bright-darwin/.test_autotrade_config.json"
-        self.config = auto_trade.AutoTradeConfig(config_file=self.tmp_config)
+        self.tmp_hist = "/workspace/bright-darwin/.test_trades_history.json"
+        self.config = auto_trade.AutoTradeConfig(
+            config_file=self.tmp_config,
+            trades_history_file=self.tmp_hist,
+        )
         self.trader = auto_trade.AutoTrader(config=self.config)
 
     def tearDown(self):
         if os.path.exists(self.tmp_config):
             os.remove(self.tmp_config)
+        if os.path.exists(self.tmp_hist):
+            os.remove(self.tmp_hist)
 
     def test_config_save_and_load(self):
         import auto_trade
@@ -623,6 +629,231 @@ class TestCryptoAndBtcStrategies(unittest.TestCase):
         finally:
             if os.path.exists(cfg.config_file):
                 os.remove(cfg.config_file)
+
+    def test_trailing_stop_in_step(self):
+        import auto_trade
+        import pandas as pd
+        cfg = auto_trade.AutoTradeConfig(
+            config_file="/workspace/bright-darwin/.test_trail_cfg.json",
+            trailing_sl=True,
+            symbol="BTCUSD",
+        )
+        trader = auto_trade.AutoTrader(config=cfg)
+        try:
+            pos = auto_trade.AutoTradePosition(
+                id="T_TRAIL",
+                symbol="BTCUSD",
+                direction="LONG",
+                entry_price=80000.0,
+                stop_loss=79000.0,
+                take_profit_1=83000.0,
+                take_profit_2=None,
+                lot_size=0.1,
+                entry_time="now",
+                strategy="Indicators Pro",
+                reason="test",
+                highest_price=80000.0,
+                lowest_price=80000.0,
+            )
+            trader.position = pos
+
+            # Price moves up to 81500 (profit > risk of 1000)
+            mock_df = pd.DataFrame(
+                [{"open": 81000.0, "high": 81600.0, "low": 80900.0, "close": 81500.0, "volume": 100}],
+                index=pd.date_range("2026-01-01", periods=1, freq="1min"),
+            )
+            with patch.object(trader, "fetch_candles", return_value=mock_df):
+                notes = trader.step()
+                # Trailing SL should have moved up to 80500 (81500 - 1000)
+                self.assertGreater(trader.position.stop_loss, 79000.0)
+                self.assertTrue(any("Trailing Stop Moved" in n for n in notes))
+        finally:
+            if os.path.exists(cfg.config_file):
+                os.remove(cfg.config_file)
+
+    def test_daily_risk_guard_in_step(self):
+        import auto_trade
+        import pandas as pd
+        cfg = auto_trade.AutoTradeConfig(
+            config_file="/workspace/bright-darwin/.test_risk_cfg.json",
+            enabled=True,
+            equity=10000.0,
+            max_daily_loss_pct=2.0,  # Max loss $200
+        )
+        trader = auto_trade.AutoTrader(config=cfg)
+        try:
+            # Simulate a large loss closed today ($250 loss)
+            from datetime import datetime, timezone
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d 10:00:00 UTC")
+            closed_loss = auto_trade.AutoTradePosition(
+                id="T_LOSS",
+                symbol="BTCUSD",
+                direction="LONG",
+                entry_price=80000.0,
+                stop_loss=78000.0,
+                take_profit_1=84000.0,
+                take_profit_2=None,
+                lot_size=0.1,
+                entry_time="now",
+                strategy="Indicators Pro",
+                reason="test",
+                highest_price=80000.0,
+                lowest_price=77500.0,
+                exit_price=77500.0,
+                exit_time=today_str,
+                exit_reason="SL",
+                pnl=-250.0,
+            )
+            trader.closed_trades.append(closed_loss)
+
+            mock_df = pd.DataFrame(
+                [{"open": 80000.0, "high": 80100.0, "low": 79900.0, "close": 80000.0, "volume": 100}],
+                index=pd.date_range("2026-01-01", periods=1, freq="1min"),
+            )
+            with patch.object(trader, "fetch_candles", return_value=mock_df):
+                notes = trader.step()
+                # Should trigger risk guard and disable trading
+                self.assertFalse(trader.config.enabled)
+                self.assertTrue(any("Risk Guard Triggered" in n for n in notes))
+        finally:
+            if os.path.exists(cfg.config_file):
+                os.remove(cfg.config_file)
+
+    def test_trades_history_persistence(self):
+        import auto_trade
+        tmp_cfg = "/workspace/bright-darwin/.test_hist_cfg.json"
+        tmp_hist = "/workspace/bright-darwin/.test_trades_hist.json"
+        cfg = auto_trade.AutoTradeConfig(
+            config_file=tmp_cfg,
+            trades_history_file=tmp_hist,
+        )
+        trader = auto_trade.AutoTrader(config=cfg)
+        try:
+            # Open position and close it
+            pos = auto_trade.AutoTradePosition(
+                id="T_PERSIST",
+                symbol="BTCUSD",
+                direction="LONG",
+                entry_price=80000.0,
+                stop_loss=79000.0,
+                take_profit_1=82000.0,
+                take_profit_2=None,
+                lot_size=0.1,
+                entry_time="now",
+                strategy="Indicators Pro",
+                reason="test",
+                highest_price=80000.0,
+                lowest_price=80000.0,
+            )
+            trader.position = pos
+            trader.close_current_position(81000.0, reason="TP1")
+
+            # Verify file was written
+            self.assertTrue(os.path.exists(tmp_hist))
+
+            # New trader loading same history file
+            trader2 = auto_trade.AutoTrader(config=cfg)
+            self.assertEqual(len(trader2.closed_trades), 1)
+            self.assertEqual(trader2.closed_trades[0].id, "T_PERSIST")
+            self.assertEqual(trader2.closed_trades[0].pnl, 100.0)
+        finally:
+            if os.path.exists(tmp_cfg):
+                os.remove(tmp_cfg)
+            if os.path.exists(tmp_hist):
+                os.remove(tmp_hist)
+
+
+class TestNewTelegramHandlers(unittest.IsolatedAsyncioTestCase):
+    @patch("requests.get")
+    async def test_eth_and_sol_commands(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "success": True,
+            "result": {
+                "mark_price": "2750.00",
+                "close": 2750.0,
+                "high": 2800.0,
+                "low": 2700.0,
+                "open": 2720.0,
+                "volume": 850.0,
+            },
+        }
+        mock_get.return_value = mock_resp
+
+        mock_update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+        ctx = SimpleNamespace(args=[])
+
+        # Test /eth
+        await main.eth_command(mock_update, ctx)
+        sent_eth = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("ETHUSD", sent_eth)
+
+        # Test /sol
+        mock_update.message.reply_text.reset_mock()
+        mock_resp.json.return_value["result"]["mark_price"] = "175.50"
+        await main.sol_command(mock_update, ctx)
+        sent_sol = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("SOLUSD", sent_sol)
+
+    async def test_analyze_command(self):
+        mock_update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+        ctx = SimpleNamespace(args=["BTC"])
+        await main.analyze_command(mock_update, ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("TECHNICAL ANALYSIS", sent)
+        self.assertIn("RSI", sent)
+        self.assertIn("Confluence Score", sent)
+
+    async def test_position_and_pnl_commands(self):
+        mock_update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+        ctx = SimpleNamespace(args=[])
+
+        # /position
+        await main.position_command(mock_update, ctx)
+        sent_pos = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Active Position", sent_pos)
+
+        # /pnl
+        mock_update.message.reply_text.reset_mock()
+        await main.pnl_command(mock_update, ctx)
+        sent_pnl = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Trading Performance & PnL Report", sent_pnl)
+
+    async def test_trailing_and_risk_commands(self):
+        mock_update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+
+        # /trailing on
+        ctx = SimpleNamespace(args=["on"])
+        await main.trailing_command(mock_update, ctx)
+        sent_trail = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Trailing Stop Loss is now ENABLED", sent_trail)
+
+        # /risk 4.0
+        mock_update.message.reply_text.reset_mock()
+        ctx = SimpleNamespace(args=["4.0"])
+        await main.risk_command(mock_update, ctx)
+        sent_risk = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("4.0%", sent_risk)
+
+    async def test_menu_command(self):
+        mock_update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+        ctx = SimpleNamespace(args=[])
+        await main.menu_command(mock_update, ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("TRADING BOT COMMAND MENU", sent)
+        self.assertIn("/analyze", sent)
+        self.assertIn("/trailing", sent)
 
 
 if __name__ == "__main__":
