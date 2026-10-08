@@ -28,6 +28,7 @@ import json
 import os
 import time as time_module
 import traceback
+import requests
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -180,7 +181,8 @@ class MarketDataFeed:
                 print(f"[Data] MT5 | {self.symbol}")
             except Exception as e:
                 print(f"[Data] MT5 failed ({e}) → demo")
-                self.source = "demo"
+        elif self.source == "delta":
+            print(f"[Data] Delta Exchange | {self.symbol}")
         else:
             self.source = "demo"
             print("[Data] Demo feed")
@@ -188,6 +190,30 @@ class MarketDataFeed:
     def fetch_ohlcv(self, limit=500, timeframe=None) -> pd.DataFrame:
         tf = timeframe or self.timeframe
         try:
+            if self.source == "delta":
+                now = int(time_module.time())
+                from_ts = now - (limit + 30) * 60
+                sym = self.symbol.replace("/", "").replace("-", "")
+                r = requests.get(
+                    f"https://api.india.delta.exchange/v2/chart/history?symbol={sym}&resolution=1&from={from_ts}&to={now}",
+                    timeout=8,
+                )
+                if r.status_code == 200:
+                    payload = r.json()
+                    res = payload.get("result", {})
+                    if res and "c" in res and len(res["c"]) > 0:
+                        df = pd.DataFrame(
+                            {
+                                "open": res["o"],
+                                "high": res["h"],
+                                "low": res["l"],
+                                "close": res["c"],
+                                "volume": res.get("v", [100.0] * len(res["c"])),
+                            },
+                            index=pd.to_datetime(res["t"], unit="s", utc=True),
+                        ).astype(float)
+                        return df.tail(limit)
+                return self._demo(limit)
             if self.source in ("ccxt", "binance") and self._exchange:
                 sym = "XAU/USDT" if self.symbol == "XAUUSD" else self.symbol
                 if "/" not in sym and sym.endswith("USD"):
@@ -485,7 +511,25 @@ class AIBotLearning:
         self.last_day = None
         self.peak_eq = 10000.0
         self.cooldown_until = None
+        self.tp_mode = "rr"
+        self.sl_mode = "swing"
+        self.tp_value = 2.0
+        self.sl_value = 1.0
+        self.lot_size = 0.01
+        self.lot_mode = "fixed"
         print("[AI Bot Learning] " + self.mem.report())
+
+    def set_tp_sl(self, tp_val: float, sl_val: float, tp_mode: str = "rr", sl_mode: str = "swing") -> None:
+        self.tp_value = float(tp_val)
+        self.sl_value = float(sl_val)
+        self.tp_mode = tp_mode
+        self.sl_mode = sl_mode
+        if tp_mode == "rr":
+            self.mem.stats.best_min_rr = float(tp_val)
+
+    def set_lot_size(self, lot_size: float, mode: str = "fixed") -> None:
+        self.lot_size = max(0.0001, float(lot_size))
+        self.lot_mode = mode
 
     @property
     def min_q(self): return self.mem.stats.best_quality
@@ -753,6 +797,8 @@ class AIBotLearning:
         return 0.0, False
 
     def size(self, equity, entry, stop, atr=0):
+        if getattr(self, "lot_mode", "fixed") == "fixed":
+            return getattr(self, "lot_size", 0.01)
         risk_pct = self.risk_pct
         if equity < self.peak_eq * 0.93:
             risk_pct *= 0.5

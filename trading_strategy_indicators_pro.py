@@ -389,6 +389,12 @@ class IndicatorsProStrategy:
         self.use_killzone = kw.get("use_killzone", True)
         self.use_adx_filter = kw.get("use_adx_filter", True)
         self.min_adx = kw.get("min_adx", 18)
+        self.tp_mode = kw.get("tp_mode", "rr")
+        self.sl_mode = kw.get("sl_mode", "swing")
+        self.tp_value = float(kw.get("tp_value", 2.0))
+        self.sl_value = float(kw.get("sl_value", 1.0))
+        self.lot_size = float(kw.get("lot_size", 0.01))
+        self.lot_mode = kw.get("lot_mode", "fixed")
 
         self.levels = {}
         self.consec_loss = 0
@@ -399,6 +405,54 @@ class IndicatorsProStrategy:
         self.peak_eq = 10000.0
         self.ind = IndicatorEngine()
         self.ai = AIPredictor()
+
+    def set_tp_sl(self, tp_val: float, sl_val: float, tp_mode: str = "rr", sl_mode: str = "swing") -> None:
+        self.tp_value = float(tp_val)
+        self.sl_value = float(sl_val)
+        self.tp_mode = tp_mode
+        self.sl_mode = sl_mode
+        if tp_mode == "rr":
+            self.min_rr = float(tp_val)
+
+    def set_lot_size(self, lot_size: float, mode: str = "fixed") -> None:
+        self.lot_size = max(0.0001, float(lot_size))
+        self.lot_mode = mode
+
+    def calculate_tp_sl(self, df, d: Direction, entry: float) -> Tuple[float, float, Optional[float], float]:
+        atr = self.atr(df)
+        if self.sl_mode == "pts":
+            stop = entry - self.sl_value if d == Direction.LONG else entry + self.sl_value
+        elif self.sl_mode == "pct":
+            stop = entry * (1 - self.sl_value / 100.0) if d == Direction.LONG else entry * (1 + self.sl_value / 100.0)
+        elif self.sl_mode == "atr":
+            eff_atr = atr if atr > 0 else (entry * 0.005)
+            stop = entry - eff_atr * self.sl_value if d == Direction.LONG else entry + eff_atr * self.sl_value
+        else:
+            raw_stop = self.swing_stop(df, d, entry)
+            risk_raw = abs(entry - raw_stop)
+            stop = (entry - risk_raw * self.sl_value) if d == Direction.LONG else (entry + risk_raw * self.sl_value)
+
+        risk = abs(entry - stop)
+        if risk <= 0:
+            risk = entry * 0.002
+            stop = entry - risk if d == Direction.LONG else entry + risk
+
+        if self.tp_mode == "pts":
+            tp1 = entry + self.tp_value if d == Direction.LONG else entry - self.tp_value
+            tp2 = entry + self.tp_value * 1.5 if d == Direction.LONG else entry - self.tp_value * 1.5
+        elif self.tp_mode == "pct":
+            tp1 = entry * (1 + self.tp_value / 100.0) if d == Direction.LONG else entry * (1 - self.tp_value / 100.0)
+            tp2 = entry * (1 + self.tp_value * 1.5 / 100.0) if d == Direction.LONG else entry * (1 - self.tp_value * 1.5 / 100.0)
+        elif self.tp_mode == "atr":
+            eff_atr = atr if atr > 0 else (entry * 0.005)
+            tp1 = entry + eff_atr * self.tp_value if d == Direction.LONG else entry - eff_atr * self.tp_value
+            tp2 = entry + eff_atr * self.tp_value * 1.5 if d == Direction.LONG else entry - eff_atr * self.tp_value * 1.5
+        else:
+            eff_rr = max(self.tp_value, self.min_rr)
+            tp1 = entry + risk * eff_rr if d == Direction.LONG else entry - risk * eff_rr
+            tp2 = entry + risk * (eff_rr * 1.5) if d == Direction.LONG else entry - risk * (eff_rr * 1.5)
+
+        return stop, tp1, tp2, risk
 
     def atr(self, df, p=14):
         if len(df) < p+1: return 0.0
@@ -461,21 +515,17 @@ class IndicatorsProStrategy:
         if pdh and float(prev["high"])>pdh and float(curr["close"])<pdh and curr["close"]<curr["open"]:
             if ind.score > -0.5: return None  # need bearish indicators
             entry = float(curr["close"])
-            stop = self.swing_stop(df, Direction.SHORT, entry)
-            risk = stop - entry
-            if risk<=0: return None
-            tp1 = entry - risk * max(2.1, self.min_rr)
-            return TradeSignal(Direction.SHORT, entry, stop, tp1, entry-risk*3.3,
-                               setup=SetupType.LIQUIDITY_SWEEP, reason="Sweep PDH + Indicators", r_multiple=max(2.1,self.min_rr))
+            stop, tp1, tp2, risk = self.calculate_tp_sl(df, Direction.SHORT, entry)
+            r_mult = round(abs(entry - tp1) / risk, 2) if risk > 0 else self.min_rr
+            return TradeSignal(Direction.SHORT, entry, stop, tp1, tp2,
+                               setup=SetupType.LIQUIDITY_SWEEP, reason="Sweep PDH + Indicators", r_multiple=r_mult)
         if pdl and float(prev["low"])<pdl and float(curr["close"])>pdl and curr["close"]>curr["open"]:
             if ind.score < 0.5: return None
             entry = float(curr["close"])
-            stop = self.swing_stop(df, Direction.LONG, entry)
-            risk = entry - stop
-            if risk<=0: return None
-            tp1 = entry + risk * max(2.1, self.min_rr)
-            return TradeSignal(Direction.LONG, entry, stop, tp1, entry+risk*3.3,
-                               setup=SetupType.LIQUIDITY_SWEEP, reason="Sweep PDL + Indicators", r_multiple=max(2.1,self.min_rr))
+            stop, tp1, tp2, risk = self.calculate_tp_sl(df, Direction.LONG, entry)
+            r_mult = round(abs(tp1 - entry) / risk, 2) if risk > 0 else self.min_rr
+            return TradeSignal(Direction.LONG, entry, stop, tp1, tp2,
+                               setup=SetupType.LIQUIDITY_SWEEP, reason="Sweep PDL + Indicators", r_multiple=r_mult)
         return None
 
     def setup_bos(self, df, trend, ind: IndicatorSnapshot):
@@ -487,20 +537,16 @@ class IndicatorsProStrategy:
         last = df.iloc[-1]
         if trend==Direction.LONG and float(last["close"]) > float(highs.max()):
             entry = float(last["close"])
-            stop = self.swing_stop(df, Direction.LONG, entry)
-            risk = entry - stop
-            if risk<=0: return None
-            tp1 = entry + risk * max(2.0, self.min_rr)
-            return TradeSignal(Direction.LONG, entry, stop, tp1, entry+risk*3.1,
-                               setup=SetupType.BOS_CONTINUATION, reason="BOS Long + Indicators", r_multiple=max(2.0,self.min_rr))
+            stop, tp1, tp2, risk = self.calculate_tp_sl(df, Direction.LONG, entry)
+            r_mult = round(abs(tp1 - entry) / risk, 2) if risk > 0 else self.min_rr
+            return TradeSignal(Direction.LONG, entry, stop, tp1, tp2,
+                               setup=SetupType.BOS_CONTINUATION, reason="BOS Long + Indicators", r_multiple=r_mult)
         if trend==Direction.SHORT and float(last["close"]) < float(lows.min()):
             entry = float(last["close"])
-            stop = self.swing_stop(df, Direction.SHORT, entry)
-            risk = stop - entry
-            if risk<=0: return None
-            tp1 = entry - risk * max(2.0, self.min_rr)
-            return TradeSignal(Direction.SHORT, entry, stop, tp1, entry-risk*3.1,
-                               setup=SetupType.BOS_CONTINUATION, reason="BOS Short + Indicators", r_multiple=max(2.0,self.min_rr))
+            stop, tp1, tp2, risk = self.calculate_tp_sl(df, Direction.SHORT, entry)
+            r_mult = round(abs(entry - tp1) / risk, 2) if risk > 0 else self.min_rr
+            return TradeSignal(Direction.SHORT, entry, stop, tp1, tp2,
+                               setup=SetupType.BOS_CONTINUATION, reason="BOS Short + Indicators", r_multiple=r_mult)
         return None
 
     # ---------- Main ----------
@@ -607,6 +653,8 @@ class IndicatorsProStrategy:
         return 0.0, False
 
     def size(self, equity, entry, stop, atr=0):
+        if getattr(self, "lot_mode", "fixed") == "fixed":
+            return getattr(self, "lot_size", 0.01)
         risk_pct = self.risk_pct
         if equity < self.peak_eq * 0.95: risk_pct *= 0.6
         self.peak_eq = max(self.peak_eq, equity)

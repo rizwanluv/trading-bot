@@ -1,0 +1,15 @@
+{
+  "enabled": false,
+  "symbol": "XAUTUSD",
+  "lot_size": 2.0,
+  "lot_mode": "risk_pct",
+  "risk_pct": 2.0,
+  "tp_value": 60.0,
+  "sl_value": 30.0,
+  "tp_mode": "pts",
+  "sl_mode": "pts",
+  "strategy_type": "indicators_pro",
+  "poll_seconds": 15,
+  "equity": 10000.0,
+  "notify_chat_id": 777
+}
