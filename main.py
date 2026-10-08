@@ -34,7 +34,17 @@ from telegram.ext import (
     filters,
 )
 
-from auto_trade import get_auto_trader, AutoTrader, AutoTradeConfig
+from auto_trade import (
+    get_auto_trader,
+    AutoTrader,
+    AutoTradeConfig,
+    PinpointTradePlan,
+    generate_pinpoint_plan,
+    format_pinpoint_report,
+    execute_pinpoint_plan,
+    get_levels_report,
+    calculate_risk_reward,
+)
 
 # Optional import for google-genai SDK (Python >= 3.9/3.10)
 try:
@@ -94,6 +104,9 @@ SYMBOL_ALIASES: Dict[str, str] = {
 
 # Per-chat conversation histories: chat_id -> list of {"role": "...", "parts": [{"text": "..."}]}
 histories: Dict[int, List[Dict[str, Any]]] = {}
+
+# Per-chat cached latest trade plans: chat_id -> PinpointTradePlan
+latest_trade_plans: Dict[int, PinpointTradePlan] = {}
 
 
 def load_dotenv(filepath: str = ".env") -> None:
@@ -332,10 +345,16 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "• /gold - Live Gold (XAU) ticker, 24h stats & range\n"
         "• /eth - Live Ethereum (ETH) ticker & stats\n"
         "• /sol - Live Solana (SOL) ticker & stats\n"
+        "• /entry [SYM] - Pinpoint Entry, Precision SL & Multi-tier TP Targets\n"
+        "• /levels [SYM] - Smart Money Order Blocks (OB) & Fair Value Gaps (FVG)\n"
+        "• /calc [ENTRY] [SL] [TP] - Position Sizing & Risk:Reward Calculator\n"
         "• /analyze [SYMBOL] - Full technical analysis & signal report\n"
         "• /price [SYMBOL] - Price check on any Delta Exchange pair\n"
         "• /symbol [SYMBOL] - View or switch active auto-trading symbol\n\n"
-        "Auto-Trade & Risk Controls:\n"
+        "Auto-Trade & Execution Controls:\n"
+        "• /execute [LOTS|limit] - One-Tap Execution of Pinpoint Trade Plan\n"
+        "• /buy - Quick Instant Long Market Order\n"
+        "• /sell - Quick Instant Short Market Order\n"
         "• /autotrade [on|off|status|close] - Control automated trading\n"
         "• /position - Live active position dashboard & PnL\n"
         "• /pnl - Performance report & closed trades history\n"
@@ -639,6 +658,142 @@ async def risk_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await reply_safely(update, "Error: Invalid number. Example: /risk 3.0")
 
 
+async def entry_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Analyze pinpoint trade entry, precision SL (Swing + ATR buffer), and multi-tier TP targets."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+    symbol = trader.config.symbol
+    direction_override = None
+
+    if len(args) == 1:
+        arg_up = args[0].upper()
+        if arg_up in ("BUY", "LONG", "SELL", "SHORT"):
+            direction_override = arg_up
+        else:
+            symbol = args[0]
+    elif len(args) >= 2:
+        symbol = args[0]
+        direction_override = args[1].upper()
+
+    plan = generate_pinpoint_plan(symbol, direction_override=direction_override, trader=trader)
+    if update.effective_chat:
+        latest_trade_plans[update.effective_chat.id] = plan
+
+    report = format_pinpoint_report(plan)
+    await reply_safely(update, report, parse_mode="HTML")
+
+
+async def execute_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Execute a pinpoint trade plan immediately (at market, limit, or breakout)."""
+    trader = get_auto_trader()
+    chat_id = update.effective_chat.id if update.effective_chat else 0
+    args = ctx.args or []
+
+    cmd_name = ""
+    if update.message and update.message.text:
+        cmd_parts = update.message.text.split()
+        if cmd_parts:
+            cmd_name = cmd_parts[0].lower().lstrip("/")
+
+    plan = latest_trade_plans.get(chat_id)
+    entry_mode = "market"
+    lot_override = None
+
+    for a in args:
+        a_lower = a.lower()
+        if a_lower in ("limit", "pullback"):
+            entry_mode = "limit"
+        elif a_lower in ("breakout", "bo"):
+            entry_mode = "breakout"
+        elif a_lower in ("market", "now"):
+            entry_mode = "market"
+        else:
+            try:
+                lot_override = float(a)
+            except ValueError:
+                pass
+
+    if cmd_name in ("buy", "long"):
+        if not plan or plan.direction != "LONG":
+            plan = generate_pinpoint_plan(trader.config.symbol, direction_override="LONG", trader=trader)
+            latest_trade_plans[chat_id] = plan
+    elif cmd_name in ("sell", "short"):
+        if not plan or plan.direction != "SHORT":
+            plan = generate_pinpoint_plan(trader.config.symbol, direction_override="SHORT", trader=trader)
+            latest_trade_plans[chat_id] = plan
+    elif not plan:
+        plan = generate_pinpoint_plan(trader.config.symbol, trader=trader)
+        latest_trade_plans[chat_id] = plan
+
+    ok, msg = execute_pinpoint_plan(plan, lot_override=lot_override, entry_mode=entry_mode, trader=trader)
+    await reply_safely(update, msg, parse_mode="HTML")
+
+
+async def calc_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Position sizing and Risk:Reward ratio calculator."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+
+    if not args:
+        plan = latest_trade_plans.get(update.effective_chat.id if update.effective_chat else 0)
+        if plan:
+            res = calculate_risk_reward(
+                entry=plan.market_entry,
+                sl=plan.stop_loss,
+                tp=plan.take_profit_2,
+                equity=trader.config.equity,
+                symbol=plan.symbol,
+            )
+            await reply_safely(update, res, parse_mode="HTML")
+            return
+
+        await reply_safely(
+            update,
+            "📐 <b>Position Sizing & Risk:Reward Calculator</b>\n\n"
+            "<b>Usage:</b>\n"
+            "• <code>/calc &lt;entry&gt; &lt;sl&gt;</code> - Calculate R:R and lot sizing\n"
+            "• <code>/calc &lt;entry&gt; &lt;sl&gt; &lt;tp&gt;</code> - Calculate specific target R:R\n"
+            "• <code>/calc &lt;entry&gt; &lt;sl&gt; &lt;tp&gt; &lt;risk_usd&gt;</code> - Custom risk budget\n\n"
+            "<b>Examples:</b>\n"
+            "• <code>/calc 81700 81200</code> (BTC Long / Short)\n"
+            "• <code>/calc 81700 81200 82800 150</code>\n"
+            "• <code>/calc 4135 4115 4175 100</code> (Gold XAU)",
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        entry = float(args[0])
+        sl = float(args[1])
+        tp = float(args[2]) if len(args) > 2 else None
+        risk_usd = float(args[3]) if len(args) > 3 else None
+        symbol = trader.config.symbol
+        res = calculate_risk_reward(
+            entry=entry,
+            sl=sl,
+            tp=tp,
+            risk_dollars=risk_usd,
+            equity=trader.config.equity,
+            symbol=symbol,
+        )
+        await reply_safely(update, res, parse_mode="HTML")
+    except (IndexError, ValueError):
+        await reply_safely(
+            update,
+            "❌ Invalid parameters. Numbers required.\nExample: <code>/calc 81700 81200 82700</code>",
+            parse_mode="HTML",
+        )
+
+
+async def levels_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Institutional Order Blocks (OB) & Fair Value Gaps (FVG) scanner."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+    symbol = args[0] if args else trader.config.symbol
+    report = get_levels_report(symbol, trader=trader)
+    await reply_safely(update, report, parse_mode="HTML")
+
+
 async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Interactive command directory and quick dashboard."""
     trader = get_auto_trader()
@@ -653,13 +808,18 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"• <b>Position</b>: <i>{pos_str}</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>Market & Analysis:</b>\n"
+        f"• /entry [SYM] - Pinpoint Entry, Precision SL & TP Targets\n"
+        f"• /levels [SYM] - Order Blocks (OB) & FVGs Scanner\n"
+        f"• /calc [ENTRY] [SL] - Position Sizing & R:R Calculator\n"
         f"• /btc - Bitcoin Ticker Card\n"
         f"• /gold - Gold Ticker Card\n"
         f"• /eth - Ethereum Ticker Card\n"
         f"• /sol - Solana Ticker Card\n"
         f"• /analyze [SYM] - Technical Analysis & Confluence\n"
         f"• /symbol [SYM] - Switch Traded Symbol\n\n"
-        f"<b>Auto-Trading & Risk:</b>\n"
+        f"<b>Auto-Trading & Execution:</b>\n"
+        f"• /execute - One-Tap Execute Pinpoint Plan\n"
+        f"• /buy | /sell - Instant Market Orders\n"
         f"• /autotrade on|off - Start/Stop Automated Trades\n"
         f"• /position - Live Active Position Dashboard\n"
         f"• /pnl - Performance Report & Trades History\n"
@@ -836,6 +996,15 @@ def main() -> None:
     app.add_handler(CommandHandler("xau", gold_command))
     app.add_handler(CommandHandler("eth", eth_command))
     app.add_handler(CommandHandler("sol", sol_command))
+    app.add_handler(CommandHandler("entry", entry_command))
+    app.add_handler(CommandHandler("pinpoint", entry_command))
+    app.add_handler(CommandHandler("execute", execute_command))
+    app.add_handler(CommandHandler("buy", execute_command))
+    app.add_handler(CommandHandler("sell", execute_command))
+    app.add_handler(CommandHandler("calc", calc_command))
+    app.add_handler(CommandHandler("size", calc_command))
+    app.add_handler(CommandHandler("levels", levels_command))
+    app.add_handler(CommandHandler("ob", levels_command))
     app.add_handler(CommandHandler("analyze", analyze_command))
     app.add_handler(CommandHandler("signal", analyze_command))
     app.add_handler(CommandHandler("symbol", symbol_command))

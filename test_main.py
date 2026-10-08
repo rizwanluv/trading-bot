@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 from types import SimpleNamespace
 
 import main
+import auto_trade
 
 
 class TestTradingBot(unittest.TestCase):
@@ -854,6 +855,186 @@ class TestNewTelegramHandlers(unittest.IsolatedAsyncioTestCase):
         self.assertIn("TRADING BOT COMMAND MENU", sent)
         self.assertIn("/analyze", sent)
         self.assertIn("/trailing", sent)
+        self.assertIn("/entry", sent)
+        self.assertIn("/levels", sent)
+        self.assertIn("/calc", sent)
+        self.assertIn("/execute", sent)
+
+    async def test_entry_and_execute_commands(self):
+        mock_update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock(), text="/entry"),
+            effective_chat=SimpleNamespace(id=12345),
+        )
+        ctx = SimpleNamespace(args=["BTCUSD", "LONG"])
+        await main.entry_command(mock_update, ctx)
+        sent_entry = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("PINPOINT TRADE ENTRY & TARGET ANALYZER", sent_entry)
+        self.assertIn(12345, main.latest_trade_plans)
+
+        # /execute command
+        mock_update.message.reply_text.reset_mock()
+        mock_update.message.text = "/execute 0.02"
+        ctx = SimpleNamespace(args=["0.02"])
+        with patch.object(main.get_auto_trader(), "open_position_manually") as mock_open:
+            mock_open.return_value = (True, "Position Opened", None)
+            await main.execute_command(mock_update, ctx)
+            sent_exec = mock_update.message.reply_text.call_args[0][0]
+            self.assertIn("Position Opened", sent_exec)
+
+    async def test_buy_and_sell_commands(self):
+        mock_update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock(), text="/buy"),
+            effective_chat=SimpleNamespace(id=55555),
+        )
+        ctx = SimpleNamespace(args=[])
+        with patch.object(main.get_auto_trader(), "open_position_manually") as mock_open:
+            mock_open.return_value = (True, "Bought", None)
+            await main.execute_command(mock_update, ctx)
+            sent = mock_update.message.reply_text.call_args[0][0]
+            self.assertIn("Bought", sent)
+
+    async def test_calc_command(self):
+        mock_update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock()),
+            effective_chat=SimpleNamespace(id=12345),
+        )
+        ctx_no_args = SimpleNamespace(args=[])
+        main.latest_trade_plans.pop(12345, None)
+        await main.calc_command(mock_update, ctx_no_args)
+        sent_help = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Position Sizing & Risk:Reward Calculator", sent_help)
+
+        mock_update.message.reply_text.reset_mock()
+        ctx_args = SimpleNamespace(args=["81000", "80000", "83000"])
+        await main.calc_command(mock_update, ctx_args)
+        sent_calc = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("2.00 : 1", sent_calc)
+
+    async def test_levels_command(self):
+        mock_update = SimpleNamespace(
+            message=SimpleNamespace(reply_text=AsyncMock()),
+            effective_chat=SimpleNamespace(id=12345),
+        )
+        ctx = SimpleNamespace(args=["BTC"])
+        await main.levels_command(mock_update, ctx)
+        sent_levels = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("SMART MONEY & LIQUIDITY LEVELS", sent_levels)
+
+
+class TestPinpointAndLiquidity(unittest.TestCase):
+    def setUp(self):
+        self.tmp_cfg = "/workspace/bright-darwin/.test_pinpoint_cfg.json"
+        self.tmp_hist = "/workspace/bright-darwin/.test_pinpoint_hist.json"
+        self.config = auto_trade.AutoTradeConfig(
+            config_file=self.tmp_cfg,
+            trades_history_file=self.tmp_hist,
+            equity=10000.0,
+            symbol="BTCUSD",
+        )
+        self.trader = auto_trade.AutoTrader(config=self.config)
+
+    def tearDown(self):
+        for p in (self.tmp_cfg, self.tmp_hist):
+            if os.path.exists(p):
+                os.remove(p)
+
+    def test_detect_order_blocks_and_fvg(self):
+        df = self.trader._generate_dummy_candles("BTCUSD", count=60)
+        res = auto_trade.detect_order_blocks_and_fvg(df)
+        self.assertIn("swing_high", res)
+        self.assertIn("swing_low", res)
+        self.assertIn("all_obs", res)
+        self.assertIn("all_fvgs", res)
+        self.assertIsNotNone(res["swing_high"])
+        self.assertIsNotNone(res["swing_low"])
+
+    def test_generate_pinpoint_plan_btc(self):
+        plan = auto_trade.generate_pinpoint_plan("BTCUSD", trader=self.trader)
+        self.assertEqual(plan.symbol, "BTCUSD")
+        self.assertIn(plan.direction, ("LONG", "SHORT"))
+        self.assertGreater(plan.market_entry, 0)
+        self.assertGreater(plan.stop_loss, 0)
+        self.assertGreater(plan.take_profit_1, 0)
+        self.assertGreater(plan.take_profit_2, 0)
+        self.assertGreater(plan.take_profit_3, 0)
+        self.assertGreater(plan.recommended_lots, 0)
+        self.assertEqual(plan.rr_ratio_tp1, 1.5)
+        self.assertEqual(plan.rr_ratio_tp2, 2.6)
+        self.assertEqual(plan.rr_ratio_tp3, 4.2)
+
+    def test_generate_pinpoint_plan_direction_override(self):
+        long_plan = auto_trade.generate_pinpoint_plan("BTCUSD", direction_override="BUY", trader=self.trader)
+        self.assertEqual(long_plan.direction, "LONG")
+        self.assertGreater(long_plan.take_profit_1, long_plan.market_entry)
+        self.assertLess(long_plan.stop_loss, long_plan.market_entry)
+
+        short_plan = auto_trade.generate_pinpoint_plan("BTCUSD", direction_override="SELL", trader=self.trader)
+        self.assertEqual(short_plan.direction, "SHORT")
+        self.assertLess(short_plan.take_profit_1, short_plan.market_entry)
+        self.assertGreater(short_plan.stop_loss, short_plan.market_entry)
+
+    def test_format_pinpoint_report(self):
+        plan = auto_trade.generate_pinpoint_plan("BTCUSD", trader=self.trader)
+        rep = auto_trade.format_pinpoint_report(plan)
+        self.assertIn("PINPOINT TRADE ENTRY & TARGET ANALYZER", rep)
+        self.assertIn("ENTRY EXECUTION TIERS", rep)
+        self.assertIn("PINPOINT INVALIDATION (STOP LOSS)", rep)
+        self.assertIn("PRECISION TAKE PROFIT TARGETS", rep)
+        self.assertIn("INSTITUTIONAL LIQUIDITY ZONES", rep)
+
+    def test_open_position_manually(self):
+        ok, msg, pos = self.trader.open_position_manually(
+            symbol="BTCUSD",
+            direction="LONG",
+            entry_price=80000.0,
+            stop_loss=79000.0,
+            take_profit_1=82000.0,
+            take_profit_2=84000.0,
+            lot_size=0.1,
+        )
+        self.assertTrue(ok)
+        self.assertIsNotNone(pos)
+        self.assertEqual(self.trader.position.direction, "LONG")
+        self.assertEqual(self.trader.position.entry_price, 80000.0)
+
+        # Attempting second position while one is open should fail
+        ok2, msg2, pos2 = self.trader.open_position_manually(
+            symbol="BTCUSD",
+            direction="SHORT",
+            entry_price=80500.0,
+            stop_loss=81500.0,
+            take_profit_1=79000.0,
+        )
+        self.assertFalse(ok2)
+        self.assertIn("already open", msg2)
+
+    def test_execute_pinpoint_plan(self):
+        plan = auto_trade.generate_pinpoint_plan("BTCUSD", direction_override="LONG", trader=self.trader)
+        ok, msg = auto_trade.execute_pinpoint_plan(plan, lot_override=0.05, entry_mode="market", trader=self.trader)
+        self.assertTrue(ok)
+        self.assertIsNotNone(self.trader.position)
+        self.assertEqual(self.trader.position.lot_size, 0.05)
+        self.assertEqual(self.trader.position.direction, "LONG")
+
+    def test_get_levels_report(self):
+        report = auto_trade.get_levels_report("BTCUSD", trader=self.trader)
+        self.assertIn("SMART MONEY & LIQUIDITY LEVELS", report)
+        self.assertIn("ORDER BLOCKS", report)
+        self.assertIn("FAIR VALUE GAPS", report)
+        self.assertIn("KEY STRUCTURAL LIQUIDITY", report)
+
+    def test_calculate_risk_reward(self):
+        res_tp = auto_trade.calculate_risk_reward(81000.0, 80000.0, 83000.0, risk_dollars=100.0, equity=10000.0, symbol="BTCUSD")
+        self.assertIn("POSITION SIZING & RISK:REWARD CALCULATOR", res_tp)
+        self.assertIn("2.00 : 1", res_tp)
+        self.assertIn("Expected Profit", res_tp)
+
+        res_no_tp = auto_trade.calculate_risk_reward(80000.0, 81000.0, equity=10000.0, symbol="BTCUSD")
+        self.assertIn("Projected Targets", res_no_tp)
+        self.assertIn("TP1 (1.5R)", res_no_tp)
+
+        err = auto_trade.calculate_risk_reward(80000.0, 80000.0)
+        self.assertIn("Invalid Entry or Stop Loss", err)
 
 
 if __name__ == "__main__":

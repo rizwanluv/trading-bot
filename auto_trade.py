@@ -377,6 +377,10 @@ class AutoTrader:
             logger.warning("Delta candle fetch error for %s: %s", target, exc)
 
         # Fallback synthetic series for offline resilience and tests
+        return self._generate_dummy_candles(target, count=count)
+
+    def _generate_dummy_candles(self, target: str, count: int = 120) -> pd.DataFrame:
+        """Generate deterministic synthetic candles for offline resilience, testing, and backtesting."""
         dates = pd.date_range(end=datetime.now(timezone.utc), periods=count, freq="1min")
         is_btc = "BTC" in target
         base = 82000.0 if is_btc else (4135.0 if "XAU" in target else 2650.0)
@@ -851,6 +855,85 @@ class AutoTrader:
             f"<i>💡 Quick switch: /symbol {target} | Auto trade: /autotrade on</i>"
         )
 
+    def open_position_manually(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        stop_loss: float,
+        take_profit_1: float,
+        take_profit_2: Optional[float] = None,
+        lot_size: Optional[float] = None,
+        reason: str = "Pinpoint Manual Execution",
+        strategy: str = "Pinpoint Strategy",
+    ) -> Tuple[bool, str, Optional[AutoTradePosition]]:
+        """
+        Manually or semi-automatically open a new position with custom or pinpoint parameters.
+        Validates whether a position is already open and calculates position size if omitted.
+        """
+        if self.position is not None:
+            return (
+                False,
+                f"⚠️ An active position is already open for <b>{self.position.symbol}</b> "
+                f"({self.position.direction} @ ${self.position.entry_price:,.2f}).\n"
+                f"Please close it first with <code>/autotrade close</code> before opening a new position.",
+                None,
+            )
+
+        symbol_upper = symbol.strip().upper()
+        if lot_size is None or lot_size <= 0:
+            if self.config.lot_mode == "fixed":
+                lot_size = self.config.lot_size
+            else:
+                risk_budget = self.config.equity * (self.config.risk_pct / 100.0)
+                price_risk = abs(entry_price - stop_loss)
+                if price_risk > 0:
+                    decimals = 3 if "BTC" in symbol_upper else 2
+                    min_val = 0.001 if "BTC" in symbol_upper else 0.01
+                    lot_size = max(min_val, round(risk_budget / price_risk, decimals))
+                else:
+                    lot_size = self.config.lot_size
+
+        pos_id = f"TRADE_{int(time.time())}"
+        new_pos = AutoTradePosition(
+            id=pos_id,
+            symbol=symbol_upper,
+            direction=direction.upper(),
+            entry_price=round(entry_price, 2),
+            stop_loss=round(stop_loss, 2),
+            take_profit_1=round(take_profit_1, 2),
+            take_profit_2=round(take_profit_2, 2) if take_profit_2 else None,
+            lot_size=round(lot_size, 4),
+            entry_time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            strategy=strategy,
+            reason=reason,
+            highest_price=entry_price,
+            lowest_price=entry_price,
+        )
+        self.position = new_pos
+        tp2_str = (
+            f"• <b>Take Profit 2</b>: <code>${new_pos.take_profit_2:,.2f}</code>\n"
+            if new_pos.take_profit_2
+            else ""
+        )
+        return (
+            True,
+            f"🚀 <b>POSITION OPENED SUCCESSFULLY</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Symbol</b>: <code>{new_pos.symbol}</code>\n"
+            f"• <b>Direction</b>: <b>{new_pos.direction}</b> {'🟢' if new_pos.direction == 'LONG' else '🔴'}\n"
+            f"• <b>Entry Price</b>: <code>${new_pos.entry_price:,.2f}</code>\n"
+            f"• <b>Lot Size</b>: <code>{new_pos.lot_size}</code>\n"
+            f"• <b>Stop Loss</b>: <code>${new_pos.stop_loss:,.2f}</code>\n"
+            f"• <b>Take Profit 1</b>: <code>${new_pos.take_profit_1:,.2f}</code>\n"
+            f"{tp2_str}"
+            f"• <b>Strategy</b>: {new_pos.strategy}\n"
+            f"• <b>Reason</b>: {new_pos.reason}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>💡 Managed automatically. Use /position or /autotrade close at any time.</i>",
+            new_pos,
+        )
+
 
 _GLOBAL_AUTO_TRADER: Optional[AutoTrader] = None
 
@@ -860,6 +943,533 @@ def get_auto_trader() -> AutoTrader:
     if _GLOBAL_AUTO_TRADER is None:
         _GLOBAL_AUTO_TRADER = AutoTrader()
     return _GLOBAL_AUTO_TRADER
+
+
+# ==================================================================
+# 2.5 PINPOINT TRADE ENTRY & TARGET ANALYZER & LIQUIDITY LEVELS
+# ==================================================================
+
+
+@dataclass
+class PinpointTradePlan:
+    symbol: str
+    direction: str  # "LONG" or "SHORT"
+    current_price: float
+    market_entry: float
+    limit_entry: float
+    breakout_entry: float
+    stop_loss: float
+    take_profit_1: float
+    take_profit_2: float
+    take_profit_3: float
+    risk_amount: float
+    rr_ratio_tp1: float
+    rr_ratio_tp2: float
+    rr_ratio_tp3: float
+    recommended_lots: float
+    order_block_zone: Optional[Tuple[float, float]] = None
+    order_block_type: Optional[str] = None
+    fvg_zone: Optional[Tuple[float, float]] = None
+    fvg_type: Optional[str] = None
+    confidence_score: float = 0.0
+    atr: float = 0.0
+    reason: str = ""
+    timestamp: str = ""
+
+
+def detect_order_blocks_and_fvg(df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Scans candlestick price action for:
+    - Bullish and Bearish Order Blocks (OB)
+    - Fair Value Gaps (FVG)
+    - Structural swing levels
+    """
+    result: Dict[str, Any] = {
+        "bullish_ob": None,
+        "bearish_ob": None,
+        "bullish_fvg": None,
+        "bearish_fvg": None,
+        "all_obs": [],
+        "all_fvgs": [],
+        "swing_high": None,
+        "swing_low": None,
+    }
+    if len(df) < 5:
+        return result
+
+    # 1. Structural Swing High & Low
+    recent_window = df.tail(min(30, len(df)))
+    result["swing_high"] = float(recent_window["high"].max())
+    result["swing_low"] = float(recent_window["low"].min())
+
+    # 2. Fair Value Gaps (FVG 3-candle imbalance)
+    for i in range(2, len(df)):
+        c_prev2 = df.iloc[i - 2]
+        c_curr = df.iloc[i]
+        c_p2_high = float(c_prev2["high"])
+        c_p2_low = float(c_prev2["low"])
+        c_curr_high = float(c_curr["high"])
+        c_curr_low = float(c_curr["low"])
+
+        # Bullish FVG
+        if c_curr_low > c_p2_high:
+            gap = {
+                "type": "BULLISH",
+                "bottom": c_p2_high,
+                "top": c_curr_low,
+                "size": c_curr_low - c_p2_high,
+                "index": i,
+            }
+            result["all_fvgs"].append(gap)
+            result["bullish_fvg"] = gap
+
+        # Bearish FVG
+        elif c_curr_high < c_p2_low:
+            gap = {
+                "type": "BEARISH",
+                "bottom": c_curr_high,
+                "top": c_p2_low,
+                "size": c_p2_low - c_curr_high,
+                "index": i,
+            }
+            result["all_fvgs"].append(gap)
+            result["bearish_fvg"] = gap
+
+    # 3. Order Blocks (OB: last candle prior to displacement)
+    for i in range(1, len(df) - 1):
+        c_ob = df.iloc[i]
+        c_next = df.iloc[i + 1]
+        ob_close = float(c_ob["close"])
+        ob_open = float(c_ob["open"])
+        ob_high = float(c_ob["high"])
+        ob_low = float(c_ob["low"])
+        next_close = float(c_next["close"])
+
+        # Bullish OB
+        if ob_close < ob_open and next_close > ob_high:
+            ob = {
+                "type": "BULLISH",
+                "bottom": ob_low,
+                "top": ob_high,
+                "index": i,
+            }
+            result["all_obs"].append(ob)
+            result["bullish_ob"] = ob
+
+        # Bearish OB
+        elif ob_close > ob_open and next_close < ob_low:
+            ob = {
+                "type": "BEARISH",
+                "bottom": ob_low,
+                "top": ob_high,
+                "index": i,
+            }
+            result["all_obs"].append(ob)
+            result["bearish_ob"] = ob
+
+    return result
+
+
+def generate_pinpoint_plan(
+    symbol: str,
+    direction_override: Optional[str] = None,
+    risk_pct: Optional[float] = None,
+    trader: Optional[AutoTrader] = None,
+) -> PinpointTradePlan:
+    """
+    Computes a Pinpoint Trade Entry & Target Plan:
+    - 3-tier Entry: Market (Now), Optimal Limit (OB / 50% Pullback), Breakout
+    - Pinpoint Invalidation Stop Loss: Structural Swing + 1.2x ATR buffer
+    - Precision Multi-tier Take Profit: TP1 (1.5R), TP2 (2.6R), TP3 (4.2R Runner)
+    - Position Sizing (lots) based on risk budget
+    - Institutional Order Blocks & FVGs confluence
+    """
+    if trader is None:
+        trader = get_auto_trader()
+    cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
+    alias_map = {
+        "BTC": "BTCUSD",
+        "BITCOIN": "BTCUSD",
+        "BTCUSDT": "BTCUSD",
+        "ETH": "ETHUSD",
+        "ETHUSDT": "ETHUSD",
+        "SOL": "SOLUSD",
+        "SOLUSDT": "SOLUSD",
+        "XRP": "XRPUSD",
+        "XRPUSDT": "XRPUSD",
+        "XAU": "XAUTUSD",
+        "GOLD": "XAUTUSD",
+        "PAXG": "XAUTUSD",
+        "XAUUSD": "XAUTUSD",
+    }
+    target = alias_map.get(cleaned, cleaned)
+    df = trader.fetch_candles(target, count=120)
+    if df.empty:
+        df = trader._generate_dummy_candles(target, count=120)
+
+    eng = IndicatorEngine()
+    snap = eng.compute(df)
+    atr = float(IndicatorEngine.atr_series(df, 14).iloc[-1])
+    curr_price = float(df["close"].iloc[-1])
+    if atr <= 0:
+        atr = curr_price * 0.005
+
+    levels = detect_order_blocks_and_fvg(df)
+    swing_high = levels["swing_high"] or (curr_price + atr * 2)
+    swing_low = levels["swing_low"] or (curr_price - atr * 2)
+
+    if direction_override:
+        ov = direction_override.strip().upper()
+        if ov in ("BUY", "LONG", "B"):
+            direction = "LONG"
+        elif ov in ("SELL", "SHORT", "S"):
+            direction = "SHORT"
+        else:
+            direction = "LONG" if snap.score >= 0 else "SHORT"
+    else:
+        if snap.score >= 0.5:
+            direction = "LONG"
+        elif snap.score <= -0.5:
+            direction = "SHORT"
+        else:
+            direction = "LONG" if snap.supertrend_dir == 1 else "SHORT"
+
+    market_entry = curr_price
+
+    if direction == "LONG":
+        raw_sl = swing_low - (1.2 * atr)
+        min_sl = curr_price - (0.8 * atr)
+        max_dist_sl = curr_price - (3.0 * atr)
+        sl = max(max_dist_sl, min(min_sl, raw_sl))
+        risk_dist = max(market_entry - sl, atr * 0.5)
+        sl = round(market_entry - risk_dist, 2)
+
+        bob = levels["bullish_ob"]
+        if bob and bob["top"] < curr_price and bob["top"] > sl:
+            limit_entry = round(bob["top"], 2)
+        else:
+            limit_entry = round(curr_price - (0.5 * atr), 2)
+
+        breakout_entry = round(swing_high + (0.2 * atr), 2)
+
+        tp1 = round(market_entry + (1.5 * risk_dist), 2)
+        tp2 = round(market_entry + (2.6 * risk_dist), 2)
+        tp3 = round(market_entry + (4.2 * risk_dist), 2)
+
+        ob_zone = (round(bob["bottom"], 2), round(bob["top"], 2)) if bob else None
+        ob_type = "Bullish Demand OB" if bob else None
+        bfvg = levels["bullish_fvg"]
+        fvg_zone = (round(bfvg["bottom"], 2), round(bfvg["top"], 2)) if bfvg else None
+        fvg_type = "Bullish FVG Imbalance" if bfvg else None
+        reason = f"Confluence score {snap.score:+.2f} with Bullish Momentum"
+
+    else:  # SHORT
+        raw_sl = swing_high + (1.2 * atr)
+        min_sl = curr_price + (0.8 * atr)
+        max_dist_sl = curr_price + (3.0 * atr)
+        sl = min(max_dist_sl, max(min_sl, raw_sl))
+        risk_dist = max(sl - market_entry, atr * 0.5)
+        sl = round(market_entry + risk_dist, 2)
+
+        sob = levels["bearish_ob"]
+        if sob and sob["bottom"] > curr_price and sob["bottom"] < sl:
+            limit_entry = round(sob["bottom"], 2)
+        else:
+            limit_entry = round(curr_price + (0.5 * atr), 2)
+
+        breakout_entry = round(swing_low - (0.2 * atr), 2)
+
+        tp1 = round(market_entry - (1.5 * risk_dist), 2)
+        tp2 = round(market_entry - (2.6 * risk_dist), 2)
+        tp3 = round(market_entry - (4.2 * risk_dist), 2)
+
+        ob_zone = (round(sob["bottom"], 2), round(sob["top"], 2)) if sob else None
+        ob_type = "Bearish Supply OB" if sob else None
+        sfvg = levels["bearish_fvg"]
+        fvg_zone = (round(sfvg["bottom"], 2), round(sfvg["top"], 2)) if sfvg else None
+        fvg_type = "Bearish FVG Imbalance" if sfvg else None
+        reason = f"Confluence score {snap.score:+.2f} with Bearish Momentum"
+
+    eff_risk_pct = risk_pct if risk_pct and risk_pct > 0 else trader.config.risk_pct
+    risk_dollars = trader.config.equity * (eff_risk_pct / 100.0)
+    decimals = 3 if "BTC" in target else 2
+    min_lot = 0.001 if "BTC" in target else 0.01
+    rec_lots = max(min_lot, round(risk_dollars / risk_dist, decimals))
+
+    plan = PinpointTradePlan(
+        symbol=target,
+        direction=direction,
+        current_price=round(curr_price, 2),
+        market_entry=round(market_entry, 2),
+        limit_entry=round(limit_entry, 2),
+        breakout_entry=round(breakout_entry, 2),
+        stop_loss=round(sl, 2),
+        take_profit_1=round(tp1, 2),
+        take_profit_2=round(tp2, 2),
+        take_profit_3=round(tp3, 2),
+        risk_amount=round(risk_dist, 2),
+        rr_ratio_tp1=1.5,
+        rr_ratio_tp2=2.6,
+        rr_ratio_tp3=4.2,
+        recommended_lots=rec_lots,
+        order_block_zone=ob_zone,
+        order_block_type=ob_type,
+        fvg_zone=fvg_zone,
+        fvg_type=fvg_type,
+        confidence_score=round(snap.score, 2),
+        atr=round(atr, 2),
+        reason=reason,
+        timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    )
+    return plan
+
+
+def format_pinpoint_report(plan: PinpointTradePlan) -> str:
+    """Format a PinpointTradePlan into a rich Telegram HTML report card."""
+    dir_emoji = "🟢" if plan.direction == "LONG" else "🔴"
+    ob_str = (
+        f"<code>${plan.order_block_zone[0]:,.2f} – ${plan.order_block_zone[1]:,.2f}</code> ({plan.order_block_type})"
+        if plan.order_block_zone
+        else "<i>None within immediate range</i>"
+    )
+    fvg_str = (
+        f"<code>${plan.fvg_zone[0]:,.2f} – ${plan.fvg_zone[1]:,.2f}</code> ({plan.fvg_type})"
+        if plan.fvg_zone
+        else "<i>None within immediate range</i>"
+    )
+
+    return (
+        f"🎯 <b>PINPOINT TRADE ENTRY & TARGET ANALYZER</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Asset</b>: <code>{plan.symbol}</code>\n"
+        f"• <b>Direction Bias</b>: <b>{plan.direction}</b> {dir_emoji}\n"
+        f"• <b>Confluence Score</b>: <code>{plan.confidence_score:+.2f} / 5.0</code>\n"
+        f"• <b>Current Market Price</b>: <code>${plan.current_price:,.2f}</code>\n"
+        f"• <b>Volatility (ATR 14)</b>: <code>${plan.atr:,.2f}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📍 <b>ENTRY EXECUTION TIERS:</b>\n"
+        f"  1️⃣ <b>Market Entry (Now)</b>: <code>${plan.market_entry:,.2f}</code>\n"
+        f"  2️⃣ <b>Optimal Limit (Pullback)</b>: <code>${plan.limit_entry:,.2f}</code>\n"
+        f"  3️⃣ <b>Momentum Breakout</b>: <code>${plan.breakout_entry:,.2f}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🛡️ <b>PINPOINT INVALIDATION (STOP LOSS):</b>\n"
+        f"• <b>Stop Loss</b>: <code>${plan.stop_loss:,.2f}</code>\n"
+        f"• <b>Risk per Unit</b>: <code>${plan.risk_amount:,.2f}</code> (Swing + 1.2x ATR buffer)\n"
+        f"• <b>Recommended Position Size</b>: <code>{plan.recommended_lots} lots</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 <b>PRECISION TAKE PROFIT TARGETS:</b>\n"
+        f"• <b>TP1 (Conservative 1.5R)</b>: <code>${plan.take_profit_1:,.2f}</code> (R:R {plan.rr_ratio_tp1:.1f}:1)\n"
+        f"• <b>TP2 (Structural 2.6R)</b>: <code>${plan.take_profit_2:,.2f}</code> (R:R {plan.rr_ratio_tp2:.1f}:1)\n"
+        f"• <b>TP3 (Runner 4.2R)</b>: <code>${plan.take_profit_3:,.2f}</code> (R:R {plan.rr_ratio_tp3:.1f}:1)\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🧱 <b>INSTITUTIONAL LIQUIDITY ZONES:</b>\n"
+        f"• <b>Key Order Block (OB)</b>: {ob_str}\n"
+        f"• <b>Fair Value Gap (FVG)</b>: {fvg_str}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<i>💡 Quick Execute: <code>/execute</code> or <code>/buy</code> | Custom lots: <code>/execute {plan.recommended_lots}</code></i>"
+    )
+
+
+def execute_pinpoint_plan(
+    plan: PinpointTradePlan,
+    lot_override: Optional[float] = None,
+    entry_mode: str = "market",
+    trader: Optional[AutoTrader] = None,
+) -> Tuple[bool, str]:
+    """Execute a pinpoint trade plan directly through the AutoTrader engine."""
+    if trader is None:
+        trader = get_auto_trader()
+    if entry_mode == "limit":
+        entry_price = plan.limit_entry
+    elif entry_mode == "breakout":
+        entry_price = plan.breakout_entry
+    else:
+        entry_price = plan.market_entry
+
+    lots = lot_override if lot_override and lot_override > 0 else plan.recommended_lots
+    success, msg, _ = trader.open_position_manually(
+        symbol=plan.symbol,
+        direction=plan.direction,
+        entry_price=entry_price,
+        stop_loss=plan.stop_loss,
+        take_profit_1=plan.take_profit_1,
+        take_profit_2=plan.take_profit_2,
+        lot_size=lots,
+        reason=f"Pinpoint {plan.direction} ({plan.reason})",
+        strategy="Pinpoint Strategy",
+    )
+    return success, msg
+
+
+def get_levels_report(symbol: str, trader: Optional[AutoTrader] = None) -> str:
+    """
+    Generates institutional Smart Money Liquidity report
+    showing Order Blocks (OB), Fair Value Gaps (FVG), swing levels, and volume zones.
+    """
+    if trader is None:
+        trader = get_auto_trader()
+    cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
+    alias_map = {
+        "BTC": "BTCUSD",
+        "BITCOIN": "BTCUSD",
+        "BTCUSDT": "BTCUSD",
+        "ETH": "ETHUSD",
+        "ETHUSDT": "ETHUSD",
+        "SOL": "SOLUSD",
+        "SOLUSDT": "SOLUSD",
+        "XAU": "XAUTUSD",
+        "GOLD": "XAUTUSD",
+        "XAUUSD": "XAUTUSD",
+    }
+    target = alias_map.get(cleaned, cleaned)
+    df = trader.fetch_candles(target, count=120)
+    if df.empty:
+        df = trader._generate_dummy_candles(target, count=120)
+
+    curr_price = float(df["close"].iloc[-1])
+    atr = float(IndicatorEngine.atr_series(df, 14).iloc[-1])
+    levels = detect_order_blocks_and_fvg(df)
+
+    bob = levels["bullish_ob"]
+    bob_txt = (
+        f"<code>${bob['bottom']:,.2f} – ${bob['top']:,.2f}</code> (Demand Block)"
+        if bob
+        else "<i>None identified in local window</i>"
+    )
+
+    sob = levels["bearish_ob"]
+    sob_txt = (
+        f"<code>${sob['bottom']:,.2f} – ${sob['top']:,.2f}</code> (Supply Block)"
+        if sob
+        else "<i>None identified in local window</i>"
+    )
+
+    bfvg = levels["bullish_fvg"]
+    bfvg_txt = (
+        f"<code>${bfvg['bottom']:,.2f} – ${bfvg['top']:,.2f}</code> (Bullish Gap)"
+        if bfvg
+        else "<i>None open nearby</i>"
+    )
+    sfvg = levels["bearish_fvg"]
+    sfvg_txt = (
+        f"<code>${sfvg['bottom']:,.2f} – ${sfvg['top']:,.2f}</code> (Bearish Gap)"
+        if sfvg
+        else "<i>None open nearby</i>"
+    )
+
+    swing_hi = levels["swing_high"] or curr_price
+    swing_lo = levels["swing_low"] or curr_price
+
+    step = 500.0 if "BTC" in target else 25.0
+    psy_above = (int(curr_price // step) + 1) * step
+    psy_below = int(curr_price // step) * step
+
+    return (
+        f"🧱 <b>SMART MONEY & LIQUIDITY LEVELS: {target}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Current Price</b>: <code>${curr_price:,.2f}</code>\n"
+        f"• <b>Volatility (ATR)</b>: <code>${atr:,.2f}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 <b>ORDER BLOCKS (INSTITUTIONAL FOOTPRINT):</b>\n"
+        f"• 🟢 <b>Bullish Demand OB</b>: {bob_txt}\n"
+        f"• 🔴 <b>Bearish Supply OB</b>: {sob_txt}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚡ <b>FAIR VALUE GAPS (FVG IMBALANCES):</b>\n"
+        f"• 🟢 <b>Bullish FVG</b>: {bfvg_txt}\n"
+        f"• 🔴 <b>Bearish FVG</b>: {sfvg_txt}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📍 <b>KEY STRUCTURAL LIQUIDITY:</b>\n"
+        f"• <b>Recent Swing High (BSL)</b>: <code>${swing_hi:,.2f}</code>\n"
+        f"• <b>Recent Swing Low (SSL)</b>: <code>${swing_lo:,.2f}</code>\n"
+        f"• <b>Psychological Levels</b>: <code>${psy_below:,.0f}</code> | <code>${psy_above:,.0f}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<i>💡 Generate pinpoint entry: <code>/entry {target}</code></i>"
+    )
+
+
+def calculate_risk_reward(
+    entry: float,
+    sl: float,
+    tp: Optional[float] = None,
+    risk_dollars: Optional[float] = None,
+    equity: Optional[float] = None,
+    symbol: str = "BTCUSD",
+) -> str:
+    """
+    Position Sizing and Risk:Reward ratio calculator for any given trade setup.
+    """
+    if entry <= 0 or sl <= 0 or entry == sl:
+        return "❌ Invalid Entry or Stop Loss. Values must be positive numbers and entry != sl."
+
+    direction = "LONG" if entry > sl else "SHORT"
+    risk_dist = abs(entry - sl)
+    risk_pct_dist = (risk_dist / entry) * 100.0
+
+    eq = equity if equity and equity > 0 else 10000.0
+    r_budget = risk_dollars if risk_dollars and risk_dollars > 0 else (eq * 0.01)
+
+    is_btc = "BTC" in symbol.upper()
+    decimals = 3 if is_btc else 2
+    min_lot = 0.001 if is_btc else 0.01
+    lots_calc = max(min_lot, round(r_budget / risk_dist, decimals))
+
+    lines = [
+        "📐 <b>POSITION SIZING & RISK:REWARD CALCULATOR</b>",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"• <b>Asset</b>: <code>{symbol.upper()}</code>",
+        f"• <b>Direction</b>: <b>{direction}</b> {'🟢' if direction == 'LONG' else '🔴'}",
+        f"• <b>Entry Price</b>: <code>${entry:,.2f}</code>",
+        f"• <b>Stop Loss</b>: <code>${sl:,.2f}</code>",
+        f"• <b>Risk Distance</b>: <code>${risk_dist:,.2f}</code> ({risk_pct_dist:.2f}%)",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    if tp is not None and tp > 0:
+        reward_dist = (tp - entry) if direction == "LONG" else (entry - tp)
+        if reward_dist > 0:
+            rr = reward_dist / risk_dist
+            profit_dollars = round(reward_dist * lots_calc, 2)
+            lines.extend(
+                [
+                    f"• <b>Take Profit</b>: <code>${tp:,.2f}</code>",
+                    f"• <b>Reward Distance</b>: <code>${reward_dist:,.2f}</code>",
+                    f"• <b>Risk:Reward Ratio</b>: <b>{rr:.2f} : 1</b>",
+                    f"• <b>Expected Profit</b>: 🟢 <b>+${profit_dollars:,.2f}</b>",
+                    f"• <b>Max Risk / Loss</b>: 🔴 <b>-${r_budget:,.2f}</b>",
+                    "━━━━━━━━━━━━━━━━━━━━━━",
+                ]
+            )
+        else:
+            lines.append(
+                "⚠️ <i>Note: Provided Take Profit is on the losing side of entry.</i>\n━━━━━━━━━━━━━━━━━━━━━━"
+            )
+    else:
+        tp1 = entry + (1.5 * risk_dist) if direction == "LONG" else entry - (1.5 * risk_dist)
+        tp2 = entry + (2.5 * risk_dist) if direction == "LONG" else entry - (2.5 * risk_dist)
+        tp3 = entry + (4.0 * risk_dist) if direction == "LONG" else entry - (4.0 * risk_dist)
+        lines.extend(
+            [
+                "<b>Projected Targets:</b>",
+                f"• <b>TP1 (1.5R)</b>: <code>${tp1:,.2f}</code> (+${1.5 * r_budget:,.2f})",
+                f"• <b>TP2 (2.5R)</b>: <code>${tp2:,.2f}</code> (+${2.5 * r_budget:,.2f})",
+                f"• <b>TP3 (4.0R)</b>: <code>${tp3:,.2f}</code> (+${4.0 * r_budget:,.2f})",
+                "━━━━━━━━━━━━━━━━━━━━━━",
+            ]
+        )
+
+    lines.extend(
+        [
+            "💼 <b>RECOMMENDED POSITION SIZING:</b>",
+            f"• <b>Target Risk Budget</b>: <code>${r_budget:,.2f}</code>",
+            f"• <b>Recommended Lot Size</b>: <b>{lots_calc} lots</b>",
+            f"• <b>Risk 1.0% ($100 on $10k)</b>: <code>{max(min_lot, round((eq * 0.01) / risk_dist, decimals))} lots</code>",
+            f"• <b>Risk 2.0% ($200 on $10k)</b>: <code>{max(min_lot, round((eq * 0.02) / risk_dist, decimals))} lots</code>",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"<i>💡 Execute this setup directly: <code>/execute {lots_calc}</code></i>",
+        ]
+    )
+
+    return "\n".join(lines)
 
 
 # ==================================================================
