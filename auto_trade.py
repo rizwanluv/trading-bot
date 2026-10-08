@@ -462,3 +462,20 @@ def get_auto_trader() -> AutoTrader:
     if _GLOBAL_AUTO_TRADER is None:
         _GLOBAL_AUTO_TRADER = AutoTrader()
     return _GLOBAL_AUTO_TRADER
+
+
+# ------------------------------------------------------------------
+# Auto Trade Runner Exports & CLI Entrypoint
+# ------------------------------------------------------------------
+from auto_trade_runner import (  # noqa: E402
+    run_backtest,
+    run_backtest_ai,
+    run_live_ai,
+    run_live_pro,
+    LiveProBot,
+    main as runner_main,
+)
+
+if __name__ == "__main__":
+    runner_main()
+
