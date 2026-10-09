@@ -52,6 +52,7 @@ import pandas as pd
 import requests
 
 from trading_strategy_indicators_pro import Direction, IndicatorsProStrategy, IndicatorEngine
+from ai_bot_learning import AIBotLearning
 from itb_engine import (
     ITBStrategy,
     ITBPredictor,
@@ -433,7 +434,9 @@ class AutoTrader:
         self._strategy_pro: Optional[IndicatorsProStrategy] = None
         self._strategies_pro: Dict[str, IndicatorsProStrategy] = {}
         self._strategy_itb: Optional[ITBStrategy] = None
+        self._strategy_ai: Optional[AIBotLearning] = None
         self._strategies_itb: Dict[str, ITBStrategy] = {}
+        self._strategies_ai: Dict[str, AIBotLearning] = {}
         self._init_strategy()
 
     @property
@@ -557,6 +560,7 @@ class AutoTrader:
                 lot_size=self.config.lot_size,
                 lot_mode=self.config.lot_mode,
             )
+            self._strategies_ai[sym] = AIBotLearning(symbol=sym)
             self._strategies_itb[sym] = ITBStrategy(
                 symbol=sym,
                 risk_per_trade=self.config.risk_pct,
@@ -579,6 +583,7 @@ class AutoTrader:
                 lot_mode=self.config.lot_mode,
             )
         )
+        self._strategy_ai = self._strategies_ai.get(self.config.symbol) or AIBotLearning(symbol=self.config.symbol)
         self._strategy_itb = self._strategies_itb.get(self.config.symbol) or (
             ITBStrategy(
                 symbol=self.config.symbol,
@@ -628,8 +633,12 @@ class AutoTrader:
             strat.set_lot_size(self.config.lot_size, self.config.lot_mode)
         if self._strategy_pro:
             self._strategy_pro.set_lot_size(self.config.lot_size, self.config.lot_mode)
+        for strat_ai in self._strategies_ai.values():
+            strat_ai.tp_mode = self.config.tp_mode
         for strat_itb in self._strategies_itb.values():
             strat_itb.set_lot_size(self.config.lot_size, self.config.lot_mode)
+        if self._strategy_ai:
+            self._strategy_ai.tp_mode = self.config.tp_mode
         if self._strategy_itb:
             self._strategy_itb.set_lot_size(self.config.lot_size, self.config.lot_mode)
         self.config.save()
@@ -672,6 +681,8 @@ class AutoTrader:
                 tp_mode=self.config.tp_mode,
                 sl_mode=self.config.sl_mode,
             )
+        for strat_ai in self._strategies_ai.values():
+            strat_ai.tp_mode = self.config.tp_mode
         for strat_itb in self._strategies_itb.values():
             strat_itb.set_tp_sl(
                 tp_val=self.config.tp_value,
@@ -679,6 +690,8 @@ class AutoTrader:
                 tp_mode=self.config.tp_mode,
                 sl_mode=self.config.sl_mode,
             )
+        if self._strategy_ai:
+            self._strategy_ai.tp_mode = self.config.tp_mode
         if self._strategy_itb:
             self._strategy_itb.set_tp_sl(
                 tp_val=self.config.tp_value,
@@ -1636,7 +1649,9 @@ class AutoTrader:
 
         if pos.symbol in self._strategies_itb:
             self._strategies_itb[pos.symbol].update(pnl)
-        elif self._strategy_itb:
+        elif self._strategy_ai:
+            self._strategy_ai.tp_mode = self.config.tp_mode
+        if self._strategy_itb:
             self._strategy_itb.update(pnl)
 
         sign = "+" if pnl >= 0 else ""
@@ -1836,16 +1851,37 @@ class AutoTrader:
                         ),
                     )
 
-                if self.config.strategy_type == "itb_ml":
-                    strat = self._strategies_itb.get(sym) or self._strategy_itb
-                    strat_label = "ITB ML Engine"
-                else:
-                    strat = self._strategies_pro.get(sym) or self._strategy_pro
-                    strat_label = "Indicators Pro"
+                strat_pro = self._strategies_pro.get(sym) or self._strategy_pro
+                strat_itb = self._strategies_itb.get(sym) or self._strategy_itb
+                strat_ai = self._strategies_ai.get(sym) or self._strategy_ai
+                
+                sig_pro = strat_pro.generate_signal(df1, daily) if strat_pro else None
+                sig_itb = strat_itb.generate_signal(df1, daily) if strat_itb else None
+                sig_ai = strat_ai.generate_signal(df1, daily) if strat_ai else None
+                
+                active_sigs = []
+                for s, name in [(sig_pro, "Pro"), (sig_itb, "ITB"), (sig_ai, "AI")]:
+                    if s is not None and getattr(s.direction, "name", "FLAT") != "FLAT":
+                        active_sigs.append((s, name))
+                        
+                sig = None
+                strat_label = "Ensemble"
+                if active_sigs:
+                    # Check for conflicts
+                    directions = set(s[0].direction.name for s in active_sigs)
+                    if len(directions) == 1:
+                        # Agreement! Take the first one but update label
+                        sig = active_sigs[0][0]
+                        names = [s[1] for s in active_sigs]
+                        strat_label = f"Ensemble ({'+'.join(names)})"
+                        # optional: override setup string
+                        if hasattr(sig, "setup"):
+                            sig.setup = strat_label
+                    else:
+                        # Conflict, stay flat
+                        sig = None
 
-                if strat:
-                    sig = strat.generate_signal(df1, daily)
-                    if sig is not None and sig.direction != Direction.FLAT:
+                if sig is not None:
                         entry = sig.entry
                         stop = sig.stop
                         tp1 = sig.tp1

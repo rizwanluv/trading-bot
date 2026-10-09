@@ -310,7 +310,7 @@ class TestAutoTradeModule(unittest.TestCase):
             take_profit_2=None,
             lot_size=1.0,
             entry_time="now",
-            strategy="Indicators Pro",
+            strategy="Ensemble (Pro)",
             reason="test",
             highest_price=4000.0,
             lowest_price=4000.0,
@@ -343,7 +343,7 @@ class TestAutoTradeModule(unittest.TestCase):
             take_profit_2=None,
             lot_size=1.0,
             entry_time="now",
-            strategy="Indicators Pro",
+            strategy="Ensemble (Pro)",
             reason="test",
             highest_price=4000.0,
             lowest_price=4000.0,
@@ -372,7 +372,7 @@ class TestAutoTradeModule(unittest.TestCase):
             take_profit_2=None,
             lot_size=1.0,
             entry_time="now",
-            strategy="Indicators Pro",
+            strategy="Ensemble (Pro)",
             reason="test",
             highest_price=4000.0,
             lowest_price=4000.0,
@@ -651,7 +651,7 @@ class TestCryptoAndBtcStrategies(unittest.TestCase):
                 take_profit_2=None,
                 lot_size=0.1,
                 entry_time="now",
-                strategy="Indicators Pro",
+                strategy="Ensemble (Pro)",
                 reason="test",
                 highest_price=80000.0,
                 lowest_price=80000.0,
@@ -696,7 +696,7 @@ class TestCryptoAndBtcStrategies(unittest.TestCase):
                 take_profit_2=None,
                 lot_size=0.1,
                 entry_time="now",
-                strategy="Indicators Pro",
+                strategy="Ensemble (Pro)",
                 reason="test",
                 highest_price=80000.0,
                 lowest_price=77500.0,
@@ -741,7 +741,7 @@ class TestCryptoAndBtcStrategies(unittest.TestCase):
                 take_profit_2=None,
                 lot_size=0.1,
                 entry_time="now",
-                strategy="Indicators Pro",
+                strategy="Ensemble (Pro)",
                 reason="test",
                 highest_price=80000.0,
                 lowest_price=80000.0,
@@ -1655,7 +1655,7 @@ class TestTradeLevelAlerts(unittest.IsolatedAsyncioTestCase):
             take_profit_2=None,
             lot_size=0.1,
             entry_time="2026-10-09 00:00:00 UTC",
-            strategy="Indicators Pro",
+            strategy="Ensemble (Pro)",
             reason="Signal",
             highest_price=80000.0,
             lowest_price=80000.0,
@@ -1856,7 +1856,7 @@ class TestITBEngineAndIntegration(unittest.TestCase):
         notifs = self.trader.step()
         self.assertGreaterEqual(len(notifs), 1)
         if self.trader.positions:
-            self.assertEqual(self.trader.positions[0].strategy, "ITB ML Engine")
+            self.assertEqual(self.trader.positions[0].strategy, "Ensemble (ITB)")
 
     async def test_itb_and_strategy_telegram_commands(self):
         mock_update = unittest.mock.AsyncMock()
