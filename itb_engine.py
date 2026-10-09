@@ -268,7 +268,11 @@ class ITBPredictor:
         reg_matrix = l2_reg * np.eye(D + 1)
         reg_matrix[-1, -1] = 0.0  # Do not penalize bias
         try:
-            w = np.linalg.solve(X_bias.T @ X_bias + reg_matrix, X_bias.T @ y)
+            try:
+                w = np.linalg.solve(X_bias.T @ X_bias + reg_matrix, X_bias.T @ y)
+            except np.linalg.LinAlgError:
+                w_sol, _, _, _ = np.linalg.lstsq(X_bias.T @ X_bias + reg_matrix, X_bias.T @ y, rcond=None)
+                w = w_sol
             for idx, col in enumerate(cols):
                 self.weights[col] = float(w[idx])
             self.bias = float(w[-1])
@@ -402,6 +406,8 @@ class ITBBacktester:
             return {"error": "Insufficient candles for simulation"}
 
         is_buy_mode = True
+        last_buy_price = 0.0
+        last_sell_price = 0.0
 
         long_profit = 0.0
         long_profit_percent = 0.0
@@ -423,7 +429,7 @@ class ITBBacktester:
 
             if is_buy_mode:
                 if buy_sig:
-                    previous_price = shorts[-1][2] if len(shorts) > 0 else 0.0
+                    previous_price = last_sell_price
                     profit = (previous_price - price) if previous_price > 0 else 0.0
                     profit_pct = (100.0 * profit / previous_price) if previous_price > 0 else 0.0
                     if previous_price > 0:
@@ -433,10 +439,11 @@ class ITBBacktester:
                         if profit > 0:
                             short_profitable += 1
                     shorts.append((index, previous_price, price, profit, profit_pct))
+                    last_buy_price = price
                     is_buy_mode = False
             else:
                 if sell_sig:
-                    previous_price = longs[-1][2] if len(longs) > 0 else 0.0
+                    previous_price = last_buy_price
                     profit = (price - previous_price) if previous_price > 0 else 0.0
                     profit_pct = (100.0 * profit / previous_price) if previous_price > 0 else 0.0
                     if previous_price > 0:
@@ -446,6 +453,7 @@ class ITBBacktester:
                         if profit > 0:
                             long_profitable += 1
                     longs.append((index, previous_price, price, profit, profit_pct))
+                    last_sell_price = price
                     is_buy_mode = True
 
         total_tx = long_transactions + short_transactions

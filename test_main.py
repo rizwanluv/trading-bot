@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import main
 import auto_trade
+import pandas as pd
 
 
 class TestTradingBot(unittest.TestCase):
@@ -2138,6 +2139,166 @@ class TestMultiLayerDeliberationAndSelfLearning(unittest.IsolatedAsyncioTestCase
         self.assertIn("MULTI-LAYER DELIBERATIVE ENSEMBLE", sent)
         self.assertIn("Dynamic Self-Learned Allocation", sent)
         self.assertIn("ITB Machine Learning", sent)
+
+
+class TestAuditedBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.cfg_file = "/workspace/bright-darwin/.test_audit_cfg.json"
+        self.pos_file = "/workspace/bright-darwin/.test_audit_pos.json"
+        self.hist_file = "/workspace/bright-darwin/.test_audit_hist.json"
+        self.alt_file = "/workspace/bright-darwin/.test_audit_alt.json"
+        for f in (self.cfg_file, self.pos_file, self.hist_file, self.alt_file):
+            if os.path.exists(f):
+                os.remove(f)
+        cfg = auto_trade.AutoTradeConfig(
+            config_file=self.cfg_file,
+            open_positions_file=self.pos_file,
+            trades_history_file=self.hist_file,
+            alerts_file=self.alt_file,
+            symbol="BTCUSD",
+            symbols=["BTCUSD"],
+            trailing_sl=True,
+            enabled=False,
+        )
+        self.trader = auto_trade.AutoTrader(config=cfg)
+
+    def tearDown(self):
+        for f in (self.cfg_file, self.pos_file, self.hist_file, self.alt_file):
+            if os.path.exists(f):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+
+    def test_smc_neutral_none_blocks_no_crash(self):
+        """Verify MultiLayerDeliberationEngine handles None order blocks without TypeError."""
+        engine = auto_trade.MultiLayerDeliberationEngine()
+        df = self.trader._generate_dummy_candles("BTCUSD", count=50)
+        with patch("auto_trade.detect_order_blocks_and_fvg", return_value={
+            "bullish_ob": None,
+            "bearish_ob": None,
+            "bullish_fvg": None,
+            "bearish_fvg": None,
+            "swing_high": 150000.0,
+            "swing_low": 30000.0,
+        }):
+            outcome = engine.deliberate("BTCUSD", df, self.trader)
+            self.assertIsNotNone(outcome)
+            smc_arg = outcome.layers["smc_structure"].argument
+            self.assertIn("N/A", smc_arg)
+
+    def test_trailing_stop_preserves_initial_risk_distance(self):
+        """Verify trailing SL maintains initial risk distance rather than collapsing to 0."""
+        pos = auto_trade.AutoTradePosition(
+            id="TRADE_AUDIT_1",
+            symbol="BTCUSD",
+            direction="LONG",
+            entry_price=100.0,
+            stop_loss=95.0,
+            take_profit_1=150.0,
+            take_profit_2=None,
+            lot_size=1.0,
+            entry_time="2026-10-09 12:00:00 UTC",
+            strategy="Test",
+            reason="Test",
+            highest_price=100.0,
+            lowest_price=100.0,
+            initial_stop_loss=95.0,
+        )
+        self.trader.positions = [pos]
+
+        # Candle 1: price moves to 108 (risk is 5, target = 108 - 5 = 103)
+        df1 = pd.DataFrame([
+            {"open": 105.0, "high": 108.0, "low": 104.0, "close": 108.0, "volume": 100.0}
+        ], index=pd.date_range("2026-10-09 12:01:00", periods=1, freq="1min"))
+        with patch.object(self.trader, "fetch_candles", return_value=df1):
+            self.trader.step()
+
+        self.assertEqual(pos.stop_loss, 103.0)
+
+        # Candle 2: price moves to 110 (risk is still 5, target = 110 - 5 = 105)
+        df2 = pd.DataFrame([
+            {"open": 108.0, "high": 110.0, "low": 107.0, "close": 110.0, "volume": 100.0}
+        ], index=pd.date_range("2026-10-09 12:02:00", periods=1, freq="1min"))
+        with patch.object(self.trader, "fetch_candles", return_value=df2):
+            self.trader.step()
+
+        self.assertEqual(pos.stop_loss, 105.0)
+
+    def test_itb_simulate_trade_performance_pnl_matching(self):
+        """Verify ITB trade performance simulator accurately tracks buy and sell profit."""
+        import itb_engine
+        df = pd.DataFrame([
+            {"close": 100.0, "buy_sig": True, "sell_sig": False},
+            {"close": 105.0, "buy_sig": False, "sell_sig": False},
+            {"close": 110.0, "buy_sig": False, "sell_sig": True},
+            {"close": 100.0, "buy_sig": False, "sell_sig": False},
+            {"close": 90.0, "buy_sig": True, "sell_sig": False},
+            {"close": 120.0, "buy_sig": False, "sell_sig": True},
+        ])
+        perf = itb_engine.ITBBacktester.simulate_trade_performance(
+            df, buy_signal_col="buy_sig", sell_signal_col="sell_sig", price_col="close"
+        )
+        self.assertGreater(perf["total_transactions"], 0)
+        self.assertGreater(perf["long"]["profit"], 0.0)
+
+    def test_auto_alert_no_premature_fire(self):
+        """Verify an AUTO alert for higher price does not fire prematurely on low price candle."""
+        alt = auto_trade.TradeLevelAlert(
+            id="ALT_TEST_1",
+            symbol="BTCUSD",
+            target_price=90000.0,
+            condition="AUTO",
+        )
+        self.trader.alerts = [alt]
+        df = pd.DataFrame([
+            {"open": 84000.0, "high": 85000.0, "low": 83500.0, "close": 84500.0, "volume": 100.0}
+        ], index=pd.date_range("2026-10-09 12:00:00", periods=1, freq="1min"))
+
+        with patch.object(self.trader, "fetch_candles", return_value=df):
+            self.trader.step()
+
+        self.assertFalse(alt.triggered)
+
+    async def test_calc_command_with_symbol_prefix(self):
+        """Verify /calc accepts optional symbol prefix e.g. /calc BTC 82000 81000 84000."""
+        mock_update = unittest.mock.AsyncMock()
+        mock_ctx = unittest.mock.MagicMock()
+        mock_ctx.args = ["BTC", "82000", "81000", "84000"]
+
+        with patch("main.get_auto_trader", return_value=self.trader):
+            await main.calc_command(mock_update, mock_ctx)
+
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("POSITION SIZING & RISK:REWARD CALCULATOR", sent)
+        self.assertIn("BTCUSD", sent)
+
+    def test_atomic_save_operations(self):
+        """Verify save operations write cleanly and create no leftover tmp files."""
+        self.trader.config.equity = 15000.0
+        self.trader.config.save()
+        self.assertTrue(os.path.exists(self.cfg_file))
+        self.assertFalse(os.path.exists(f"{self.cfg_file}.tmp"))
+
+        pos = auto_trade.AutoTradePosition(
+            id="TRADE_SAVE_1",
+            symbol="BTCUSD",
+            direction="LONG",
+            entry_price=100.0,
+            stop_loss=90.0,
+            take_profit_1=120.0,
+            take_profit_2=None,
+            lot_size=0.1,
+            entry_time="2026-10-09",
+            strategy="S",
+            reason="R",
+            highest_price=100.0,
+            lowest_price=100.0,
+        )
+        self.trader.positions = [pos]
+        self.trader._save_open_positions()
+        self.assertTrue(os.path.exists(self.pos_file))
+        self.assertFalse(os.path.exists(f"{self.pos_file}.tmp"))
 
 
 def tearDownModule():

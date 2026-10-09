@@ -35,6 +35,7 @@ import argparse
 import importlib.util
 import json
 import logging
+import math
 import os
 import sys
 import hashlib
@@ -193,8 +194,10 @@ class AutoTradeConfig:
 
     def save(self) -> None:
         try:
-            with open(self.config_file, "w", encoding="utf-8") as f:
+            tmp_file = f"{self.config_file}.tmp"
+            with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(self.to_dict(), f, indent=2)
+            os.replace(tmp_file, self.config_file)
             logger.info("Saved auto-trade configuration to %s", self.config_file)
         except Exception as exc:
             logger.warning("Could not save auto-trade config: %s", exc)
@@ -239,6 +242,7 @@ class AutoTradePosition:
     pnl: float = 0.0
     mode: str = "paper"  # "paper" or "live"
     exchange_order_id: Optional[str] = None
+    initial_stop_loss: Optional[float] = None
 
     def current_pnl(self, current_price: float) -> float:
         if self.direction == "LONG":
@@ -474,7 +478,8 @@ class MultiLayerDeliberationEngine:
 
         curr_price = float(df["close"].iloc[-1])
         atr_s = IndicatorEngine.atr_series(df, 14)
-        atr = float(atr_s.iloc[-1]) if not atr_s.empty else max(0.5, curr_price * 0.005)
+        atr_last = float(atr_s.iloc[-1]) if not atr_s.empty else 0.0
+        atr = atr_last if (not math.isnan(atr_last) and atr_last > 0) else max(0.5, curr_price * 0.005)
 
         # 1. SMC Structure & Institutional Liquidity Layer
         levels = detect_order_blocks_and_fvg(df)
@@ -514,9 +519,11 @@ class MultiLayerDeliberationEngine:
             smc_stance = "NEUTRAL"
             smc_score = 0.0
             smc_conf = 0.50
+            bob_str = f"${bob['bottom']:,.1f}" if bob else "N/A"
+            sob_str = f"${sob['top']:,.1f}" if sob else "N/A"
             smc_arg = (
-                f"Price equilibrating between Demand (${bob['bottom']:,.1f} if bob else 'N/A') "
-                f"and Supply (${sob['top']:,.1f} if sob else 'N/A'); waiting for institutional sweep."
+                f"Price equilibrating between Demand ({bob_str}) "
+                f"and Supply ({sob_str}); waiting for institutional sweep."
             )
 
         # 2. Technical Momentum & Indicators Pro Layer
@@ -865,8 +872,10 @@ class AutoTrader:
     def _save_open_positions(self) -> None:
         open_path = getattr(self.config, "open_positions_file", OPEN_POSITIONS_PATH)
         try:
-            with open(open_path, "w", encoding="utf-8") as f:
+            tmp_path = f"{open_path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump([asdict(p) for p in self.positions], f, indent=2)
+            os.replace(tmp_path, open_path)
             logger.info("Saved %d open positions to %s", len(self.positions), open_path)
         except Exception as exc:
             logger.warning("Could not save open positions %s: %s", open_path, exc)
@@ -895,8 +904,10 @@ class AutoTrader:
     def _save_trades_history(self) -> None:
         history_path = getattr(self.config, "trades_history_file", TRADES_HISTORY_PATH)
         try:
-            with open(history_path, "w", encoding="utf-8") as f:
+            tmp_path = f"{history_path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump([asdict(t) for t in self.closed_trades[-100:]], f, indent=2)
+            os.replace(tmp_path, history_path)
             logger.info("Saved %d trades to history %s", len(self.closed_trades), history_path)
         except Exception as exc:
             logger.warning("Could not save trades history %s: %s", history_path, exc)
@@ -925,8 +936,10 @@ class AutoTrader:
     def _save_alerts(self) -> None:
         alerts_path = getattr(self.config, "alerts_file", ALERTS_FILE_PATH)
         try:
-            with open(alerts_path, "w", encoding="utf-8") as f:
+            tmp_path = f"{alerts_path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump([asdict(a) for a in self.alerts], f, indent=2)
+            os.replace(tmp_path, alerts_path)
             logger.info("Saved %d alerts to %s", len(self.alerts), alerts_path)
         except Exception as exc:
             logger.warning("Could not save alerts %s: %s", alerts_path, exc)
@@ -1777,12 +1790,13 @@ class AutoTrader:
                     res = strat_itb.predictor.train(df, horizon=10, l2_reg=1.0)
                     if res.get("success"):
                         r2 = res.get("r2_score", 0.0)
-                        acc = res.get("direction_accuracy", 0.0)
+                        acc_val = res.get("directional_accuracy", res.get("direction_accuracy", 0.0))
+                        acc_pct = acc_val if acc_val > 1.0 else (acc_val * 100.0)
                         logger.info(
                             "[Auto-Learn] Background ITB retrain for %s completed: R²=%.3f, DirAcc=%.1f%% (%d samples)",
-                            sym, r2, acc * 100, res.get("samples", 0),
+                            sym, r2, acc_pct, res.get("samples", 0),
                         )
-                        notes.append(f"🧠 Retrained {sym} ML model (R²: {r2:+.2f}, Acc: {acc*100:.0f}%)")
+                        notes.append(f"🧠 Retrained {sym} ML model (R²: {r2:+.2f}, Acc: {acc_pct:.0f}%)")
             except Exception as e:
                 logger.debug("Background retraining error for %s: %s", sym, e)
 
@@ -2048,13 +2062,6 @@ class AutoTrader:
                 if c_low <= alert.target_price <= c_high:
                     triggered = True
                     trig_note = f"Price touched target level (${c_close:,.2f}) 🎯"
-                elif alert.condition == "AUTO":
-                    if c_high >= alert.target_price:
-                        triggered = True
-                        trig_note = f"Price crossed above target (${c_high:,.2f}) 🟢"
-                    elif c_low <= alert.target_price:
-                        triggered = True
-                        trig_note = f"Price dropped below target (${c_low:,.2f}) 🔴"
 
             if triggered:
                 alert.triggered = True
@@ -2353,6 +2360,24 @@ class AutoTrader:
         # Continuous Self-Learning: Feedback closed trade into AI memory, adapt weights & strategy PnL
         self.learn_from_trade(pos, current_price=price, pnl=pnl, reason=reason)
 
+        # Live order execution for live trading
+        live_note = ""
+        if pos.mode == "live" and self.exchange_client.is_configured:
+            opp_dir = "SELL" if pos.direction == "LONG" else "BUY"
+            try:
+                ok_ord, ord_msg, _ = self.exchange_client.place_order(
+                    symbol=pos.symbol,
+                    direction=opp_dir,
+                    size=pos.lot_size,
+                    order_type="market",
+                )
+                if ok_ord:
+                    live_note = f"\n• Live Exchange Order: <code>{ord_msg}</code>"
+                else:
+                    live_note = f"\n• Live Exchange Order Warning: <i>{ord_msg}</i>"
+            except Exception as e:
+                logger.warning("Could not submit live exit order for %s: %s", pos.id, e)
+
         sign = "+" if pnl >= 0 else ""
         return (
             f"🔄 Position Closed ({reason})\n"
@@ -2362,7 +2387,7 @@ class AutoTrader:
             f"• Entry: {pos.entry_price:.2f} | Exit: {price:.2f}\n"
             f"• Lot Size: {pos.lot_size}\n"
             f"• Realized PnL: {sign}${pnl:.2f}\n"
-            f"• New Account Equity: ${self.config.equity:.2f}"
+            f"• New Account Equity: ${self.config.equity:.2f}{live_note}"
         )
 
     def close_current_position(
@@ -2477,7 +2502,10 @@ class AutoTrader:
 
             # Trailing Stop Loss dynamic update if position is still open
             if not closed_event and pos in self.positions and self.config.trailing_sl:
-                risk_amt = abs(pos.entry_price - pos.stop_loss)
+                initial_sl = pos.initial_stop_loss if pos.initial_stop_loss is not None else pos.stop_loss
+                risk_amt = abs(pos.entry_price - initial_sl)
+                if risk_amt <= 0:
+                    risk_amt = max(pos.entry_price * 0.01, 1.0)
                 if pos.direction == "LONG" and curr_close > pos.entry_price + risk_amt:
                     trail_target = round(curr_close - risk_amt, 2)
                     if trail_target > pos.stop_loss:
@@ -2527,11 +2555,14 @@ class AutoTrader:
                     continue
                 curr_close = float(df1.iloc[-1]["close"])
 
-                daily = (
-                    df1.resample("1D")
-                    .agg({"open": "first", "high": "max", "low": "min", "close": "last"})
-                    .dropna()
-                )
+                if isinstance(df1.index, pd.DatetimeIndex):
+                    daily = (
+                        df1.resample("1D")
+                        .agg({"open": "first", "high": "max", "low": "min", "close": "last"})
+                        .dropna()
+                    )
+                else:
+                    daily = pd.DataFrame()
                 if len(daily) < 2:
                     spread_d = 400.0 if "BTC" in sym else 10.0
                     daily = pd.DataFrame(
@@ -2609,7 +2640,9 @@ class AutoTrader:
                     reason_str = sig.reason
                 elif delib.risk_approval and delib.consensus_direction != "FLAT" and delib.conviction_multiplier > 0.0:
                     target_dir = delib.consensus_direction
-                    atr_val = float(IndicatorEngine.atr_series(df1, 14).iloc[-1])
+                    atr_s = IndicatorEngine.atr_series(df1, 14)
+                    atr_last = float(atr_s.iloc[-1]) if not atr_s.empty else 0.0
+                    atr_val = atr_last if (not math.isnan(atr_last) and atr_last > 0) else max(0.5, curr_close * 0.005)
                     if target_dir == "LONG":
                         entry = curr_close
                         stop = round(entry - 1.5 * atr_val, 2)
@@ -2672,6 +2705,7 @@ class AutoTrader:
                     lowest_price=entry,
                     mode=mode,
                     exchange_order_id=order_id,
+                    initial_stop_loss=round(stop, 2),
                 )
                 self.positions.append(new_pos)
                 self._save_open_positions()
@@ -3052,6 +3086,7 @@ class AutoTrader:
             highest_price=entry_price,
             lowest_price=entry_price,
             mode=self.config.trading_mode,
+            initial_stop_loss=round(stop_loss, 2),
         )
 
         if self.config.trading_mode == "live":
@@ -3253,10 +3288,10 @@ def generate_pinpoint_plan(
 
     eng = IndicatorEngine()
     snap = eng.compute(df)
-    atr = float(IndicatorEngine.atr_series(df, 14).iloc[-1])
+    atr_s = IndicatorEngine.atr_series(df, 14)
+    atr_last = float(atr_s.iloc[-1]) if not atr_s.empty else 0.0
     curr_price = float(df["close"].iloc[-1])
-    if atr <= 0:
-        atr = curr_price * 0.005
+    atr = atr_last if (not math.isnan(atr_last) and atr_last > 0) else max(0.5, curr_price * 0.005)
 
     levels = detect_order_blocks_and_fvg(df)
     swing_high = levels["swing_high"] or (curr_price + atr * 2)
@@ -3469,7 +3504,9 @@ def get_levels_report(symbol: str, trader: Optional[AutoTrader] = None) -> str:
         df = trader._generate_dummy_candles(target, count=120)
 
     curr_price = float(df["close"].iloc[-1])
-    atr = float(IndicatorEngine.atr_series(df, 14).iloc[-1])
+    atr_s = IndicatorEngine.atr_series(df, 14)
+    atr_last = float(atr_s.iloc[-1]) if not atr_s.empty else 0.0
+    atr = atr_last if (not math.isnan(atr_last) and atr_last > 0) else max(0.5, curr_price * 0.005)
     levels = detect_order_blocks_and_fvg(df)
 
     bob = levels["bullish_ob"]
@@ -3760,14 +3797,15 @@ def run_backtest_ai(args):
         curve.append(equity)
 
     eq = np.array(curve)
-    dd = float((np.maximum.accumulate(eq) - eq).max() / peak * 100)
+    dd = float((np.maximum.accumulate(eq) - eq).max() / peak * 100) if peak > 0 else 0.0
+    ret_pct = ((equity / args.equity - 1) * 100) if getattr(args, "equity", 0) > 0 else 0.0
     print("\n" + "=" * 64)
     print("   AI BOT LEARNING - DEMO BACKTEST REPORT")
     print("=" * 64)
     print(f"  trades   : {trades}")
     print(f"  winrate  : {wins/trades*100 if trades else 0:.1f}%")
     print(f"  net pnl  : {pnl_sum:.2f}")
-    print(f"  return   : {(equity/args.equity-1)*100:.2f}%")
+    print(f"  return   : {ret_pct:.2f}%")
     print(f"  max dd   : {dd:.2f}%")
     print(f"  equity   : {equity:.2f}")
     print("=" * 64)
@@ -3870,11 +3908,14 @@ class LiveProBot:
         df5, df15, df1h = data.get("5m"), data.get("15m"), data.get("1h")
         daily = data.get("daily", pd.DataFrame())
         if len(daily) < 2:
-            daily = (
-                df1.resample("1D")
-                .agg({"open": "first", "high": "max", "low": "min", "close": "last"})
-                .dropna()
-            )
+            if isinstance(df1.index, pd.DatetimeIndex):
+                daily = (
+                    df1.resample("1D")
+                    .agg({"open": "first", "high": "max", "low": "min", "close": "last"})
+                    .dropna()
+                )
+            else:
+                daily = pd.DataFrame()
 
         candle = df1.iloc[-1]
         if self.pos is not None:

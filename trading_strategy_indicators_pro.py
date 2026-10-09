@@ -230,9 +230,14 @@ class IndicatorEngine:
 
     @staticmethod
     def atr_series(df: pd.DataFrame, period=14):
+        if df.empty:
+            return pd.Series(dtype=float)
         h, l, c = df["high"], df["low"], df["close"]
         tr = pd.concat([h-l, (h-c.shift()).abs(), (l-c.shift()).abs()], axis=1).max(axis=1)
-        return tr.ewm(alpha=1/period, min_periods=period).mean()
+        fallback = (h - l).abs()
+        tr = tr.fillna(fallback).fillna(1.0)
+        atr_ewm = tr.ewm(alpha=1/period, min_periods=1).mean()
+        return atr_ewm.bfill().fillna(1.0)
 
     @staticmethod
     def cci(df: pd.DataFrame, period=20):
@@ -358,10 +363,11 @@ class AIPredictor:
             return AIPrediction(Direction.FLAT, 0.0, 0.0, horizon, "No data")
         c = df["close"].values
         h, l, o = df["high"].values, df["low"].values, df["open"].values
-        def mom(n): return (c[-1]-c[-n-1])/c[-n-1] if len(c)>n else 0
+        def mom(n): return (c[-1]-c[-n-1])/(c[-n-1] if c[-n-1] != 0 else 1.0) if len(c)>n else 0
         tr = np.maximum(h[1:]-l[1:], np.maximum(np.abs(h[1:]-c[:-1]), np.abs(l[1:]-c[:-1])))
         atr = np.mean(tr[-14:])
-        slope = np.polyfit(np.arange(25), c[-25:], 1)[0]/c[-1]
+        c_last = c[-1] if c[-1] != 0 else 1.0
+        slope = np.polyfit(np.arange(25), c[-25:], 1)[0] / c_last
         score = mom(5)*3.1 + mom(15)*2.2 + mom(30)*1.4 + slope*4.2
         raw = np.tanh(score*8.2)
         bull = 0.5 + raw*0.47
@@ -475,8 +481,9 @@ class IndicatorsProStrategy:
     def regime(self, df):
         if len(df)<50: return Regime.RANGE
         c = df["close"].values
-        slope = np.polyfit(np.arange(30), c[-30:],1)[0]/c[-1]
-        atrp = self.atr(df)/c[-1]
+        c_last = c[-1] if (len(c) > 0 and c[-1] != 0) else 1.0
+        slope = np.polyfit(np.arange(30), c[-30:], 1)[0] / c_last
+        atrp = self.atr(df) / c_last
         if atrp > 0.013: return Regime.EXPANDING
         if atrp < 0.003: return Regime.COMPRESSING
         if slope > 0.0004: return Regime.TREND_UP

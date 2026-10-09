@@ -352,22 +352,42 @@ def call_gemini(
 
 
 async def reply_safely(update: Update, text: str, parse_mode: Optional[str] = None) -> None:
-    """Send reply respecting Telegram's 4096 character limit."""
-    if not update.message:
+    """Send reply respecting Telegram's 4096 character limit with clean line-break chunking."""
+    msg = update.message or update.effective_message
+    if not msg:
         return
     max_chunk = 4000
     kwargs = {"parse_mode": parse_mode} if parse_mode else {}
     if len(text) <= max_chunk:
         try:
-            await update.message.reply_text(text, **kwargs)
+            await msg.reply_text(text, **kwargs)
         except Exception:
-            await update.message.reply_text(text)
-    else:
-        for i in range(0, len(text), max_chunk):
-            try:
-                await update.message.reply_text(text[i : i + max_chunk], **kwargs)
-            except Exception:
-                await update.message.reply_text(text[i : i + max_chunk])
+            await msg.reply_text(text)
+        return
+
+    # Intelligent chunking respecting line breaks
+    chunks: List[str] = []
+    current_chunk: List[str] = []
+    current_len = 0
+    for line in text.splitlines(keepends=True):
+        if current_len + len(line) > max_chunk:
+            if current_chunk:
+                chunks.append("".join(current_chunk))
+                current_chunk = []
+                current_len = 0
+            while len(line) > max_chunk:
+                chunks.append(line[:max_chunk])
+                line = line[max_chunk:]
+        current_chunk.append(line)
+        current_len += len(line)
+    if current_chunk:
+        chunks.append("".join(current_chunk))
+
+    for chunk in chunks:
+        try:
+            await msg.reply_text(chunk, **kwargs)
+        except Exception:
+            await msg.reply_text(chunk)
 
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1313,7 +1333,7 @@ async def execute_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     if update.message and update.message.text:
         cmd_parts = update.message.text.split()
         if cmd_parts:
-            cmd_name = cmd_parts[0].lower().lstrip("/")
+            cmd_name = cmd_parts[0].lower().lstrip("/").split("@")[0]
 
     plan = latest_trade_plans.get(chat_id)
     entry_mode = "market"
@@ -1389,11 +1409,20 @@ async def calc_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     try:
-        entry = float(args[0])
-        sl = float(args[1])
-        tp = float(args[2]) if len(args) > 2 else None
-        risk_usd = float(args[3]) if len(args) > 3 else None
+        raw_args = list(args)
         symbol = trader.config.symbol
+        try:
+            float(raw_args[0])
+        except ValueError:
+            symbol = trader.normalize_symbol(raw_args.pop(0))
+
+        if len(raw_args) < 2:
+            raise IndexError("Entry and Stop Loss are required.")
+
+        entry = float(raw_args[0])
+        sl = float(raw_args[1])
+        tp = float(raw_args[2]) if len(raw_args) > 2 else None
+        risk_usd = float(raw_args[3]) if len(raw_args) > 3 else None
         res = calculate_risk_reward(
             entry=entry,
             sl=sl,
@@ -1406,7 +1435,7 @@ async def calc_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     except (IndexError, ValueError):
         await reply_safely(
             update,
-            "❌ Invalid parameters. Numbers required.\nExample: <code>/calc 81700 81200 82700</code>",
+            "❌ Invalid parameters. Numbers required.\nExample: <code>/calc 81700 81200 82700</code> or <code>/calc BTC 81700 81200</code>",
             parse_mode="HTML",
         )
 
@@ -1842,6 +1871,18 @@ def main() -> None:
     app.add_handler(CommandHandler("alerts", alert_command))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+
+    async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        logger.error("Exception while handling update: %s", context.error, exc_info=context.error)
+        if isinstance(update, Update) and update.effective_message:
+            try:
+                await update.effective_message.reply_text(
+                    "⚠️ An unexpected error occurred while processing your request. The event has been logged."
+                )
+            except Exception:
+                pass
+
+    app.add_error_handler(global_error_handler)
 
     logger.info("Bot starting polling. Press Ctrl+C to stop.")
     app.run_polling()

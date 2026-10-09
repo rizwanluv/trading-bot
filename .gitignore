@@ -3,3 +3,4 @@ __pycache__/
 .env
 .pytest_cache/
 attachments/
+ai_bot_learning_memory.json

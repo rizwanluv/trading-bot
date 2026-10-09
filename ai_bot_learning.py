@@ -498,10 +498,12 @@ class AdaptiveAI:
         c, h, l = df["close"].values, df["high"].values, df["low"].values
         w = self.mem.stats.ai_weights
         def mom(n):
-            return (c[-1] - c[-n-1]) / c[-n-1] if len(c) > n else 0
+            denom = c[-n-1] if c[-n-1] != 0 else 1.0
+            return (c[-1] - c[-n-1]) / denom if len(c) > n else 0
         tr = np.maximum(h[1:]-l[1:], np.maximum(np.abs(h[1:]-c[:-1]), np.abs(l[1:]-c[:-1])))
         atr = np.mean(tr[-14:])
-        slope = np.polyfit(np.arange(25), c[-25:], 1)[0] / c[-1]
+        c_last = c[-1] if c[-1] != 0 else 1.0
+        slope = np.polyfit(np.arange(25), c[-25:], 1)[0] / c_last
         hh = np.mean(h[-10:] > h[-11:-1]) if len(h) > 11 else 0.5
         ll = np.mean(l[-10:] < l[-11:-1]) if len(l) > 11 else 0.5
         score = (mom(5)*3.0*w.get("momentum",1) + mom(15)*2.2*w.get("momentum",1) +
@@ -578,8 +580,9 @@ class AIBotLearning:
         if len(df) < 40:
             return "range"
         c = df["close"].values
-        slope = np.polyfit(np.arange(30), c[-30:], 1)[0] / c[-1]
-        atrp = self.atr(df) / c[-1]
+        c_last = c[-1] if (len(c) > 0 and c[-1] != 0) else 1.0
+        slope = np.polyfit(np.arange(30), c[-30:], 1)[0] / c_last
+        atrp = self.atr(df) / c_last
         if atrp > 0.012:
             return "expanding"
         if atrp < 0.0035:
