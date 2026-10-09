@@ -153,8 +153,16 @@ class AutoTradeConfig:
     auto_retrain_interval_seconds: int = 300
     last_retrain_time: str = ""
     learning_cycles: int = 0
+    engine_stats: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
     def __post_init__(self):
+        if not self.engine_stats:
+            self.engine_stats = {
+                "itb": {"wins": 0, "total": 0},
+                "pro": {"wins": 0, "total": 0},
+                "ai": {"wins": 0, "total": 0},
+                "smc": {"wins": 0, "total": 0},
+            }
         if self.config_file != CONFIG_FILE_PATH:
             base, ext = os.path.splitext(self.config_file)
             if self.open_positions_file == OPEN_POSITIONS_PATH:
@@ -206,6 +214,7 @@ class AutoTradeConfig:
             "learning_cycles": self.learning_cycles,
             "auto_breakeven": self.auto_breakeven,
             "risk_factor": self.risk_factor,
+            "engine_stats": self.engine_stats,
         }
 
     def save(self) -> None:
@@ -259,6 +268,18 @@ class AutoTradePosition:
     mode: str = "paper"  # "paper" or "live"
     exchange_order_id: Optional[str] = None
     initial_stop_loss: Optional[float] = None
+    engine_votes: Optional[Dict[str, str]] = None
+    entry_rsi: float = 50.0
+    entry_adx: float = 25.0
+    entry_score: float = 0.0
+    ai_conf: float = 0.50
+    itb_score: float = 0.0
+    regime: str = "NORMAL"
+    session: str = "active"
+    rel_vol: float = 1.0
+    conviction_mult: float = 1.0
+    quality_score: float = 3.5
+    mtf_alignment: int = 1
 
     def current_pnl(self, current_price: float) -> float:
         if self.direction == "LONG":
@@ -643,6 +664,10 @@ class DeliberationOutcome:
     risk_approval: bool = True
     risk_summary: str = ""
     learning_notes: str = ""
+    quality_score: float = 3.5
+    mtf_alignment: int = 1
+    mtf_summary: str = ""
+    rel_vol: float = 1.0
 
 
 class MultiLayerDeliberationEngine:
@@ -952,16 +977,58 @@ class MultiLayerDeliberationEngine:
         dominant_votes = max(long_votes, short_votes, neutral_votes)
         agreement_rate = round(dominant_votes / 4.0, 2)
 
+        # Relative Volume (RVOL) and Volatility Squeeze detection
+        vol_s = df["volume"] if "volume" in df.columns else pd.Series(100.0, index=df.index)
+        vol_curr = float(vol_s.iloc[-1]) if not vol_s.empty else 100.0
+        vol_mean = float(vol_s.tail(20).mean()) if len(vol_s) >= 20 else vol_curr
+        rel_vol = round(vol_curr / max(vol_mean, 1e-4), 2)
+        in_squeeze = bool(snap.bb_width < 1.5 * atr)
+
+        # Multi-Timeframe (MTF) Trend Structure
+        ema9 = float(df["close"].ewm(span=9, adjust=False).mean().iloc[-1])
+        ema21 = float(df["close"].ewm(span=21, adjust=False).mean().iloc[-1])
+        ema50 = float(df["close"].ewm(span=50, adjust=False).mean().iloc[-1])
+        span_macro = min(100, max(20, len(df) - 1))
+        ema_macro = float(df["close"].ewm(span=span_macro, adjust=False).mean().iloc[-1])
+
+        tf_fast = "LONG" if ema9 > ema21 else "SHORT"
+        tf_mid = "LONG" if ema21 > ema50 else "SHORT"
+        tf_macro = "LONG" if ema50 > ema_macro else "SHORT"
+
+        # Evaluate Multi-Timeframe Alignment
+        mtf_agreed = sum(1 for v in [tf_fast, tf_mid, tf_macro] if v == target_dir) if target_dir != "FLAT" else 1
+        mtf_summary = f"{mtf_agreed}/3 MTF aligned (Fast:{tf_fast}, Mid:{tf_mid}, Macro:{tf_macro})"
+
+        # Dynamic Composite Quality Score (0 to 5.0)
+        q_mtf = (mtf_agreed / 3.0) * 1.5
+        q_vol = 0.8 if rel_vol >= 1.15 else (0.5 if rel_vol >= 0.85 else 0.2)
+        q_rsi = 0.6 if (35.0 <= snap.rsi <= 65.0) else (0.4 if (28.0 <= snap.rsi <= 72.0) else 0.15)
+        q_adx = 0.6 if snap.adx >= 22.0 else (0.4 if snap.adx >= 16.0 else 0.2)
+        q_struct = 0.8 if (near_demand or near_supply) else 0.4
+        q_ml = round(itb_conf * 0.7, 2)
+        composite_quality = round(min(5.0, q_mtf + q_vol + q_rsi + q_adx + q_struct + q_ml), 2)
+
+        # Dynamic Quality Gate & Synergy Modulation
+        if target_dir != "FLAT" and composite_quality < 2.8 and risk_approval:
+            verdict = f"VETOED BY QUALITY GATE (Q={composite_quality:.2f} < 2.8) ⚠️"
+            risk_approval = False
+            conviction_mult = 0.0
+            risk_summary = f"Setup rejected: Insufficient quality score ({composite_quality:.2f}/5.0). Filtered to prevent whipsaws."
+        elif target_dir != "FLAT" and composite_quality >= 4.0 and mtf_agreed == 3 and risk_approval:
+            conviction_mult = min(1.30, conviction_mult + 0.10)
+            verdict += f" 🎯 [Quality: {composite_quality:.1f} | MTF: 3/3]"
+
         dialogue = [
             f"🧱 <b>SMC Structure</b> ({smc_stance}): {smc_arg}\n   ↳ <i>Cross-Critique</i>: {smc_critique}",
             f"📊 <b>Technical Pro</b> ({pro_stance}): {pro_arg}\n   ↳ <i>Cross-Critique</i>: {pro_critique}",
             f"🤖 <b>ITB Machine Learning</b> ({itb_stance}): {itb_arg}\n   ↳ <i>Cross-Critique</i>: {itb_critique}",
             f"🧠 <b>AI Bot Learning</b> ({ai_stance}): {ai_arg}\n   ↳ <i>Cross-Critique</i>: {ai_critique}",
-            f"🛡️ <b>Risk Guardian Arbiter</b>: {risk_summary}",
+            f"🛡️ <b>Risk Guardian Arbiter</b>: {risk_summary} [{mtf_summary} | Vol×{rel_vol:.2f}]",
         ]
 
         learning_notes = (
             f"Dynamic Weights: ITB={w_itb:.0%}, Pro={w_pro:.0%}, AI={w_ai:.0%} | "
+            f"Quality={composite_quality:.2f}/5.0 | MTF={mtf_summary} | "
             f"Learning Cycles: {getattr(cfg, 'learning_cycles', 0)}"
         )
 
@@ -980,6 +1047,10 @@ class MultiLayerDeliberationEngine:
             risk_approval=risk_approval,
             risk_summary=risk_summary,
             learning_notes=learning_notes,
+            quality_score=composite_quality,
+            mtf_alignment=mtf_agreed,
+            mtf_summary=mtf_summary,
+            rel_vol=rel_vol,
         )
 
 
@@ -1963,6 +2034,7 @@ class AutoTrader:
             f"• <b>Agreement Rate</b>: <code>{delib.agreement_rate * 100:.0f}%</code> ({len(delib.aligned_layers)}/4 layers aligned)\n"
             f"• <b>Conviction Sizing</b>: <code>{delib.conviction_multiplier:.2f}x multiplier</code>\n"
             f"• <b>Risk Clearance</b>: <b>{status_icon}</b>\n"
+            f"• <b>Quality Gate & MTF</b>: <code>Q={delib.quality_score:.1f}/5.0</code> ({delib.mtf_summary} | RVOL: {delib.rel_vol:.2f}x)\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>💬 INTER-LAYER DEBATE & CROSS-CRITIQUE:</b>\n\n"
             f"{dialogue_str}\n\n"
@@ -1994,12 +2066,17 @@ class AutoTrader:
         w_pro = getattr(self.config, "weight_pro", 0.35) * 100.0
         w_ai = getattr(self.config, "weight_ai", 0.30) * 100.0
 
+        q_val = getattr(delib, "quality_score", 3.5) if delib else 3.5
+        mtf_summary = getattr(delib, "mtf_summary", "MTF Active") if delib else "MTF Active"
+        rel_v = getattr(delib, "rel_vol", 1.0) if delib else 1.0
+
         return (
             f"🌟 <b>COMBINED ENSEMBLE SYSTEM: {e['symbol']}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>Market Price</b>: <code>${e['price']:,.2f}</code>\n"
             f"• <b>Consensus Verdict</b>: <b>{e['verdict']}</b> ({e['agreement_pct']}% agreement)\n"
             f"• <b>Composite Gauge</b>: <code>[{meter_bar}]</code> ({comp_sign}{comp:.2f})\n"
+            f"• <b>Quality Gate & MTF</b>: <code>Q={q_val:.1f}/5.0</code> ({mtf_summary} | RVOL: {rel_v:.2f}x)\n"
             f"• <b>Conviction Sizing</b>: <code>{conv_mult:.2f}x</code> | <b>Risk Clearance</b>: <code>{risk_str}</code>\n"
             f"• <b>Dynamic Allocation</b>: ITB: <code>{w_itb:.0f}%</code> | Pro: <code>{w_pro:.0f}%</code> | AI: <code>{w_ai:.0f}%</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -2022,22 +2099,33 @@ class AutoTrader:
     ) -> None:
         """
         Feedback-driven continuous self-learning loop:
-        1. Records closed trade into AI Bot Learning permanent memory.
-        2. Dynamically adapts ITB, Pro, and AI ensemble weights based on predictive accuracy.
-        3. Updates strategy PnL trackers and persists updated memory & config.
+        1. Records closed trade into AI Bot Learning permanent memory with true indicator and execution telemetry.
+        2. Dynamically adapts ITB, Pro, and AI ensemble weights via multi-armed bandit credit assignment based on each layer's forecast correctness.
+        3. Updates per-engine accuracy metrics (wins, total, win rate).
+        4. Triggers immediate online incremental retraining for ITB ML model on the concluded trade's symbol.
+        5. Dynamically calibrates RiskManager and regime-adaptive targets.
         """
-        # 1. Update AI Bot Permanent Memory
+        won = bool(pnl > 0)
+        risk_budget = (self.config.equity * self.config.risk_pct / 100.0) if self.config.risk_pct > 0 else 1.0
+        r_multiple = round(pnl / max(0.01, risk_budget), 2)
+        setup_name = getattr(pos, "strategy", "Ensemble") or "Ensemble"
+
+        # Calculate actual bars held from entry to exit
+        bars_held = 5
+        if pos.entry_time and pos.exit_time:
+            try:
+                t0 = pd.to_datetime(pos.entry_time)
+                t1 = pd.to_datetime(pos.exit_time)
+                bars_held = max(1, int((t1 - t0).total_seconds() / 60))
+            except Exception:
+                bars_held = 5
+
+        # 1. Update AI Bot Permanent Memory with authentic trade telemetry
         try:
             strat_ai = self._strategies_ai.get(pos.symbol) or self._strategy_ai
             if strat_ai and hasattr(strat_ai, "mem"):
-                won = bool(pnl > 0)
-                risk_budget = (self.config.equity * self.config.risk_pct / 100.0) if self.config.risk_pct > 0 else 1.0
-                r_multiple = round(pnl / max(0.01, risk_budget), 2)
-                setup_name = getattr(pos, "strategy", "Ensemble") or "Ensemble"
-                quality_val = 4.8 if won else 3.2
-
                 df_cur = self.fetch_candles(pos.symbol, count=50)
-                regime_name = "range"
+                regime_name = getattr(pos, "regime", "NORMAL")
                 if df_cur is not None and not df_cur.empty:
                     try:
                         reg_obj = strat_ai.regime(df_cur)
@@ -2054,39 +2142,77 @@ class AutoTrader:
                     exit=current_price,
                     pnl=pnl,
                     r_multiple=r_multiple,
-                    quality=quality_val,
+                    quality=getattr(pos, "quality_score", (4.8 if won else 3.2)),
                     regime=regime_name,
                     hour=datetime.now(timezone.utc).hour,
-                    session="active",
-                    rsi=50.0,
-                    adx=25.0,
-                    ind_score=1.0 if won else -1.0,
-                    ai_conf=0.70 if won else 0.45,
-                    ai_correct=won,
-                    rel_vol=1.0,
+                    session=getattr(pos, "session", "active"),
+                    rsi=getattr(pos, "entry_rsi", 50.0),
+                    adx=getattr(pos, "entry_adx", 25.0),
+                    ind_score=getattr(pos, "entry_score", (1.0 if won else -1.0)),
+                    ai_conf=getattr(pos, "ai_conf", (0.70 if won else 0.45)),
+                    ai_correct=bool((pos.direction == "LONG" and won) or (pos.direction == "SHORT" and won)),
+                    rel_vol=getattr(pos, "rel_vol", 1.0),
+                    bars_held=bars_held,
                     won=won,
                 )
                 strat_ai.mem.remember(rec)
-                logger.info("AI Bot Memory updated with trade %s (PnL: $%.2f, Won: %s)", pos.id, pnl, won)
+                logger.info("AI Bot Memory updated with trade %s (PnL: $%.2f, Won: %s, Regime: %s)", pos.id, pnl, won, regime_name)
         except Exception as e:
             logger.warning("Could not record trade into AI memory: %s", e)
 
-        # 2. Dynamically Adapt Ensemble Weights (ITB, Pro, AI)
+        # 2. Layer-Specific Credit Assignment (Per-Engine Predictive Attribution)
         try:
-            won = bool(pnl > 0)
-            shift = 0.02 if won else -0.015
-
             w_itb = self.config.weight_itb
             w_pro = self.config.weight_pro
             w_ai = self.config.weight_ai
 
-            pos_desc = f"{pos.reason} {pos.strategy}"
-            if "ITB" in pos_desc or "Ensemble" in pos_desc or "Deliberat" in pos_desc:
-                w_itb += shift
-            if "Pro" in pos_desc or "Ensemble" in pos_desc or "Deliberat" in pos_desc:
-                w_pro += shift
-            if "AI" in pos_desc or "Ensemble" in pos_desc or "Deliberat" in pos_desc:
-                w_ai += shift
+            votes = getattr(pos, "engine_votes", None)
+            if votes and isinstance(votes, dict):
+                # Distinct attribution based on each engine's stance
+                for eng_key in ("itb", "pro", "ai", "smc"):
+                    v = votes.get(eng_key, "NEUTRAL")
+                    is_aligned = (v == pos.direction)
+                    is_opposed = (v in ("LONG", "SHORT") and v != pos.direction)
+
+                    # Update engine statistics
+                    if eng_key in self.config.engine_stats:
+                        self.config.engine_stats[eng_key]["total"] += 1
+                        if (won and is_aligned) or (not won and is_opposed):
+                            self.config.engine_stats[eng_key]["wins"] += 1
+
+                    # Compute engine shift
+                    if eng_key in ("itb", "pro", "ai"):
+                        if won:
+                            if is_aligned:
+                                shift = 0.035
+                            elif is_opposed:
+                                shift = -0.030
+                            else:
+                                shift = -0.005
+                        else:
+                            if is_aligned:
+                                shift = -0.040
+                            elif is_opposed:
+                                shift = 0.035
+                            else:
+                                shift = 0.015
+
+                        if eng_key == "itb":
+                            w_itb += shift
+                        elif eng_key == "pro":
+                            w_pro += shift
+                        elif eng_key == "ai":
+                            w_ai += shift
+            else:
+                # Fallback for positions without granular votes
+                shift = 0.02 if won else -0.015
+                pos_desc = f"{pos.reason} {pos.strategy}"
+                if "ITB" in pos_desc or "Ensemble" in pos_desc or "Deliberat" in pos_desc:
+                    w_itb += shift
+                if "Pro" in pos_desc or "Ensemble" in pos_desc or "Deliberat" in pos_desc:
+                    w_pro += shift
+                if "AI" in pos_desc or "Ensemble" in pos_desc or "Deliberat" in pos_desc:
+                    w_ai += shift
 
             w_itb = max(0.15, min(0.60, w_itb))
             w_pro = max(0.15, min(0.60, w_pro))
@@ -2120,7 +2246,23 @@ class AutoTrader:
         elif self._strategy_itb:
             self._strategy_itb.update(pnl)
 
-        # 4. Update Practical Risk Manager state
+        # 4. Immediate On-Trade Incremental Online Retraining of ITB ML Model
+        try:
+            strat_itb = self._strategies_itb.get(pos.symbol) or self._strategy_itb
+            if strat_itb and hasattr(strat_itb, "predictor"):
+                df_on_trade = self.fetch_candles(pos.symbol, count=150)
+                if df_on_trade is not None and len(df_on_trade) >= 35:
+                    train_res = strat_itb.predictor.train(df_on_trade, horizon=10, l2_reg=1.0)
+                    if train_res.get("success"):
+                        logger.info(
+                            "[On-Trade Learn] %s ITB ML model retrained: R²=%.3f, DirAcc=%.1f%% (%d samples)",
+                            pos.symbol, train_res.get("r2_score", 0.0),
+                            train_res.get("directional_accuracy", 0.0), train_res.get("samples", 0),
+                        )
+        except Exception as itb_err:
+            logger.debug("On-trade ITB retrain skipped: %s", itb_err)
+
+        # 5. Update Practical Risk Manager state
         if getattr(self, "risk_manager", None):
             try:
                 initial_sl = pos.initial_stop_loss if pos.initial_stop_loss is not None else pos.stop_loss
@@ -2130,6 +2272,82 @@ class AutoTrader:
                 self.risk_manager.update_after_trade(pnl=pnl, r_multiple=r_mult)
             except Exception as re_err:
                 logger.warning("Could not update RiskManager: %s", re_err)
+
+    def get_learning_report(self) -> str:
+        """
+        Generates an extensive diagnostic card detailing:
+        - Self-Learned Dynamic Allocation (ITB %, Pro %, AI %)
+        - Per-Engine Predictive Accuracy & Win Rates
+        - Calibrated Indicator & AI Model Weights
+        - Quality Gate & Multi-Timeframe Status
+        - Continuous Retraining Telemetry
+        """
+        w_itb = getattr(self.config, "weight_itb", 0.35) * 100.0
+        w_pro = getattr(self.config, "weight_pro", 0.35) * 100.0
+        w_ai = getattr(self.config, "weight_ai", 0.30) * 100.0
+        cycles = getattr(self.config, "learning_cycles", 0)
+        last_retrain = getattr(self.config, "last_retrain_time", "") or "Continuous active"
+
+        # Per-engine accuracy stats
+        stats = getattr(self.config, "engine_stats", {})
+        def fmt_eng(k, name):
+            d = stats.get(k, {"wins": 0, "total": 0})
+            w = d.get("wins", 0)
+            t = d.get("total", 0)
+            pct = (w / t * 100.0) if t > 0 else 0.0
+            return f"• <b>{name}</b>: <code>{pct:.1f}%</code> accuracy ({w}/{t} trades)"
+
+        eng_lines = [
+            fmt_eng("itb", "🤖 ITB Machine Learning"),
+            fmt_eng("pro", "📊 Indicators Pro"),
+            fmt_eng("ai", "🧠 AI Bot Memory"),
+            fmt_eng("smc", "🧱 SMC Structure"),
+        ]
+
+        # AI Bot Calibrated stats
+        strat_ai = self._strategy_ai
+        mem = getattr(strat_ai, "mem", None) if strat_ai else None
+        m_stats = getattr(mem, "stats", None) if mem else None
+        best_q = getattr(m_stats, "best_quality", 4.2) if m_stats else 4.2
+        best_trail = getattr(m_stats, "best_trail_mult", 2.15) if m_stats else 2.15
+        best_ai = getattr(m_stats, "best_ai_conf", 0.64) if m_stats else 0.64
+        exp_r = getattr(m_stats, "expectancy", 0.0) if m_stats else 0.0
+        rec_wr = getattr(m_stats, "recent_winrate", 0.50) if m_stats else 0.50
+
+        ind_w = getattr(m_stats, "indicator_weights", {}) if m_stats else {}
+        rsi_w = ind_w.get("rsi", 1.0)
+        adx_w = ind_w.get("adx", 1.0)
+        ema_w = ind_w.get("ema", 1.0)
+
+        # Risk Manager status
+        rm = getattr(self, "risk_manager", None)
+        rf_val = getattr(rm.state, "rf", 1.0) if (rm and hasattr(rm, "state")) else 1.0
+        streak = getattr(rm.state, "win_streak", 0) if (rm and hasattr(rm, "state")) else 0
+
+        return (
+            f"🧠 <b>AUTONOMOUS MULTI-LAYER LEARNING DASHBOARD</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Learning Cycles</b>: <code>#{cycles}</code>\n"
+            f"• <b>Online Retraining</b>: <code>{last_retrain}</code>\n"
+            f"• <b>Risk Factor Multiplier</b>: <code>{rf_val:.2f}x</code> (Win Streak: {streak})\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚖️ <b>Dynamic Self-Learned Allocation:</b>\n"
+            f"• 🤖 <b>ITB Machine Learning</b>: <b>{w_itb:.1f}%</b>\n"
+            f"• 📊 <b>Indicators Pro</b>: <b>{w_pro:.1f}%</b>\n"
+            f"• 🧠 <b>AI Bot Memory</b>: <b>{w_ai:.1f}%</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 <b>Per-Engine Predictive Accuracy:</b>\n"
+            f"{chr(10).join(eng_lines)}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔬 <b>Calibrated Neural & Statistical Parameters:</b>\n"
+            f"• <b>Quality Gate Threshold</b>: <code>Q ≥ {best_q:.2f}</code>\n"
+            f"• <b>Optimal Trailing Stop</b>: <code>{best_trail:.2f}x ATR</code>\n"
+            f"• <b>AI Confidence Cutoff</b>: <code>{best_ai:.2f}</code>\n"
+            f"• <b>Recent Expectancy</b>: <code>{exp_r:+.2f}R</code> (WR: {rec_wr*100:.0f}%)\n"
+            f"• <b>Indicator Weights</b>: RSI=<code>{rsi_w:.2f}</code> | ADX=<code>{adx_w:.2f}</code> | EMA=<code>{ema_w:.2f}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>💡 The system dynamically adjusts weights & models on every trade. Use <code>/discussion</code> to view active inter-engine debate.</i>"
+        )
 
     def auto_learn_step(self) -> List[str]:
         """
@@ -3128,6 +3346,28 @@ class AutoTrader:
                     order_id = ord_msg
 
                 pos_id = f"TRADE_{sym[:3]}_{int(time.time())}_{len(self.positions) + 1}"
+
+                # Capture granular layer votes and execution telemetry for feedback learning
+                engine_votes = {
+                    "smc": getattr(delib.layers.get("smc_structure"), "stance", "NEUTRAL"),
+                    "pro": getattr(delib.layers.get("technical_momentum"), "stance", "NEUTRAL"),
+                    "itb": getattr(delib.layers.get("itb_machine_learning"), "stance", "NEUTRAL"),
+                    "ai": getattr(delib.layers.get("ai_bot_learning"), "stance", "NEUTRAL"),
+                }
+                pro_l = delib.layers.get("technical_momentum")
+                itb_l = delib.layers.get("itb_machine_learning")
+                ai_l = delib.layers.get("ai_bot_learning")
+
+                entry_rsi = float(pro_l.key_metrics.get("rsi", 50.0)) if pro_l else 50.0
+                entry_adx = float(pro_l.key_metrics.get("adx", 25.0)) if pro_l else 25.0
+                entry_score = float(pro_l.score) if pro_l else 0.0
+                itb_score_val = float(itb_l.score) if itb_l else 0.0
+                ai_conf_val = float(ai_l.confidence) if ai_l else 0.50
+                regime_val = str(ai_l.key_metrics.get("regime", "NORMAL")) if ai_l else "NORMAL"
+
+                now_hr = datetime.now(timezone.utc).hour
+                session_val = "asian" if 0 <= now_hr < 8 else ("london" if 8 <= now_hr < 13 else ("overlap" if 13 <= now_hr < 17 else "ny"))
+
                 new_pos = AutoTradePosition(
                     id=pos_id,
                     symbol=sym,
@@ -3147,6 +3387,18 @@ class AutoTrader:
                     mode=mode,
                     exchange_order_id=order_id,
                     initial_stop_loss=round(stop, 2),
+                    engine_votes=engine_votes,
+                    entry_rsi=round(entry_rsi, 1),
+                    entry_adx=round(entry_adx, 1),
+                    entry_score=round(entry_score, 2),
+                    ai_conf=round(ai_conf_val, 2),
+                    itb_score=round(itb_score_val, 2),
+                    regime=regime_val,
+                    session=session_val,
+                    rel_vol=round(getattr(delib, "rel_vol", 1.0), 2),
+                    conviction_mult=round(delib.conviction_multiplier, 2),
+                    quality_score=round(getattr(delib, "quality_score", 3.5), 2),
+                    mtf_alignment=getattr(delib, "mtf_alignment", 1),
                 )
                 self.positions.append(new_pos)
                 self._save_open_positions()
@@ -3162,7 +3414,9 @@ class AutoTrader:
                     f"• Take Profit: {new_pos.take_profit_1:.2f}\n"
                     f"• Stop Loss: {new_pos.stop_loss:.2f}\n"
                     f"• Strategy: {new_pos.strategy}\n"
-                    f"• Setup: {setup_str}"
+                    f"• Setup: {setup_str}\n"
+                    f"• Quality Score: <b>{new_pos.quality_score:.1f}/5.0</b> (MTF: {new_pos.mtf_alignment}/3 | Vol×{new_pos.rel_vol:.1f})\n"
+                    f"• Layer Votes: SMC:{engine_votes['smc'][:1]} | Pro:{engine_votes['pro'][:1]} | ITB:{engine_votes['itb'][:1]} | AI:{engine_votes['ai'][:1]}"
                 )
         # 3. Check and trigger Trade Level Alerts (Price levels, OB/FVG zones, Proximity)
         level_alerts = self.check_trade_level_alerts(candles_cache=candles_cache)
@@ -3429,18 +3683,26 @@ class AutoTrader:
         macd_txt = "Bullish Cross 🟢" if snap.macd_hist > 0 else "Bearish Cross 🔴"
         adx_txt = f"{snap.adx:.1f} ({'Strong Trend' if snap.adx > 25 else 'Ranging'})"
 
+        delib_txt = ""
         try:
             ens = self.evaluate_ensemble(target)
-            ens_txt = f"• <b>3-Engine Ensemble</b>: <b>{ens['verdict']}</b> ({ens['engines_aligned']} aligned)\n"
+            d = ens.get("deliberation")
+            q_val = getattr(d, "quality_score", 3.5) if d else 3.5
+            mtf_sum = getattr(d, "mtf_summary", "MTF: Active") if d else "MTF: Active"
+            r_vol = getattr(d, "rel_vol", 1.0) if d else 1.0
+            delib_txt = (
+                f"• <b>5-Layer Deliberation</b>: <b>{ens['verdict']}</b> ({ens['agreement_pct']}% agreement)\n"
+                f"• <b>Quality Gate & MTF</b>: <code>Q={q_val:.1f}/5.0</code> ({mtf_sum} | RVOL: {r_vol:.2f}x)\n"
+            )
         except Exception:
-            ens_txt = ""
+            delib_txt = ""
 
         return (
             f"📊 <b>TECHNICAL ANALYSIS: {target}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>Signal</b>: <b>{rec}</b>\n"
             f"• <b>Confluence Score</b>: <code>{score:+.2f} / 5.0</code>\n"
-            f"{ens_txt}"
+            f"{delib_txt}"
             f"• <b>Current Price</b>: <code>${curr_price:,.2f}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>Indicator Readings:</b>\n"

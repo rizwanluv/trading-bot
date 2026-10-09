@@ -517,6 +517,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "• /autotrade [on|off|status] — Toggle ensemble auto-trading\n"
         "• /symbols [add|rm] [SYM] — Manage actively traded pairs\n"
         "• /strategy — View the Combined Ensemble Strategy logic\n"
+        "• /learn — View dynamic self-learning dashboard & per-engine stats\n"
         "• /tpsl [TP] [SL] — Set global Take Profit & Stop Loss multipliers\n"
         "• /trailing [on|off] — Toggle dynamic trailing stop protection\n\n"
         "⚡ <b>3. Manual Execution & Positions</b>\n"
@@ -1300,9 +1301,16 @@ async def strategy_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> No
         f"4. 🧱 <b>SMC & Structure</b>: Institutional Order Blocks & FVGs\n"
         f"5. 🛡️ <b>Risk Guardian</b>: Cross-layer vetoes & conviction sizing arbiter\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<i>💡 All engines run together with mutual dependency. View live debate: <code>/discussion</code> or <code>/consensus</code></i>",
+        f"<i>💡 All engines run together with mutual dependency. View live debate: <code>/discussion</code> or <code>/consensus</code> | Learning stats: <code>/learn</code></i>",
         parse_mode="HTML",
     )
+
+
+async def learn_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """View autonomous multi-layer self-learning diagnostics, weights, and per-engine win rates."""
+    trader = get_auto_trader()
+    report = trader.get_learning_report()
+    await reply_safely(update, report, parse_mode="HTML")
 
 
 async def mode_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1895,6 +1903,7 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"• /itb backtest [SYM] [N] — ITB simulated backtest\n"
         f"• /itb train [SYM] — Fit ML ridge regression weights\n"
         f"• /strategy — View Combined Ensemble status\n"
+        f"• /learn — View dynamic self-learning dashboard & per-engine stats\n"
         f"• /autotrade on|off — Toggle automated trading\n"
         f"• /execute — One-tap execute pinpoint trade plan\n"
         f"• /buy | /sell — Instant market execution\n"
@@ -2155,6 +2164,8 @@ def main() -> None:
     app.add_handler(CommandHandler("consensus", discussion_command))
     app.add_handler(CommandHandler("deliberate", discussion_command))
     app.add_handler(CommandHandler("forum", discussion_command))
+    app.add_handler(CommandHandler("learn", learn_command))
+    app.add_handler(CommandHandler("learning", learn_command))
     app.add_handler(CommandHandler("symbol", symbol_command))
     app.add_handler(CommandHandler("symbols", symbols_command))
     app.add_handler(CommandHandler("pairs", symbols_command))

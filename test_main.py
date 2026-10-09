@@ -2768,6 +2768,186 @@ class TestAuditedBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
             self.assertIn("3.5%", sent_risk)
 
 
+class TestDynamicAutoAnalysisAndLearning(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.tmp_cfg = "/workspace/bright-darwin/.test_dyn_cfg.json"
+        self.tmp_pos = "/workspace/bright-darwin/.test_dyn_pos.json"
+        self.tmp_hist = "/workspace/bright-darwin/.test_dyn_hist.json"
+        for p in (self.tmp_cfg, self.tmp_hist, self.tmp_pos):
+            if os.path.exists(p):
+                os.remove(p)
+        self.config = auto_trade.AutoTradeConfig(
+            config_file=self.tmp_cfg,
+            trades_history_file=self.tmp_hist,
+            open_positions_file=self.tmp_pos,
+            paper_capital=100.0,
+            equity=100.0,
+            trading_mode="paper",
+            weight_itb=0.35,
+            weight_pro=0.35,
+            weight_ai=0.30,
+            auto_learn_enabled=True,
+            auto_retrain_interval_seconds=300,
+        )
+        self.trader = auto_trade.AutoTrader(config=self.config)
+
+    def tearDown(self):
+        for p in (self.tmp_cfg, self.tmp_hist, self.tmp_pos):
+            if os.path.exists(p):
+                os.remove(p)
+
+    def test_multi_timeframe_and_quality_score_deliberation(self):
+        engine = auto_trade.MultiLayerDeliberationEngine()
+        df = self.trader._generate_dummy_candles("BTCUSD", count=120)
+        outcome = engine.deliberate("BTCUSD", df, self.trader)
+        self.assertIsInstance(outcome, auto_trade.DeliberationOutcome)
+        self.assertTrue(0.0 <= outcome.quality_score <= 5.0)
+        self.assertTrue(1 <= outcome.mtf_alignment <= 3)
+        self.assertIn("MTF", outcome.mtf_summary)
+        self.assertTrue(outcome.rel_vol > 0.0)
+
+    def test_auto_trade_position_telemetry_fields(self):
+        pos = auto_trade.AutoTradePosition(
+            id="TEST_POS_1",
+            symbol="BTCUSD",
+            direction="LONG",
+            entry_price=50000.0,
+            stop_loss=49000.0,
+            take_profit_1=52000.0,
+            take_profit_2=54000.0,
+            lot_size=0.01,
+            entry_time="2026-10-09 10:00:00 UTC",
+            strategy="Ensemble",
+            reason="Deliberation Entry",
+            highest_price=50000.0,
+            lowest_price=50000.0,
+            engine_votes={"itb": "LONG", "pro": "LONG", "ai": "SHORT", "smc": "LONG"},
+            entry_rsi=42.5,
+            entry_adx=28.4,
+            entry_score=1.2,
+            ai_conf=0.72,
+            itb_score=1.5,
+            regime="TRENDING_BULL",
+            session="london",
+            rel_vol=1.45,
+            conviction_mult=1.1,
+            quality_score=4.2,
+            mtf_alignment=3,
+        )
+        self.assertEqual(pos.entry_rsi, 42.5)
+        self.assertEqual(pos.entry_adx, 28.4)
+        self.assertEqual(pos.quality_score, 4.2)
+        self.assertEqual(pos.mtf_alignment, 3)
+        self.assertEqual(pos.engine_votes["itb"], "LONG")
+        self.assertEqual(pos.engine_votes["ai"], "SHORT")
+
+    def test_layer_specific_credit_assignment_divergent_votes(self):
+        pos = auto_trade.AutoTradePosition(
+            id="TEST_LEARN_POS",
+            symbol="BTCUSD",
+            direction="LONG",
+            entry_price=50000.0,
+            stop_loss=49000.0,
+            take_profit_1=52000.0,
+            take_profit_2=54000.0,
+            lot_size=0.01,
+            entry_time="2026-10-09 10:00:00 UTC",
+            exit_time="2026-10-09 10:30:00 UTC",
+            strategy="Ensemble",
+            reason="Deliberation Entry",
+            highest_price=50000.0,
+            lowest_price=50000.0,
+            engine_votes={"itb": "LONG", "pro": "LONG", "ai": "SHORT", "smc": "LONG"},
+            entry_rsi=38.0,
+            entry_adx=30.0,
+            quality_score=4.1,
+        )
+        initial_itb = self.trader.config.weight_itb
+        initial_ai = self.trader.config.weight_ai
+
+        # Closed winning LONG trade
+        self.trader.learn_from_trade(pos, current_price=51500.0, pnl=15.0, reason="TP1_HIT")
+
+        # ITB voted LONG (correct), AI voted SHORT (incorrect)
+        # Therefore, ITB relative weight must have increased and AI weight must have decreased
+        self.assertGreater(self.trader.config.weight_itb, initial_itb)
+        self.assertLess(self.trader.config.weight_ai, initial_ai)
+        self.assertEqual(self.trader.config.learning_cycles, 1)
+
+        # Engine stats should reflect the win for itb and loss for ai
+        self.assertEqual(self.trader.config.engine_stats["itb"]["wins"], 1)
+        self.assertEqual(self.trader.config.engine_stats["itb"]["total"], 1)
+        self.assertEqual(self.trader.config.engine_stats["ai"]["wins"], 0)
+        self.assertEqual(self.trader.config.engine_stats["ai"]["total"], 1)
+
+    def test_real_telemetry_passed_to_ai_bot_memory(self):
+        pos = auto_trade.AutoTradePosition(
+            id="TEST_AI_MEM_POS",
+            symbol="BTCUSD",
+            direction="LONG",
+            entry_price=50000.0,
+            stop_loss=49000.0,
+            take_profit_1=52000.0,
+            take_profit_2=54000.0,
+            lot_size=0.01,
+            entry_time="2026-10-09 10:00:00 UTC",
+            exit_time="2026-10-09 10:25:00 UTC",
+            strategy="Ensemble",
+            reason="Deliberation Entry",
+            highest_price=50000.0,
+            lowest_price=50000.0,
+            entry_rsi=41.5,
+            entry_adx=29.2,
+            quality_score=4.35,
+            rel_vol=1.35,
+            regime="BULL_TREND",
+            session="overlap",
+        )
+        mock_mem = MagicMock()
+        mock_strat = MagicMock()
+        mock_strat.mem = mock_mem
+        self.trader._strategies_ai["BTCUSD"] = mock_strat
+
+        self.trader.learn_from_trade(pos, current_price=51000.0, pnl=10.0, reason="MANUAL")
+
+        self.assertTrue(mock_mem.remember.called)
+        trade_record = mock_mem.remember.call_args[0][0]
+        self.assertEqual(trade_record.rsi, 41.5)
+        self.assertEqual(trade_record.adx, 29.2)
+        self.assertEqual(trade_record.quality, 4.35)
+        self.assertEqual(trade_record.rel_vol, 1.35)
+        self.assertEqual(trade_record.bars_held, 25)
+
+    async def test_get_learning_report_and_telegram_command(self):
+        report = self.trader.get_learning_report()
+        self.assertIn("AUTONOMOUS MULTI-LAYER LEARNING DASHBOARD", report)
+        self.assertIn("Dynamic Self-Learned Allocation", report)
+        self.assertIn("Per-Engine Predictive Accuracy", report)
+        self.assertIn("Calibrated Neural & Statistical Parameters", report)
+
+        # Test Telegram command
+        update = MagicMock()
+        update.effective_chat.id = 12345
+        update.message = AsyncMock()
+        ctx = MagicMock()
+        with patch("main.get_auto_trader", return_value=self.trader):
+            await main.learn_command(update, ctx)
+            self.assertTrue(update.message.reply_text.called)
+            sent_text = update.message.reply_text.call_args[0][0]
+            self.assertIn("AUTONOMOUS MULTI-LAYER LEARNING DASHBOARD", sent_text)
+
+    def test_analyze_market_and_deliberation_reports_include_quality_score(self):
+        report = self.trader.analyze_market("BTCUSD")
+        self.assertIn("5-Layer Deliberation", report)
+        self.assertIn("Quality Gate & MTF", report)
+
+        delib_rep = self.trader.generate_deliberation_report("BTCUSD")
+        self.assertIn("Quality Gate & MTF", delib_rep)
+
+        ens_rep = self.trader.generate_ensemble_report("BTCUSD")
+        self.assertIn("Quality Gate & MTF", ens_rep)
+
+
 def tearDownModule():
     import glob
     for f in glob.glob("/workspace/bright-darwin/.test_*"):
