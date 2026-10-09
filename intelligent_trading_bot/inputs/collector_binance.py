@@ -193,7 +193,7 @@ async def health_check():
         log.error(f"Error connecting to Binance server. No status information.")
         return 1
     if system_status.get("status") != 0:
-        log.error(f"Error connecting to Binance server. Bad status: {system_status.get("status")}")
+        log.error(f"Error connecting to Binance server. Bad status: {system_status.get('status')}")
         return 1
 
     # Check time synchronization (difference betweeen server and local time)

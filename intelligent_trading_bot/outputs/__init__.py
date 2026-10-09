@@ -1,7 +1,10 @@
+from __future__ import annotations
+from typing import Dict, Callable
+
 from common.types import Venue
 
 
-def get_trader_functions(venue: Venue) -> dict[str, callable]:
+def get_trader_functions(venue: Venue) -> Dict[str, Callable]:
     """
     Return a dict of the four trader-related callables for the given venue.
 

@@ -3972,6 +3972,11 @@ def run_live_pro(args):
     bot.run(once=args.once)
 
 
+def get_feed(source: str = "delta", symbol: str = "XAUTUSD", exchange: str = "delta"):
+    ai_mod = load_module("ai_strat", AI_FILE)
+    return ai_mod.MarketDataFeed(symbol=symbol, source=source, exchange_id=exchange)
+
+
 def run_backtest_itb(args):
     print("=" * 64)
     print("  MODE: BACKTEST - Intelligent Trading Bot (ITB Machine Learning)")

@@ -2300,6 +2300,46 @@ class TestAuditedBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(os.path.exists(self.pos_file))
         self.assertFalse(os.path.exists(f"{self.pos_file}.tmp"))
 
+    @patch("main.start_health_server", new_callable=AsyncMock)
+    @patch("main.auto_trade_worker", new_callable=AsyncMock)
+    def test_on_post_init_execution(self, mock_worker, mock_health):
+        import asyncio
+        app = MagicMock()
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(main.on_post_init(app))
+        finally:
+            loop.close()
+
+    def test_on_post_shutdown_execution(self):
+        import asyncio
+        app = MagicMock()
+        trader = main.get_auto_trader()
+        trader.is_running = True
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(main.on_post_shutdown(app))
+            self.assertFalse(trader.is_running)
+        finally:
+            loop.close()
+
+    def test_health_server_lifecycle(self):
+        import asyncio
+        import health_server
+        loop = asyncio.new_event_loop()
+        try:
+            with patch.dict(os.environ, {"PORT": "18088"}):
+                runner = loop.run_until_complete(health_server.start_health_server())
+                self.assertIsNotNone(runner)
+                loop.run_until_complete(health_server.stop_health_server(runner))
+        finally:
+            loop.close()
+
+    def test_auto_trade_get_feed(self):
+        feed = auto_trade.get_feed("delta", "XAUTUSD", "delta")
+        self.assertIsNotNone(feed)
+        self.assertEqual(feed.symbol, "XAUTUSD")
+
 
 def tearDownModule():
     import glob

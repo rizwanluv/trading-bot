@@ -49,6 +49,14 @@ from auto_trade import (
     TradeLevelAlert,
 )
 
+try:
+    from health_server import start_health_server
+except ImportError:
+    try:
+        from .health_server import start_health_server  # type: ignore
+    except Exception:
+        start_health_server = None
+
 # Optional import for google-genai SDK (Python >= 3.9/3.10)
 try:
     from google import genai
@@ -1748,28 +1756,45 @@ async def auto_trade_worker(app: Any) -> None:
     trader = get_auto_trader()
     trader.is_running = True
     logger.info("Auto-trade background worker started.")
-    while trader.is_running:
-        try:
-            notifications = trader.step()
-            if notifications and trader.config.notify_chat_id:
-                for note in notifications:
-                    try:
-                        await app.bot.send_message(
-                            chat_id=trader.config.notify_chat_id,
-                            text=note,
-                            parse_mode="HTML",
-                        )
-                    except Exception as note_err:
-                        logger.warning("Failed to send auto-trade notification: %s", note_err)
-        except Exception as step_err:
-            logger.warning("Error in auto-trade step: %s", step_err)
+    try:
+        while trader.is_running:
+            try:
+                notifications = trader.step()
+                if notifications and trader.config.notify_chat_id:
+                    for note in notifications:
+                        if not trader.is_running:
+                            break
+                        try:
+                            # Verify app is still active before attempting to send message
+                            if hasattr(app, "updater") and app.updater and not app.updater.running:
+                                break
+                            await app.bot.send_message(
+                                chat_id=trader.config.notify_chat_id,
+                                text=note,
+                                parse_mode="HTML",
+                            )
+                        except Exception as note_err:
+                            logger.warning("Failed to send auto-trade notification: %s", note_err)
+            except Exception as step_err:
+                logger.warning("Error in auto-trade step: %s", step_err)
 
-        await asyncio.sleep(trader.config.poll_seconds)
+            try:
+                await asyncio.sleep(trader.config.poll_seconds)
+            except asyncio.CancelledError:
+                break
+    except asyncio.CancelledError:
+        pass
+    finally:
+        logger.info("Auto-trade background worker stopped.")
 
 
 async def on_post_init(application: Any) -> None:
     asyncio.create_task(auto_trade_worker(application))
-    asyncio.create_task(start_health_server())
+    if start_health_server is not None:
+        try:
+            asyncio.create_task(start_health_server())
+        except Exception as exc:
+            logger.warning("Could not schedule health server: %s", exc)
 
 
 async def on_post_shutdown(application: Any) -> None:
