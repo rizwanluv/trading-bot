@@ -484,9 +484,9 @@ class TestAutoTradeTelegramHandlers(unittest.IsolatedAsyncioTestCase):
         ctx = SimpleNamespace(args=[])
         await main.help_command(mock_update, ctx)
         sent = mock_update.message.reply_text.call_args[0][0]
-        self.assertIn("/btc", sent)
-        self.assertIn("/gold", sent)
-        self.assertIn("/symbol", sent)
+        self.assertIn("/market", sent)
+        self.assertIn("/scan", sent)
+        self.assertIn("/entry", sent)
         self.assertIn("/autotrade", sent)
         self.assertIn("/lotsize", sent)
         self.assertIn("/tpsl", sent)
@@ -1511,14 +1511,10 @@ class TestModeCapitalApiTelegramCommands(unittest.IsolatedAsyncioTestCase):
         # Test /start contains categories
         await main.start(mock_update, mock_ctx)
         start_txt = mock_update.message.reply_text.call_args[0][0]
-        self.assertIn("1. Market & Live Quotes", start_txt)
-        self.assertIn("2. Pinpoint Trade Planning", start_txt)
-        self.assertIn("3. Auto-Trading & Execution", start_txt)
-        self.assertIn("4. Paper & Live Trading / Capital Management", start_txt)
-        self.assertIn("5. Live Exchange API System", start_txt)
-        self.assertIn("6. Risk & Strategy Configuration", start_txt)
-        self.assertIn("7. Trade Level Alerts & Notifications", start_txt)
-        self.assertIn("8. Assistant & Diagnostics", start_txt)
+        self.assertIn("1. Market Analysis & Planning", start_txt)
+        self.assertIn("2. Auto-Trading Ensemble", start_txt)
+        self.assertIn("3. Manual Execution & Positions", start_txt)
+        self.assertIn("4. Funds & System Configuration", start_txt)
         self.assertIn("/mode", start_txt)
         self.assertIn("/capital", start_txt)
         self.assertIn("/api", start_txt)
@@ -1822,22 +1818,19 @@ class TestITBEngineAndIntegration(unittest.TestCase):
         self.assertEqual(strat.total_pnl, 25.5)
 
     def test_autotrader_strategy_management(self):
-        # 1. Switch strategy
+        # 1. Switch strategy now just returns combined ensemble
         ok, msg = self.trader.set_strategy_type("itb")
         self.assertTrue(ok)
-        self.assertEqual(self.trader.config.strategy_type, "itb_ml")
-        self.assertIn("Intelligent Trading Bot", msg)
+        self.assertIn("Combined Ensemble", msg)
 
         ok, msg = self.trader.set_strategy_type("indicators")
         self.assertTrue(ok)
-        self.assertEqual(self.trader.config.strategy_type, "indicators_pro")
 
         ok, msg = self.trader.set_strategy_type("ai")
         self.assertTrue(ok)
-        self.assertEqual(self.trader.config.strategy_type, "ai_learning")
 
         ok, msg = self.trader.set_strategy_type("invalid_strat")
-        self.assertFalse(ok)
+        self.assertTrue(ok)
 
         # 2. Trader ITB helper reports
         analysis = self.trader.get_itb_analysis("BTCUSD")

@@ -805,33 +805,7 @@ class AutoTrader:
         return [p for p in self.positions if p.symbol == target]
 
     def set_strategy_type(self, strategy_type: str) -> Tuple[bool, str]:
-        st = strategy_type.strip().lower()
-        alias_map = {
-            "itb": "itb_ml",
-            "intelligent": "itb_ml",
-            "itb_ml": "itb_ml",
-            "ml": "itb_ml",
-            "indicators": "indicators_pro",
-            "pro": "indicators_pro",
-            "indicators_pro": "indicators_pro",
-            "ai": "ai_learning",
-            "learning": "ai_learning",
-            "ai_learning": "ai_learning",
-        }
-        resolved = alias_map.get(st)
-        if not resolved:
-            return (
-                False,
-                "Unsupported strategy. Supported: 'indicators_pro' (Technical Indicators), 'itb_ml' (Intelligent Trading ML), 'ai_learning' (Adaptive AI).",
-            )
-        self.config.strategy_type = resolved
-        self.config.save()
-        names = {
-            "itb_ml": "Intelligent Trading Bot (ITB Machine Learning)",
-            "indicators_pro": "Indicators Pro (Technical Indicator Confluence)",
-            "ai_learning": "AI Bot Learning (Adaptive Reinforcement)",
-        }
-        return True, f"Strategy switched to: <b>{names.get(resolved, resolved)}</b>"
+        return True, "Strategy switched to: <b>Combined Ensemble</b>"
 
     def set_trailing_sl(self, enabled: bool) -> str:
         self.config.trailing_sl = bool(enabled)
@@ -1974,7 +1948,7 @@ class AutoTrader:
             f"• <b>Trading Mode</b>: {mode_color} <b>{mode_icon}</b>",
             f"• <b>Active Pairs</b>: <code>{symbols_str}</code>",
             f"• <b>Primary Symbol</b>: <code>{self.config.symbol}</code>",
-            f"• <b>Strategy</b>: {self.config.strategy_type.replace('_', ' ').title()}",
+            f"• <b>Strategy</b>: 🌟 Combined Ensemble",
             f"• <b>Lot Size</b>: {self.config.lot_size} ({lot_mode_str})",
             f"• <b>Max Positions</b>: <code>[{pos_bar}]</code> {len(self.positions)}/{self.config.max_positions} (Max/pair: {self.config.max_positions_per_symbol})",
             f"• <b>Take Profit</b>: {self.config.tp_value} ({self.config.tp_mode.upper()})",
