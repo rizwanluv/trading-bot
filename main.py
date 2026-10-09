@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 import requests
 from telegram import Update
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
@@ -356,11 +357,11 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "⚡ <b>PRECISION TRADING ASSISTANT & AUTO-TRADER</b>\n"
         "Trading assistant ready. Real-time institutional analysis and multi-asset automation for Bitcoin (BTC) & Gold (XAU).\n\n"
         "📊 <b>1. Market & Live Quotes:</b>\n"
-        "• /btc — Live Bitcoin ticker, range bar & 24h stats\n"
+        "• /market — Global overview of BTC, ETH, SOL, GOLD\n        • /btc — Live Bitcoin ticker, range bar & 24h stats\n"
         "• /gold (/xau) — Live Gold ticker, range bar & 24h stats\n"
         "• /eth | /sol — Ethereum & Solana live tickers\n"
         "• /price [SYM] — Price check on any Delta pair\n"
-        "• /analyze [SYM] — 10-indicator confluence report\n• /trend [SYM] — Multi-timeframe trend scanner\n\n"
+        "• /scan [SYM] — Ultimate Master Scan (Trend + Levels + Entry)\n        • /analyze [SYM] — 10-indicator confluence report\n        • /trend [SYM] — Multi-timeframe trend scanner\n\n"
         "🎯 <b>2. Pinpoint Trade Planning:</b>\n"
         "• /entry [SYM] — Pinpoint entry, precision SL & multi-tier TPs\n"
         "• /levels [SYM] (/ob) — Smart Money Order Blocks & Fair Value Gaps\n"
@@ -1487,10 +1488,10 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"• <b>Positions</b>: <i>{pos_str} (Max {trader.config.max_positions})</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>📊 1. Market & Quotes:</b>\n"
-        f"• /btc — Bitcoin ticker card & 24h stats\n"
+        f"• /market — Global overview of BTC, ETH, SOL, GOLD\n        • /btc — Bitcoin ticker card & 24h stats\n"
         f"• /gold — Gold ticker card & 24h stats\n"
         f"• /eth | /sol — Ethereum & Solana tickers\n"
-        f"• /analyze [SYM] — 10-indicator confluence report\n• /trend [SYM] — Multi-timeframe trend scanner\n"
+        f"• /scan [SYM] — Ultimate Master Scan (Trend + Levels + Entry)\n        • /analyze [SYM] — 10-indicator confluence report\n        • /trend [SYM] — Multi-timeframe trend scanner\n"
         f"• /price [SYM] — Live price check\n\n"
         f"<b>🎯 2. Pinpoint Trade Planning:</b>\n"
         f"• /entry [SYM] — Pinpoint entry, precision SL & TPs\n"
@@ -1659,6 +1660,11 @@ async def on_post_shutdown(application: Any) -> None:
     trader.is_running = False
 
 
+
+async def post_init(application: Application) -> None:
+    """Start the background health check server."""
+    asyncio.create_task(start_health_server())
+
 def main() -> None:
     load_dotenv()
 
@@ -1686,7 +1692,7 @@ def main() -> None:
 
     logger.info("Initializing Telegram bot application...")
     app = (
-        ApplicationBuilder()
+        ApplicationBuilder().post_init(post_init)
         .token(telegram_token)
         .post_init(on_post_init)
         .post_shutdown(on_post_shutdown)
