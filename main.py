@@ -84,6 +84,7 @@ BINANCE_API = os.getenv("BINANCE_API", "https://api.binance.com/api/v3")
 
 # Active Google Gemini Model Fleet (All models active concurrently)
 DEFAULT_ACTIVE_GOOGLE_MODELS = [
+    "models/gemini-3.8-Flash-preview",
     "models/gemini-3.1-pro-preview",
     "gemini-2.5-flash",
     "gemini-2.0-flash",
@@ -98,7 +99,7 @@ def get_active_gemini_models() -> List[str]:
     if env_m:
         raw_list = [m.strip() for m in env_m.split(",") if m.strip()]
     else:
-        primary = os.getenv("GEMINI_MODEL") or os.getenv("MODEL") or "models/gemini-3.1-pro-preview"
+        primary = os.getenv("GEMINI_MODEL") or os.getenv("MODEL") or "models/gemini-3.8-Flash-preview"
         raw_list = [primary] + [m for m in DEFAULT_ACTIVE_GOOGLE_MODELS if m != primary]
 
     seen: set[str] = set()
@@ -111,7 +112,7 @@ def get_active_gemini_models() -> List[str]:
 
 
 ACTIVE_GEMINI_MODELS = get_active_gemini_models()
-MODEL = ACTIVE_GEMINI_MODELS[0] if ACTIVE_GEMINI_MODELS else "models/gemini-3.1-pro-preview"
+MODEL = ACTIVE_GEMINI_MODELS[0] if ACTIVE_GEMINI_MODELS else "models/gemini-3.8-Flash-preview"
 CANDIDATE_MODELS = ACTIVE_GEMINI_MODELS
 
 SYSTEM = """You are a trading assistant on Telegram. Focus on technical analysis,
