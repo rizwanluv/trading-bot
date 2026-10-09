@@ -43,6 +43,7 @@ import hmac
 import tempfile
 import time
 import time as time_module
+import urllib.parse
 import traceback
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -282,8 +283,12 @@ class ExchangeApiClient:
         testnet: bool = False,
     ):
         self.exchange = (exchange or "delta").strip().lower()
-        self.api_key = (api_key or os.getenv("EXCHANGE_API_KEY") or os.getenv("DELTA_API_KEY") or "").strip()
-        self.api_secret = (api_secret or os.getenv("EXCHANGE_API_SECRET") or os.getenv("DELTA_API_SECRET") or "").strip()
+        if self.exchange == "binance":
+            self.api_key = (api_key or os.getenv("BINANCE_API_KEY") or os.getenv("EXCHANGE_API_KEY") or "").strip()
+            self.api_secret = (api_secret or os.getenv("BINANCE_API_SECRET") or os.getenv("EXCHANGE_API_SECRET") or "").strip()
+        else:
+            self.api_key = (api_key or os.getenv("EXCHANGE_API_KEY") or os.getenv("DELTA_API_KEY") or "").strip()
+            self.api_secret = (api_secret or os.getenv("EXCHANGE_API_SECRET") or os.getenv("DELTA_API_SECRET") or "").strip()
         self.testnet = testnet
 
     @property
@@ -305,14 +310,54 @@ class ExchangeApiClient:
             "status": "CONFIGURED 🟢" if self.is_configured else "NOT SET 🔴",
         }
 
+    @staticmethod
+    def format_binance_symbol(symbol: str) -> str:
+        s = symbol.strip().upper().replace("/", "").replace("-", "")
+        if s in ("BTC", "BITCOIN", "BTCUSD"):
+            return "BTCUSDT"
+        if s in ("ETH", "ETHEREUM", "ETHUSD"):
+            return "ETHUSDT"
+        if s in ("SOL", "SOLANA", "SOLUSD"):
+            return "SOLUSDT"
+        if s in ("XRP", "RIPPLE", "XRPUSD"):
+            return "XRPUSDT"
+        if s in ("XAU", "GOLD", "XAUUSD", "XAUTUSD"):
+            return "PAXGUSDT"
+        if s.endswith("USD"):
+            return s[:-3] + "USDT"
+        if not (s.endswith("USDT") or s.endswith("BUSD") or s.endswith("FDUSD") or s.endswith("BTC")):
+            return f"{s}USDT"
+        return s
+
     def _sign_delta_request(self, method: str, path: str, payload_str: str, timestamp: str) -> str:
         msg = method.upper() + timestamp + path + payload_str
         return hmac.new(self.api_secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
 
+    def test_public_connection(self) -> Tuple[bool, str]:
+        """Verify public API connectivity to the active exchange without credentials."""
+        if self.exchange == "binance":
+            try:
+                resp = requests.get("https://api.binance.com/api/v3/ping", timeout=6)
+                if resp.status_code == 200:
+                    return True, "Binance Public REST API is reachable (HTTP 200 OK)."
+                return False, f"Binance Ping returned HTTP {resp.status_code}"
+            except Exception as e:
+                return False, f"Binance Public API unreachable: {e}"
+        else:
+            try:
+                resp = requests.get(f"{DELTA_TICKER_API}/BTCUSD", timeout=6)
+                if resp.status_code == 200:
+                    return True, "Delta Exchange Public REST API is reachable (HTTP 200 OK)."
+                return False, f"Delta Ping returned HTTP {resp.status_code}"
+            except Exception as e:
+                return False, f"Delta Public API unreachable: {e}"
+
     def test_connection(self) -> Tuple[bool, str, Dict[str, Any]]:
         """Verify API credentials and return connectivity status with account info."""
         if not self.is_configured:
-            return False, "Exchange API Key or Secret is not configured. Use /api set <exchange> <key> <secret>", {}
+            pub_ok, pub_msg = self.test_public_connection()
+            status_note = f" (Public API: {pub_msg})" if pub_ok else ""
+            return False, f"Exchange API Key or Secret is not configured. Use /api set {self.exchange} <key> <secret>{status_note}", {}
 
         if self.exchange == "delta":
             base_url = "https://cdn.testnet.delta.exchange" if self.testnet else "https://api.india.delta.exchange"
@@ -349,7 +394,7 @@ class ExchangeApiClient:
             ts = int(time.time() * 1000)
             query = f"timestamp={ts}&recvWindow=5000"
             sig = hmac.new(self.api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
-            headers = {"X-MBX-APIKEY": self.api_key}
+            headers = {"X-MBX-APIKEY": self.api_key, "User-Agent": "TradingBot/1.0"}
             try:
                 resp = requests.get(f"{base_url}{path}?{query}&signature={sig}", headers=headers, timeout=10)
                 if resp.status_code == 200:
@@ -358,7 +403,17 @@ class ExchangeApiClient:
                     for b in data.get("balances", []):
                         if b.get("asset") in ("USDT", "USD"):
                             usdt_bal += float(b.get("free", 0.0))
-                    return True, f"Connected to Binance successfully. Available: ${usdt_bal:,.2f} USDT", {"balance": usdt_bal, "raw": data}
+                    return True, f"Connected to Binance Spot successfully. Available: ${usdt_bal:,.2f} USDT", {"balance": usdt_bal, "raw": data, "market": "spot"}
+                elif resp.status_code in (401, 403, 400):
+                    # Check if API key is a Binance USD-M Futures key
+                    f_base = "https://fapi.binance.com"
+                    f_path = "/fapi/v2/account"
+                    f_resp = requests.get(f"{f_base}{f_path}?{query}&signature={sig}", headers=headers, timeout=10)
+                    if f_resp.status_code == 200:
+                        f_data = f_resp.json()
+                        usdt_bal = float(f_data.get("availableBalance", 0.0) or f_data.get("totalWalletBalance", 0.0))
+                        return True, f"Connected to Binance Futures successfully. Available: ${usdt_bal:,.2f} USDT", {"balance": usdt_bal, "raw": f_data, "market": "futures"}
+                    return False, f"Binance Authentication failed (HTTP {resp.status_code}): Invalid API Key or Secret.", {}
                 else:
                     return False, f"Binance error (HTTP {resp.status_code}): {resp.text[:200]}", {}
             except Exception as e:
@@ -371,6 +426,31 @@ class ExchangeApiClient:
         if ok and "balance" in data:
             return True, float(data["balance"]), msg
         return False, 0.0, msg
+
+    def get_ticker_price(self, symbol: str) -> Tuple[bool, float, Dict[str, Any]]:
+        """Fetch live ticker price for symbol from the configured exchange."""
+        if self.exchange == "binance":
+            b_sym = self.format_binance_symbol(symbol)
+            try:
+                resp = requests.get(f"https://api.binance.com/api/v3/ticker/24hr?symbol={b_sym}", timeout=8)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    last_price = float(data.get("lastPrice", 0.0))
+                    return True, last_price, data
+                return False, 0.0, {"error": resp.text[:200]}
+            except Exception as e:
+                return False, 0.0, {"error": str(e)}
+        else:
+            target = symbol.strip().upper().replace("/", "").replace("-", "")
+            try:
+                resp = requests.get(f"{DELTA_TICKER_API}/{target}", timeout=8)
+                if resp.status_code == 200:
+                    data = resp.json().get("result", {})
+                    close_price = float(data.get("close", 0.0) or data.get("mark_price", 0.0))
+                    return True, close_price, data
+                return False, 0.0, {"error": resp.text[:200]}
+            except Exception as e:
+                return False, 0.0, {"error": str(e)}
 
     def place_order(
         self,
@@ -422,7 +502,98 @@ class ExchangeApiClient:
             except Exception as e:
                 return False, f"Delta request failed: {e}", {}
 
+        elif self.exchange == "binance":
+            base_url = "https://testnet.binance.vision" if self.testnet else "https://api.binance.com"
+            path = "/api/v3/order"
+            ts = int(time.time() * 1000)
+            side = "BUY" if direction.upper() in ("BUY", "LONG") else "SELL"
+            b_sym = self.format_binance_symbol(symbol)
+
+            params: Dict[str, Any] = {
+                "symbol": b_sym,
+                "side": side,
+                "type": "MARKET" if order_type.lower() == "market" else "LIMIT",
+                "timestamp": ts,
+                "recvWindow": 5000,
+            }
+            if b_sym.startswith("BTC"):
+                params["quantity"] = f"{float(size):.4f}"
+            elif b_sym.startswith("ETH"):
+                params["quantity"] = f"{float(size):.3f}"
+            else:
+                params["quantity"] = f"{float(size):.2f}"
+
+            if order_type.lower() != "market" and price:
+                params["timeInForce"] = "GTC"
+                params["price"] = f"{float(price):.2f}"
+
+            query_str = urllib.parse.urlencode(params)
+            sig = hmac.new(self.api_secret.encode("utf-8"), query_str.encode("utf-8"), hashlib.sha256).hexdigest()
+            headers = {
+                "X-MBX-APIKEY": self.api_key,
+                "User-Agent": "TradingBot/1.0",
+            }
+            try:
+                resp = requests.post(f"{base_url}{path}?{query_str}&signature={sig}", headers=headers, timeout=10)
+                if resp.status_code in (200, 201):
+                    data = resp.json()
+                    order_id = str(data.get("orderId", f"BINANCE_{int(time.time())}"))
+                    return True, order_id, data
+                return False, f"Binance order rejected (HTTP {resp.status_code}): {resp.text[:200]}", {}
+            except Exception as e:
+                return False, f"Binance order request failed: {e}", {}
+
         return False, f"Live ordering on {self.exchange} preview.", {}
+
+    def cancel_order(self, symbol: str, order_id: str) -> Tuple[bool, str]:
+        """Cancel live order on exchange."""
+        if not self.is_configured:
+            return False, "Exchange API is not configured."
+
+        if self.exchange == "binance":
+            base_url = "https://testnet.binance.vision" if self.testnet else "https://api.binance.com"
+            path = "/api/v3/order"
+            ts = int(time.time() * 1000)
+            b_sym = self.format_binance_symbol(symbol)
+            params = {
+                "symbol": b_sym,
+                "orderId": order_id,
+                "timestamp": ts,
+                "recvWindow": 5000,
+            }
+            query_str = urllib.parse.urlencode(params)
+            sig = hmac.new(self.api_secret.encode("utf-8"), query_str.encode("utf-8"), hashlib.sha256).hexdigest()
+            headers = {"X-MBX-APIKEY": self.api_key, "User-Agent": "TradingBot/1.0"}
+            try:
+                resp = requests.delete(f"{base_url}{path}?{query_str}&signature={sig}", headers=headers, timeout=10)
+                if resp.status_code == 200:
+                    return True, f"Binance order {order_id} cancelled successfully."
+                return False, f"Binance cancel failed (HTTP {resp.status_code}): {resp.text[:200]}"
+            except Exception as e:
+                return False, f"Binance cancel request failed: {e}"
+
+        elif self.exchange == "delta":
+            base_url = "https://cdn.testnet.delta.exchange" if self.testnet else "https://api.india.delta.exchange"
+            path = "/v2/orders"
+            ts = str(int(time.time()))
+            payload = {"product_symbol": symbol, "order_id": order_id}
+            body_str = json.dumps(payload)
+            sig = self._sign_delta_request("DELETE", path, body_str, ts)
+            headers = {
+                "api-key": self.api_key,
+                "timestamp": ts,
+                "signature": sig,
+                "Content-Type": "application/json",
+            }
+            try:
+                resp = requests.delete(f"{base_url}{path}", headers=headers, data=body_str, timeout=10)
+                if resp.status_code in (200, 204):
+                    return True, f"Delta order {order_id} cancelled successfully."
+                return False, f"Delta cancel failed (HTTP {resp.status_code}): {resp.text[:200]}"
+            except Exception as e:
+                return False, f"Delta cancel request failed: {e}"
+
+        return False, f"Cancel not supported on {self.exchange}."
 
 
 # ==================================================================
@@ -1433,6 +1604,26 @@ class AutoTrader:
         self.exchange_client = ExchangeApiClient(exchange=self.config.live_exchange)
         return "Exchange API credentials cleared. Mode reverted to PAPER TRADING 📄."
 
+    def switch_exchange(self, exchange: str) -> Tuple[bool, str]:
+        """Switch active exchange between delta and binance."""
+        ex = exchange.strip().lower()
+        if ex not in ("delta", "binance"):
+            return False, f"Unsupported exchange '{exchange}'. Supported: delta, binance"
+        self.config.live_exchange = ex
+        self.config.save()
+        self.exchange_client = ExchangeApiClient(
+            exchange=ex,
+            api_key=self.config.exchange_api_key if self.config.live_exchange == ex else None,
+            api_secret=self.config.exchange_api_secret if self.config.live_exchange == ex else None,
+        )
+        return (
+            True,
+            f"🔄 <b>Active Exchange Switched</b>\n"
+            f"• Now using: <code>{ex.upper()}</code>\n"
+            f"• Status: {self.exchange_client.get_masked_status()['status']}\n\n"
+            f"<i>Test connection with /api test or configure with /api set {ex} &lt;KEY&gt; &lt;SECRET&gt;</i>",
+        )
+
     def get_api_status_report(self) -> str:
         """Report live exchange API credentials and connectivity test."""
         st = self.exchange_client.get_masked_status()
@@ -1452,6 +1643,7 @@ class AutoTrader:
             f"<b>Setup & Controls:</b>\n"
             f"• <code>/api set delta &lt;KEY&gt; &lt;SECRET&gt;</code> — Set Delta credentials\n"
             f"• <code>/api set binance &lt;KEY&gt; &lt;SECRET&gt;</code> — Set Binance credentials\n"
+            f"• <code>/api switch binance</code> (or <code>delta</code>) — Switch active exchange\n"
             f"• <code>/api test</code> — Test exchange connection & query live balance\n"
             f"• <code>/api clear</code> — Clear credentials & return to paper mode\n"
             f"• <code>/mode live</code> — Switch to live real-order trading"
@@ -2255,8 +2447,44 @@ class AutoTrader:
 
         return notifications
 
+    def fetch_binance_candles(self, symbol: str, count: int = 120, interval: str = "1m") -> Optional[pd.DataFrame]:
+        """Fetch candle series from Binance REST API."""
+        b_sym = ExchangeApiClient.format_binance_symbol(symbol)
+        tf = interval if interval in ("1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d") else "1m"
+        url = f"https://api.binance.com/api/v3/klines?symbol={b_sym}&interval={tf}&limit={min(1000, count)}"
+        try:
+            resp = requests.get(url, timeout=8)
+            if resp.status_code == 200:
+                raw = resp.json()
+                if raw and isinstance(raw, list) and len(raw) > 0:
+                    rows = []
+                    for c in raw:
+                        rows.append({
+                            "open": float(c[1]),
+                            "high": float(c[2]),
+                            "low": float(c[3]),
+                            "close": float(c[4]),
+                            "volume": float(c[5]),
+                            "timestamp": pd.to_datetime(c[0], unit="ms", utc=True),
+                        })
+                    df = pd.DataFrame(rows).set_index("timestamp").astype(float)
+                    df = df[~df.index.duplicated(keep="last")]
+                    df.sort_index(inplace=True)
+                    if not df.empty:
+                        return df.tail(count)
+        except Exception as exc:
+            logger.warning("Binance candle fetch error for %s: %s", b_sym, exc)
+        return None
+
     def fetch_candles(self, symbol: str, count: int = 120, resolution: str = "1") -> pd.DataFrame:
-        """Fetch candle series from Delta Exchange API with fallback to synthetic data."""
+        """Fetch candle series from active exchange (Delta or Binance) with dual-exchange failover."""
+        # If active exchange is Binance, try Binance first
+        if getattr(self.config, "live_exchange", "delta") == "binance":
+            b_tf = "1d" if resolution == "1D" else f"{resolution}m" if resolution.isdigit() else "1m"
+            b_df = self.fetch_binance_candles(symbol, count=count, interval=b_tf)
+            if b_df is not None and not b_df.empty:
+                return b_df
+
         target = self.normalize_symbol(symbol)
         now = int(time.time())
         
@@ -2301,6 +2529,12 @@ class AutoTrader:
                             return df
         except Exception as exc:
             logger.warning("Delta candle fetch error for %s: %s", target, exc)
+
+        # Fallback to Binance REST API if Delta is unavailable
+        b_tf = "1d" if resolution == "1D" else f"{resolution}m" if resolution.isdigit() else "1m"
+        b_df = self.fetch_binance_candles(symbol, count=count, interval=b_tf)
+        if b_df is not None and not b_df.empty:
+            return b_df
 
         # Fallback synthetic series for offline resilience and tests
         return self._generate_dummy_candles(target, count=count)

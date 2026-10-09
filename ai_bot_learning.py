@@ -154,10 +154,12 @@ class MarketDataFeed:
         self._init()
 
     def _init(self):
-        if self.source in ("ccxt", "binance"):
+        if self.source == "binance":
+            print(f"[Data] Binance Public REST API | {self.symbol}")
+        elif self.source == "ccxt":
             try:
                 import ccxt
-                cls = getattr(ccxt, self.exchange_id if self.source == "ccxt" else "binance")
+                cls = getattr(ccxt, self.exchange_id)
                 self._exchange = cls({"apiKey": self.api_key, "secret": self.api_secret,
                                       "enableRateLimit": True, "options": {"defaultType": "future"}})
                 print(f"[Data] CCXT → {self.exchange_id} | {self.symbol}")
@@ -218,7 +220,43 @@ class MarketDataFeed:
                         ).astype(float)
                         return df.tail(limit)
                 return self._demo(limit)
-            if self.source in ("ccxt", "binance") and self._exchange:
+            if self.source == "binance":
+                sym = self.symbol.upper().replace("/", "").replace("-", "")
+                if sym in ("BTC", "BITCOIN", "BTCUSD"):
+                    sym = "BTCUSDT"
+                elif sym in ("ETH", "ETHEREUM", "ETHUSD"):
+                    sym = "ETHUSDT"
+                elif sym in ("SOL", "SOLANA", "SOLUSD"):
+                    sym = "SOLUSDT"
+                elif sym in ("XRP", "RIPPLE", "XRPUSD"):
+                    sym = "XRPUSDT"
+                elif sym in ("XAU", "GOLD", "XAUUSD", "XAUTUSD"):
+                    sym = "PAXGUSDT"
+                elif not sym.endswith("USDT") and not sym.endswith("FDUSD"):
+                    sym = f"{sym}USDT"
+
+                binance_tf = tf if tf in ("1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d") else "1m"
+                r = requests.get(
+                    f"https://api.binance.com/api/v3/klines?symbol={sym}&interval={binance_tf}&limit={min(1000, limit)}",
+                    timeout=8,
+                )
+                if r.status_code == 200:
+                    raw = r.json()
+                    if raw and isinstance(raw, list) and len(raw) > 0:
+                        rows = []
+                        for c in raw:
+                            rows.append({
+                                "open": float(c[1]),
+                                "high": float(c[2]),
+                                "low": float(c[3]),
+                                "close": float(c[4]),
+                                "volume": float(c[5]),
+                                "timestamp": pd.to_datetime(c[0], unit="ms", utc=True),
+                            })
+                        df = pd.DataFrame(rows).set_index("timestamp").astype(float)
+                        return df.tail(limit)
+                return self._demo(limit)
+            if self.source == "ccxt" and self._exchange:
                 sym = self.symbol
                 if sym in ("XAUUSD", "GOLD", "XAU"):
                     sym = "XAU/USDT"

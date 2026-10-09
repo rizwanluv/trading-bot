@@ -2340,6 +2340,183 @@ class TestAuditedBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(feed)
         self.assertEqual(feed.symbol, "XAUTUSD")
 
+    @patch("requests.get")
+    def test_get_binance_price_success(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "symbol": "BTCUSDT",
+            "lastPrice": "82000.00",
+            "priceChangePercent": "2.50",
+            "highPrice": "83000.00",
+            "lowPrice": "81000.00",
+            "volume": "1500.0",
+        }
+        mock_get.return_value = mock_resp
+        res = main.get_binance_price("BTC")
+        self.assertIn("BTCUSDT (Binance):", res)
+        self.assertIn("last 82000.00", res)
+        self.assertIn("2.50%", res)
+
+    @patch("requests.get")
+    def test_get_binance_ticker_card_success(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "symbol": "BTCUSDT",
+            "lastPrice": "82000.00",
+            "highPrice": "83000.00",
+            "lowPrice": "81000.00",
+            "openPrice": "80000.00",
+            "priceChangePercent": "2.50",
+            "volume": "1500.0",
+            "quoteVolume": "123000000.0",
+            "bidPrice": "81999.00",
+            "askPrice": "82001.00",
+        }
+        mock_get.return_value = mock_resp
+        card = main.get_binance_ticker_card("BTC")
+        self.assertIn("Binance Ticker", card)
+        self.assertIn("BTCUSDT", card)
+        self.assertIn("$82,000.00", card)
+        self.assertIn("+2.50%", card)
+
+    @patch("requests.get")
+    async def test_binance_command(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "symbol": "BTCUSDT",
+            "lastPrice": "82000.00",
+            "highPrice": "83000.00",
+            "lowPrice": "81000.00",
+            "openPrice": "80000.00",
+            "priceChangePercent": "2.50",
+            "volume": "1500.0",
+            "quoteVolume": "123000000.0",
+            "bidPrice": "81999.00",
+            "askPrice": "82001.00",
+        }
+        mock_get.return_value = mock_resp
+        update = MagicMock()
+        update.message = MagicMock()
+        update.message.reply_text = AsyncMock()
+        update.effective_message = update.message
+        ctx = MagicMock()
+        ctx.args = ["BTC"]
+        await main.binance_command(update, ctx)
+        update.message.reply_text.assert_called_once()
+        sent = update.message.reply_text.call_args[0][0]
+        self.assertIn("Binance Ticker", sent)
+
+    def test_exchange_api_client_binance_helpers(self):
+        client = auto_trade.ExchangeApiClient(exchange="binance", api_key="k1", api_secret="s1")
+        self.assertEqual(client.format_binance_symbol("BTCUSD"), "BTCUSDT")
+        self.assertEqual(client.format_binance_symbol("ETH"), "ETHUSDT")
+        self.assertEqual(client.format_binance_symbol("GOLD"), "PAXGUSDT")
+        self.assertEqual(client.format_binance_symbol("SOLUSDT"), "SOLUSDT")
+
+    @patch("requests.get")
+    def test_exchange_api_client_binance_test_connection(self, mock_get):
+        client = auto_trade.ExchangeApiClient(exchange="binance", api_key="test_k", api_secret="test_s")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "balances": [{"asset": "USDT", "free": "1250.50", "locked": "0.00"}]
+        }
+        mock_get.return_value = mock_resp
+        ok, msg, data = client.test_connection()
+        self.assertTrue(ok)
+        self.assertEqual(data.get("balance"), 1250.50)
+        self.assertIn("Connected to Binance Spot successfully", msg)
+
+    @patch("requests.post")
+    def test_exchange_api_client_binance_place_order(self, mock_post):
+        client = auto_trade.ExchangeApiClient(exchange="binance", api_key="test_k", api_secret="test_s")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"orderId": 987654, "status": "FILLED"}
+        mock_post.return_value = mock_resp
+        ok, order_id, data = client.place_order("BTCUSD", "BUY", 0.01, order_type="market")
+        self.assertTrue(ok)
+        self.assertEqual(order_id, "987654")
+
+    @patch("requests.delete")
+    def test_exchange_api_client_binance_cancel_order(self, mock_delete):
+        client = auto_trade.ExchangeApiClient(exchange="binance", api_key="test_k", api_secret="test_s")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_delete.return_value = mock_resp
+        ok, msg = client.cancel_order("BTCUSD", "987654")
+        self.assertTrue(ok)
+        self.assertIn("cancelled successfully", msg)
+
+    def test_auto_trader_switch_exchange(self):
+        trader = main.get_auto_trader()
+        ok, msg = trader.switch_exchange("binance")
+        self.assertTrue(ok)
+        self.assertEqual(trader.config.live_exchange, "binance")
+        self.assertIn("BINANCE", msg)
+
+        # Switch back to delta
+        ok2, msg2 = trader.switch_exchange("delta")
+        self.assertTrue(ok2)
+        self.assertEqual(trader.config.live_exchange, "delta")
+
+    @patch("requests.get")
+    def test_auto_trader_fetch_binance_candles(self, mock_get):
+        trader = main.get_auto_trader()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = [
+            [1700000000000, "80000", "80100", "79900", "80050", "10.5"],
+            [1700000060000, "80050", "80200", "80000", "80150", "12.0"],
+        ]
+        mock_get.return_value = mock_resp
+        df = trader.fetch_binance_candles("BTCUSD", count=2, interval="1m")
+        self.assertIsNotNone(df)
+        self.assertEqual(len(df), 2)
+        self.assertIn("close", df.columns)
+
+    @patch("requests.get")
+    def test_market_data_feed_binance(self, mock_get):
+        from ai_bot_learning import MarketDataFeed
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = [
+            [1700000000000, "80000", "80100", "79900", "80050", "10.5"],
+            [1700000060000, "80050", "80200", "80000", "80150", "12.0"],
+        ]
+        mock_get.return_value = mock_resp
+        feed = MarketDataFeed(symbol="BTCUSD", source="binance")
+        df = feed.fetch_ohlcv(limit=2)
+        self.assertIsNotNone(df)
+        self.assertEqual(len(df), 2)
+        self.assertIn("close", df.columns)
+
+    async def test_api_command_switch_and_ping(self):
+        update = MagicMock()
+        update.message = MagicMock()
+        update.message.reply_text = AsyncMock()
+        update.effective_message = update.message
+        ctx = MagicMock()
+
+        # Test switch binance
+        ctx.args = ["switch", "binance"]
+        await main.api_command(update, ctx)
+        sent = update.message.reply_text.call_args[0][0]
+        self.assertIn("BINANCE", sent)
+
+        # Test ping
+        with patch.object(main.get_auto_trader().exchange_client, "test_public_connection", return_value=(True, "Public REST API reachable")):
+            ctx.args = ["ping"]
+            await main.api_command(update, ctx)
+            sent2 = update.message.reply_text.call_args[0][0]
+            self.assertIn("Public API Status", sent2)
+
+        # Switch back to delta
+        main.get_auto_trader().switch_exchange("delta")
+
 
 def tearDownModule():
     import glob

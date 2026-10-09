@@ -47,6 +47,7 @@ from auto_trade import (
     calculate_risk_reward,
     make_modern_meter,
     TradeLevelAlert,
+    ExchangeApiClient,
 )
 
 try:
@@ -78,6 +79,7 @@ logger = logging.getLogger("trading_bot")
 MODEL = os.getenv("GEMINI_MODEL") or os.getenv("MODEL") or "gemini-2.5-flash"
 DEFAULT_SYMBOL = os.getenv("DEFAULT_SYMBOL", "XAUTUSD")
 DELTA_API = os.getenv("DELTA_API", "https://api.india.delta.exchange/v2/tickers")
+BINANCE_API = os.getenv("BINANCE_API", "https://api.binance.com/api/v3")
 
 # Fallback candidate models if primary model is unavailable
 _raw_candidate_models = [
@@ -160,9 +162,98 @@ def get_telegram_token() -> Optional[str]:
     )
 
 
-def get_price(symbol: str) -> str:
-    """Fetch live ticker data from Delta Exchange API."""
+def get_binance_price(symbol: str) -> str:
+    """Fetch live ticker data from Binance REST API."""
     cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
+    target = ExchangeApiClient.format_binance_symbol(cleaned)
+    try:
+        r = requests.get(f"{BINANCE_API}/ticker/24hr?symbol={target}", timeout=10)
+        r.raise_for_status()
+        t = r.json()
+        last_price = t.get("lastPrice", "0.0")
+        change_pct = t.get("priceChangePercent", "0.0")
+        high_price = t.get("highPrice", "0.0")
+        low_price = t.get("lowPrice", "0.0")
+        volume = t.get("volume", "0.0")
+        return (
+            f"{target} (Binance): last {last_price} ({change_pct}%) | "
+            f"high {high_price} | low {low_price} | vol {volume}"
+        )
+    except Exception as e:
+        return f"Binance price unavailable ({e})"
+
+
+def get_binance_ticker_card(symbol: str) -> str:
+    """Fetch live ticker data from Binance REST API and format as a rich HTML card."""
+    cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
+    target = ExchangeApiClient.format_binance_symbol(cleaned)
+    try:
+        r = requests.get(f"{BINANCE_API}/ticker/24hr?symbol={target}", timeout=10)
+        r.raise_for_status()
+        t = r.json()
+        last_price = float(t.get("lastPrice", 0.0) or 0.0)
+        high_price = float(t.get("highPrice", 0.0) or 0.0)
+        low_price = float(t.get("lowPrice", 0.0) or 0.0)
+        open_price = float(t.get("openPrice", 0.0) or 0.0)
+        change_pct = float(t.get("priceChangePercent", 0.0) or 0.0)
+        volume = float(t.get("volume", 0.0) or 0.0)
+        quote_vol = float(t.get("quoteVolume", 0.0) or 0.0)
+        bid = float(t.get("bidPrice", 0.0) or 0.0)
+        ask = float(t.get("askPrice", 0.0) or 0.0)
+
+        range_span = high_price - low_price
+        range_pct = ((last_price - low_price) / range_span * 100.0) if range_span > 0 else 50.0
+        range_meter = make_modern_meter(range_pct, width=10, fill_char="■", empty_char="░")
+        arrow = "🟢 +" if change_pct >= 0 else "🔴 "
+
+        if "BTC" in target:
+            display_name = "Bitcoin (BTC)"
+            icon = "⚡"
+        elif "ETH" in target:
+            display_name = "Ethereum (ETH)"
+            icon = "🔷"
+        elif "SOL" in target:
+            display_name = "Solana (SOL)"
+            icon = "🟣"
+        elif "XRP" in target:
+            display_name = "Ripple (XRP)"
+            icon = "💧"
+        elif "PAXG" in target or "XAU" in target:
+            display_name = "PAX Gold (XAU)"
+            icon = "🥇"
+        else:
+            display_name = target
+            icon = "🟡"
+
+        trend_badge = "🟢 <b>BULLISH</b>" if change_pct >= 0.5 else ("🔴 <b>BEARISH</b>" if change_pct <= -0.5 else "⚪ <b>RANGE</b>")
+        quote_vol_str = f"${quote_vol/1_000_000:,.1f}M" if quote_vol >= 1_000_000 else f"${quote_vol:,.0f}"
+
+        return (
+            f"🟡 <b>{display_name} Binance Ticker</b> [{trend_badge}]\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Pair</b>: <code>{target}</code>\n"
+            f"• <b>Last Price</b>: <code>${last_price:,.2f}</code>\n"
+            f"• <b>24h Change</b>: {arrow}{change_pct:.2f}%\n"
+            f"• <b>24h Range</b>: <code>[{range_meter}]</code>\n"
+            f"  Low: <code>${low_price:,.2f}</code> ➔ High: <code>${high_price:,.2f}</code>\n"
+            f"• <b>24h Volume</b>: <code>{volume:,.2f}</code> ({quote_vol_str})\n"
+            f"• <b>Order Book</b>: Bid <code>${bid:,.2f}</code> | Ask <code>${ask:,.2f}</code>\n"
+            f"• <b>Exchange</b>: Binance Public REST API\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>💡 Actions: /entry {target} | /levels {target} | /price {target}</i>"
+        )
+    except Exception as e:
+        return f"⚠️ Binance price unavailable for {symbol.upper()} ({e})"
+
+
+def get_price(symbol: str) -> str:
+    """Fetch live ticker data from Delta Exchange API (or Binance if prefixed)."""
+    cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
+    if cleaned.startswith("BINANCE"):
+        parts = symbol.strip().split()
+        b_sym = parts[1] if len(parts) > 1 else "BTC"
+        return get_binance_price(b_sym)
+
     target = SYMBOL_ALIASES.get(cleaned, cleaned)
     try:
         r = requests.get(f"{DELTA_API}/{target}", timeout=10)
@@ -185,8 +276,13 @@ def get_price(symbol: str) -> str:
 
 
 def get_ticker_card(symbol: str) -> str:
-    """Fetch live ticker data from Delta Exchange API and format as a rich HTML card."""
+    """Fetch live ticker data from Delta Exchange or Binance API and format as a rich HTML card."""
     cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
+    if cleaned.startswith("BINANCE"):
+        parts = symbol.strip().split()
+        b_sym = parts[1] if len(parts) > 1 else "BTC"
+        return get_binance_ticker_card(b_sym)
+
     target = SYMBOL_ALIASES.get(cleaned, cleaned)
     try:
         r = requests.get(f"{DELTA_API}/{target}", timeout=10)
@@ -194,7 +290,10 @@ def get_ticker_card(symbol: str) -> str:
         data = r.json()
         t = data.get("result")
         if not t:
-            return f"❌ Symbol <b>{symbol.upper()}</b> not found on Delta Exchange."
+            b_card = get_binance_ticker_card(cleaned)
+            if not b_card.startswith("⚠️ Binance price unavailable"):
+                return b_card
+            return f"❌ Symbol <b>{symbol.upper()}</b> not found on Delta Exchange or Binance."
         mark_price = float(t.get("mark_price") or 0.0)
         close_price = float(t.get("close") or 0.0)
         high_price = float(t.get("high") or 0.0)
@@ -254,6 +353,9 @@ def get_ticker_card(symbol: str) -> str:
             f"<i>💡 Actions: /entry {target} | /levels {target} | /alert {target} {close_price:,.0f}</i>"
         )
     except Exception as e:
+        b_card = get_binance_ticker_card(cleaned)
+        if not b_card.startswith("⚠️ Binance price unavailable"):
+            return b_card
         return f"⚠️ Price unavailable for {symbol.upper()} ({e})"
 
 
@@ -406,6 +508,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "ITB Machine Learning, and AI Adaptive Reinforcement for maximum precision.\n\n"
         "📊 <b>1. Market Analysis & Planning</b>\n"
         "• /market — Global market overview of major assets\n"
+        "• /binance [SYM] — Live Binance ticker card, 24h metrics & order book\n"
         "• /scan [SYM] — Ultimate Master Scan (Deliberation, Trend, Levels, Entry)\n"
         "• /discussion [SYM] (/consensus) — 5-Layer Inter-Engine Deliberation forum & debate\n"
         "• /entry [SYM] — Pinpoint precise Entry, Stop Loss & Take Profit targets\n"
@@ -424,7 +527,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "💼 <b>4. Funds & System Configuration</b>\n"
         "• /mode [paper|live] — Switch between simulated paper funds & real API execution\n"
         "• /capital — View and manage trading equity\n"
-        "• /api set [KEY] [SECRET] — Configure Delta Exchange live credentials\n\n"
+        "• /api set [binance|delta] [KEY] [SECRET] — Configure live exchange credentials\n"
+        "• /api switch [binance|delta] — Switch active live trading exchange\n"
+        "• /api ping — Test public exchange REST connectivity\n\n"
         "<i>💡 Pro Tip: All advanced legacy commands (e.g., /risk, /lotsize, /calc, /analyze) are still active for power users!</i>\n\n"
         "<i>💬 Send any message to converse with the AI market analyst.</i>",
         parse_mode="HTML",
@@ -820,6 +925,14 @@ async def btc_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def gold_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Show live Gold market ticker and stats card."""
     card = get_ticker_card("XAUTUSD")
+    await reply_safely(update, card, parse_mode="HTML")
+
+
+async def binance_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show live Binance market ticker and stats card for symbol (default BTC)."""
+    args = ctx.args or []
+    sym = args[0] if args else "BTC"
+    card = get_binance_ticker_card(sym)
     await reply_safely(update, card, parse_mode="HTML")
 
 
@@ -1277,6 +1390,27 @@ async def api_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 f"Check your API Key and Secret with <code>/api set</code>",
                 parse_mode="HTML",
             )
+    elif sub in ("switch", "use"):
+        if len(args) >= 2:
+            target_ex = args[1].lower()
+            ok, msg = trader.switch_exchange(target_ex)
+            await reply_safely(update, msg, parse_mode="HTML")
+        else:
+            await reply_safely(
+                update,
+                "Usage: <code>/api switch binance</code> or <code>/api switch delta</code>",
+                parse_mode="HTML",
+            )
+    elif sub in ("ping", "public"):
+        ok, msg = trader.exchange_client.test_public_connection()
+        icon = "🟢" if ok else "🔴"
+        await reply_safely(
+            update,
+            f"{icon} <b>Exchange Public API Status</b>\n"
+            f"• Exchange: <code>{trader.config.live_exchange.upper()}</code>\n"
+            f"• Result: <i>{msg}</i>",
+            parse_mode="HTML",
+        )
     elif sub == "clear":
         msg = trader.clear_exchange_api()
         await reply_safely(update, f"🧹 {msg}")
@@ -1294,8 +1428,10 @@ async def api_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await reply_safely(
                 update,
                 "Usage:\n"
+                "• <code>/api set binance &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>\n"
                 "• <code>/api set delta &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>\n"
-                "• <code>/api set binance &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>",
+                "• <code>/api switch [binance|delta]</code>\n"
+                "• <code>/api ping</code>",
                 parse_mode="HTML",
             )
             return
@@ -1724,8 +1860,15 @@ def run_diagnostics() -> bool:
     print(f"    Ticker Result : {price_output}")
     print(f"    Status        : {'OK' if delta_ok else 'FAILED'}")
 
-    # 2. Telegram Token Check
-    print("\n[2] Checking Telegram Token...")
+    # 2. Binance API Check
+    print("\n[2] Testing Binance REST API...")
+    binance_output = get_binance_price("BTC")
+    binance_ok = not binance_output.startswith("Binance price unavailable")
+    print(f"    Ticker Result : {binance_output}")
+    print(f"    Status        : {'OK' if binance_ok else 'FAILED'}")
+
+    # 3. Telegram Token Check
+    print("\n[3] Checking Telegram Token...")
     token = get_telegram_token()
     if token:
         masked = token[:6] + "..." + token[-4:] if len(token) > 10 else "***"
@@ -1734,8 +1877,8 @@ def run_diagnostics() -> bool:
     else:
         print("    Status        : MISSING (set TELEGRAM_TOKEN or TELEGRAM_BOT_TOKEN)")
 
-    # 3. Gemini API Key Check
-    print("\n[3] Checking Gemini API Key...")
+    # 4. Gemini API Key Check
+    print("\n[4] Checking Gemini API Key...")
     api_key = get_gemini_api_key()
     if api_key:
         masked_k = api_key[:6] + "..." + api_key[-4:] if len(api_key) > 10 else "***"
@@ -1744,8 +1887,16 @@ def run_diagnostics() -> bool:
     else:
         print("    Status        : MISSING (set GEMINI_API_KEY in environment or .env)")
 
+    # 5. Active Live Exchange Credentials Check
+    print("\n[5] Checking Exchange Credentials...")
+    trader = get_auto_trader()
+    ex_status = trader.exchange_client.get_masked_status()
+    print(f"    Active Exch   : {ex_status['exchange']}")
+    print(f"    API Key       : {ex_status['api_key']}")
+    print(f"    Status        : {ex_status['status']}")
+
     print("=" * 60)
-    all_ready = bool(token and api_key and delta_ok)
+    all_ready = bool(token and api_key and (delta_ok or binance_ok))
     print(f" OVERALL STATUS   : {'READY TO RUN' if all_ready else 'CONFIGURATION PENDING'}")
     print("=" * 60)
     return all_ready
@@ -1850,6 +2001,7 @@ def main() -> None:
     app.add_handler(CommandHandler("eth", eth_command))
     app.add_handler(CommandHandler("sol", sol_command))
     app.add_handler(CommandHandler("xrp", xrp_command))
+    app.add_handler(CommandHandler("binance", binance_command))
     app.add_handler(CommandHandler("entry", entry_command))
     app.add_handler(CommandHandler("pinpoint", entry_command))
     app.add_handler(CommandHandler("execute", execute_command))
