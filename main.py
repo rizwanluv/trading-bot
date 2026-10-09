@@ -360,7 +360,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "• /gold (/xau) — Live Gold ticker, range bar & 24h stats\n"
         "• /eth | /sol — Ethereum & Solana live tickers\n"
         "• /price [SYM] — Price check on any Delta pair\n"
-        "• /analyze [SYM] — 10-indicator confluence report\n\n"
+        "• /analyze [SYM] — 10-indicator confluence report\n• /trend [SYM] — Multi-timeframe trend scanner\n\n"
         "🎯 <b>2. Pinpoint Trade Planning:</b>\n"
         "• /entry [SYM] — Pinpoint entry, precision SL & multi-tier TPs\n"
         "• /levels [SYM] (/ob) — Smart Money Order Blocks & Fair Value Gaps\n"
@@ -767,6 +767,15 @@ async def sol_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     card = get_ticker_card("SOLUSD")
     await reply_safely(update, card, parse_mode="HTML")
 
+
+
+async def trend_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Run a multi-timeframe trend scanner."""
+    args = ctx.args or []
+    symbol = args[0] if args else "BTCUSD"
+    trader = get_auto_trader()
+    report = trader.generate_mtf_trend_report(symbol)
+    await reply_safely(update, report, parse_mode="HTML")
 
 async def analyze_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Run 10-indicator technical analysis engine and report signals."""
@@ -1481,7 +1490,7 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"• /btc — Bitcoin ticker card & 24h stats\n"
         f"• /gold — Gold ticker card & 24h stats\n"
         f"• /eth | /sol — Ethereum & Solana tickers\n"
-        f"• /analyze [SYM] — 10-indicator confluence report\n"
+        f"• /analyze [SYM] — 10-indicator confluence report\n• /trend [SYM] — Multi-timeframe trend scanner\n"
         f"• /price [SYM] — Live price check\n\n"
         f"<b>🎯 2. Pinpoint Trade Planning:</b>\n"
         f"• /entry [SYM] — Pinpoint entry, precision SL & TPs\n"
@@ -1700,6 +1709,7 @@ def main() -> None:
     app.add_handler(CommandHandler("size", calc_command))
     app.add_handler(CommandHandler("levels", levels_command))
     app.add_handler(CommandHandler("ob", levels_command))
+    app.add_handler(CommandHandler("trend", trend_command))
     app.add_handler(CommandHandler("analyze", analyze_command))
     app.add_handler(CommandHandler("signal", analyze_command))
     app.add_handler(CommandHandler("itb", itb_command))
