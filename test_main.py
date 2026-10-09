@@ -1914,6 +1914,120 @@ class TestITBEngineAndIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertIn("INTELLIGENT TRADING BOT (ITB) MODEL TRAINED", sent)
 
 
+class TestMultiLayerBugFixesAndResilience(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.tmp_cfg = "/workspace/bright-darwin/.test_resilience_cfg.json"
+        self.tmp_pos = "/workspace/bright-darwin/.test_resilience_pos.json"
+        self.tmp_hist = "/workspace/bright-darwin/.test_resilience_hist.json"
+        for p in (self.tmp_cfg, self.tmp_hist, self.tmp_pos):
+            if os.path.exists(p):
+                os.remove(p)
+        self.config = auto_trade.AutoTradeConfig(
+            config_file=self.tmp_cfg,
+            trades_history_file=self.tmp_hist,
+            open_positions_file=self.tmp_pos,
+            paper_capital=100.0,
+            equity=100.0,
+            trading_mode="paper",
+        )
+        self.trader = auto_trade.AutoTrader(config=self.config)
+
+    def tearDown(self):
+        for p in (self.tmp_cfg, self.tmp_hist, self.tmp_pos):
+            if os.path.exists(p):
+                os.remove(p)
+
+    def test_normalize_symbol_extended(self):
+        self.assertEqual(auto_trade.AutoTrader.normalize_symbol("btc"), "BTCUSD")
+        self.assertEqual(auto_trade.AutoTrader.normalize_symbol("bitcoin"), "BTCUSD")
+        self.assertEqual(auto_trade.AutoTrader.normalize_symbol("eth"), "ETHUSD")
+        self.assertEqual(auto_trade.AutoTrader.normalize_symbol("ethereum"), "ETHUSD")
+        self.assertEqual(auto_trade.AutoTrader.normalize_symbol("sol"), "SOLUSD")
+        self.assertEqual(auto_trade.AutoTrader.normalize_symbol("solana"), "SOLUSD")
+        self.assertEqual(auto_trade.AutoTrader.normalize_symbol("xrp"), "XRPUSD")
+        self.assertEqual(auto_trade.AutoTrader.normalize_symbol("ripple"), "XRPUSD")
+        self.assertEqual(auto_trade.AutoTrader.normalize_symbol("gold"), "XAUTUSD")
+        self.assertEqual(auto_trade.AutoTrader.normalize_symbol("paxg"), "XAUTUSD")
+
+    @patch("requests.get")
+    def test_fetch_candles_mismatched_lengths_and_sorting(self, mock_get):
+        # Timestamps descending (newest first), mismatched length of o vs c vs v
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "result": {
+                "t": [1700000060, 1700000000, 1700000060],  # out of order + duplicate
+                "o": [100.0, 95.0, 100.0, 90.0],           # 4 items
+                "h": [105.0, 98.0, 105.0],                  # 3 items
+                "l": [95.0, 92.0, 95.0],                    # 3 items
+                "c": [102.0, 97.0, 102.0],                  # 3 items
+                "v": [50.0],                                # 1 item
+            }
+        }
+        mock_get.return_value = mock_resp
+
+        df = self.trader.fetch_candles("ETH", count=10)
+        self.assertFalse(df.empty)
+        # Sliced to min(len(t), len(o), len(h), len(l), len(c)) = 3, deduplicated to 2
+        self.assertEqual(len(df), 2)
+        # Check ascending index sorting
+        self.assertTrue(df.index[0] < df.index[1])
+
+    @patch("requests.get")
+    async def test_xrp_command_telegram(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "success": True,
+            "result": {
+                "mark_price": "1.85",
+                "close": 1.85,
+                "high": 1.90,
+                "low": 1.80,
+                "open": 1.82,
+                "volume": 50000.0,
+            },
+        }
+        mock_get.return_value = mock_resp
+
+        mock_update = unittest.mock.AsyncMock()
+        mock_ctx = unittest.mock.MagicMock()
+        mock_ctx.args = []
+        await main.xrp_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Ripple (XRP)", sent)
+        self.assertIn("XRPUSD", sent)
+
+    async def test_execute_command_with_symbol_in_args(self):
+        mock_update = unittest.mock.AsyncMock()
+        mock_update.message.text = "/buy btc 0.05"
+        mock_update.effective_chat.id = 999
+        mock_ctx = unittest.mock.MagicMock()
+        mock_ctx.args = ["btc", "0.05"]
+
+        with patch("main.get_auto_trader", return_value=self.trader):
+            await main.execute_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("POSITION OPENED SUCCESSFULLY", sent)
+        self.assertIn("BTCUSD", sent)
+        self.assertEqual(len(self.trader.positions), 1)
+        self.assertEqual(self.trader.positions[0].symbol, "BTCUSD")
+        self.assertEqual(self.trader.positions[0].direction, "LONG")
+        self.assertEqual(self.trader.positions[0].lot_size, 0.05)
+
+    async def test_symbols_command_unpacked_message(self):
+        mock_update = unittest.mock.AsyncMock()
+        mock_ctx = unittest.mock.MagicMock()
+        mock_ctx.args = ["both"]
+
+        with patch("main.get_auto_trader", return_value=self.trader):
+            await main.symbols_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        # Should NOT contain raw tuple string "(True, "
+        self.assertNotIn("(True,", sent)
+        self.assertIn("Auto-trading active symbols updated: BTCUSD, XAUTUSD", sent)
+
+
 def tearDownModule():
     import glob
     for f in glob.glob("/workspace/bright-darwin/.test_*"):

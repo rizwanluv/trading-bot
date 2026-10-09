@@ -94,10 +94,13 @@ SYMBOL_ALIASES: Dict[str, str] = {
     "BITCOIN": "BTCUSD",
     "BTCUSDT": "BTCUSD",
     "ETH": "ETHUSD",
+    "ETHEREUM": "ETHUSD",
     "ETHUSDT": "ETHUSD",
     "SOL": "SOLUSD",
+    "SOLANA": "SOLUSD",
     "SOLUSDT": "SOLUSD",
     "XRP": "XRPUSD",
+    "RIPPLE": "XRPUSD",
     "XRPUSDT": "XRPUSD",
     "XAU": "XAUTUSD",
     "XAUUSD": "XAUTUSD",
@@ -200,10 +203,26 @@ def get_ticker_card(symbol: str) -> str:
         range_span = high_price - low_price
         range_pct = ((close_price - low_price) / range_span * 100.0) if range_span > 0 else 50.0
         range_meter = make_modern_meter(range_pct, width=10, fill_char="■", empty_char="░")
-
         arrow = "🟢 +" if change_pct >= 0 else "🔴 "
-        display_name = "Bitcoin (BTC)" if "BTC" in target else ("Gold (XAU)" if "XAU" in target else target)
-        icon = "⚡" if "BTC" in target else ("🥇" if "XAU" in target else "📊")
+
+        if "BTC" in target:
+            display_name = "Bitcoin (BTC)"
+            icon = "⚡"
+        elif "XAU" in target:
+            display_name = "Gold (XAU)"
+            icon = "🥇"
+        elif "ETH" in target:
+            display_name = "Ethereum (ETH)"
+            icon = "🔷"
+        elif "SOL" in target:
+            display_name = "Solana (SOL)"
+            icon = "🟣"
+        elif "XRP" in target:
+            display_name = "Ripple (XRP)"
+            icon = "💧"
+        else:
+            display_name = target
+            icon = "📊"
 
         if change_pct >= 0.5:
             trend_badge = "🟢 <b>BULLISH</b>"
@@ -450,10 +469,10 @@ async def autotrade_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> N
     elif sub in ("symbols", "pairs"):
         if len(args) > 1:
             if args[1] == "both":
-                msg = trader.set_symbols(["BTCUSD", "XAUTUSD"])
+                ok, msg = trader.set_symbols(["BTCUSD", "XAUTUSD"])
             else:
-                msg = trader.set_symbols(args[1:])
-            await reply_safely(update, msg)
+                ok, msg = trader.set_symbols(args[1:])
+            await reply_safely(update, f"✅ <b>{msg}</b>" if ok else f"❌ {msg}", parse_mode="HTML")
         else:
             syms_str = ", ".join(trader.config.symbols)
             await reply_safely(update, f"Monitored symbols: {syms_str}")
@@ -461,8 +480,8 @@ async def autotrade_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> N
         try:
             total_m = int(args[1])
             per_m = int(args[2]) if len(args) > 2 else 1
-            msg = trader.set_max_positions(total_m, per_m)
-            await reply_safely(update, f"✅ <b>{msg}</b>", parse_mode="HTML")
+            ok, msg = trader.set_max_positions(total_m, per_m)
+            await reply_safely(update, f"✅ <b>{msg}</b>" if ok else f"❌ {msg}", parse_mode="HTML")
         except ValueError:
             await reply_safely(update, "Usage: /autotrade max <total_positions> [per_pair_limit]")
     else:
@@ -507,23 +526,23 @@ async def symbols_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
     sub = args[0].lower()
     if sub == "both":
-        msg = trader.set_symbols(["BTCUSD", "XAUTUSD"])
-        await reply_safely(update, f"✅ <b>{msg}</b>", parse_mode="HTML")
+        ok, msg = trader.set_symbols(["BTCUSD", "XAUTUSD"])
+        await reply_safely(update, f"✅ <b>{msg}</b>" if ok else f"❌ {msg}", parse_mode="HTML")
     elif sub == "add" and len(args) > 1:
-        msg = trader.add_symbol(args[1])
-        await reply_safely(update, f"✅ <b>{msg}</b>", parse_mode="HTML")
+        ok, msg = trader.add_symbol(args[1])
+        await reply_safely(update, f"✅ <b>{msg}</b>" if ok else f"❌ {msg}", parse_mode="HTML")
     elif sub in ("remove", "rm", "del") and len(args) > 1:
-        msg = trader.remove_symbol(args[1])
-        await reply_safely(update, f"ℹ️ <b>{msg}</b>", parse_mode="HTML")
+        ok, msg = trader.remove_symbol(args[1])
+        await reply_safely(update, f"ℹ️ <b>{msg}</b>" if ok else f"❌ {msg}", parse_mode="HTML")
     elif sub in ("btc", "bitcoin") and len(args) == 1:
-        msg = trader.set_symbols(["BTCUSD"])
-        await reply_safely(update, f"✅ <b>{msg}</b>", parse_mode="HTML")
+        ok, msg = trader.set_symbols(["BTCUSD"])
+        await reply_safely(update, f"✅ <b>{msg}</b>" if ok else f"❌ {msg}", parse_mode="HTML")
     elif sub in ("gold", "xau", "xautusd") and len(args) == 1:
-        msg = trader.set_symbols(["XAUTUSD"])
-        await reply_safely(update, f"✅ <b>{msg}</b>", parse_mode="HTML")
+        ok, msg = trader.set_symbols(["XAUTUSD"])
+        await reply_safely(update, f"✅ <b>{msg}</b>" if ok else f"❌ {msg}", parse_mode="HTML")
     else:
-        msg = trader.set_symbols(args)
-        await reply_safely(update, f"✅ <b>{msg}</b>", parse_mode="HTML")
+        ok, msg = trader.set_symbols(args)
+        await reply_safely(update, f"✅ <b>{msg}</b>" if ok else f"❌ {msg}", parse_mode="HTML")
 
 
 async def close_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -732,7 +751,7 @@ async def scan_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def market_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Combined Market Overview with Real-Time 3-Engine Ensemble Signals."""
     trader = get_auto_trader()
-    symbols = ["BTCUSD", "ETHUSD", "SOLUSD", "XAUTUSD"]
+    symbols = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "XAUTUSD"]
     msg = await reply_safely(update, "🔄 <b>Fetching Global Market Overview & Ensemble Confluence...</b>", parse_mode="HTML")
     
     lines = [
@@ -812,6 +831,12 @@ async def eth_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def sol_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Show live Solana market ticker and stats card."""
     card = get_ticker_card("SOLUSD")
+    await reply_safely(update, card, parse_mode="HTML")
+
+
+async def xrp_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show live Ripple (XRP) market ticker and stats card."""
+    card = get_ticker_card("XRPUSD")
     await reply_safely(update, card, parse_mode="HTML")
 
 
@@ -1273,6 +1298,7 @@ async def execute_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     entry_mode = "market"
     lot_override = None
 
+    target_sym = None
     for a in args:
         a_lower = a.lower()
         if a_lower in ("limit", "pullback"):
@@ -1285,18 +1311,23 @@ async def execute_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             try:
                 lot_override = float(a)
             except ValueError:
-                pass
+                norm = trader.normalize_symbol(a)
+                if norm in ("BTCUSD", "XAUTUSD", "ETHUSD", "SOLUSD", "XRPUSD") or any(
+                    k in a.upper() for k in ("BTC", "ETH", "SOL", "XRP", "XAU", "GOLD")
+                ):
+                    target_sym = norm
 
+    exec_sym = target_sym or trader.config.symbol
     if cmd_name in ("buy", "long"):
-        if not plan or plan.direction != "LONG":
-            plan = generate_pinpoint_plan(trader.config.symbol, direction_override="LONG", trader=trader)
+        if not plan or plan.direction != "LONG" or (target_sym and plan.symbol != target_sym):
+            plan = generate_pinpoint_plan(exec_sym, direction_override="LONG", trader=trader)
             latest_trade_plans[chat_id] = plan
     elif cmd_name in ("sell", "short"):
-        if not plan or plan.direction != "SHORT":
-            plan = generate_pinpoint_plan(trader.config.symbol, direction_override="SHORT", trader=trader)
+        if not plan or plan.direction != "SHORT" or (target_sym and plan.symbol != target_sym):
+            plan = generate_pinpoint_plan(exec_sym, direction_override="SHORT", trader=trader)
             latest_trade_plans[chat_id] = plan
-    elif not plan:
-        plan = generate_pinpoint_plan(trader.config.symbol, trader=trader)
+    elif not plan or (target_sym and plan.symbol != target_sym):
+        plan = generate_pinpoint_plan(exec_sym, trader=trader)
         latest_trade_plans[chat_id] = plan
 
     ok, msg = execute_pinpoint_plan(plan, lot_override=lot_override, entry_mode=entry_mode, trader=trader)
@@ -1521,9 +1552,9 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"• <b>Positions</b>: <i>{pos_str} (Max {trader.config.max_positions})</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>📊 1. Market & Quotes:</b>\n"
-        f"• /market — Global overview of BTC, ETH, SOL, GOLD\n        • /btc — Bitcoin ticker card & 24h stats\n"
+        f"• /market — Global overview of BTC, ETH, SOL, XRP, GOLD\n        • /btc — Bitcoin ticker card & 24h stats\n"
         f"• /gold — Gold ticker card & 24h stats\n"
-        f"• /eth | /sol — Ethereum & Solana tickers\n"
+        f"• /eth | /sol | /xrp — Ethereum, Solana & Ripple tickers\n"
         f"• /scan [SYM] — Ultimate Master Scan (Trend + Levels + Entry)\n        • /analyze [SYM] — 10-indicator confluence report\n        • /trend [SYM] — Multi-timeframe trend scanner\n"
         f"• /price [SYM] — Live price check\n\n"
         f"<b>🎯 2. Pinpoint Trade Planning:</b>\n"
@@ -1741,6 +1772,7 @@ def main() -> None:
     app.add_handler(CommandHandler("xau", gold_command))
     app.add_handler(CommandHandler("eth", eth_command))
     app.add_handler(CommandHandler("sol", sol_command))
+    app.add_handler(CommandHandler("xrp", xrp_command))
     app.add_handler(CommandHandler("entry", entry_command))
     app.add_handler(CommandHandler("pinpoint", entry_command))
     app.add_handler(CommandHandler("execute", execute_command))

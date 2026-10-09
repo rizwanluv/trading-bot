@@ -150,12 +150,12 @@ class ITBFeatureGenerator:
         # 3. Relative Differences & Momentum
         for w in (1, 5, 15):
             mom_col = f"itb_mom_{w}"
-            shift_c = c.shift(w).fillna(method="bfill")
+            shift_c = c.shift(w).bfill()
             out[mom_col] = ((c - shift_c) / np.where(shift_c > 0, shift_c, 1.0)) * 100.0
             feature_cols.append(mom_col)
 
         # Log Returns
-        log_ret = np.log(np.maximum(c, 1e-8)) - np.log(np.maximum(c.shift(1).fillna(method="bfill"), 1e-8))
+        log_ret = np.log(np.maximum(c, 1e-8)) - np.log(np.maximum(c.shift(1).bfill(), 1e-8))
         out["itb_log_return"] = log_ret * 100.0
         feature_cols.append("itb_log_return")
 
@@ -660,9 +660,18 @@ def format_itb_card(
 
     sym_upper = (symbol or pred.symbol or "BTCUSD").upper()
     curr_price = float(current_price if current_price is not None else pred.price)
-    is_btc = "BTC" in sym_upper
-    icon = "⚡ ₿" if is_btc else "🥇"
-    asset_name = "Bitcoin (BTC)" if is_btc else ("Gold (XAU)" if "XAU" in sym_upper else sym_upper)
+    if "BTC" in sym_upper:
+        icon, asset_name = "⚡ ₿", "Bitcoin (BTC)"
+    elif "XAU" in sym_upper:
+        icon, asset_name = "🥇", "Gold (XAU)"
+    elif "ETH" in sym_upper:
+        icon, asset_name = "🔷", "Ethereum (ETH)"
+    elif "SOL" in sym_upper:
+        icon, asset_name = "🟣", "Solana (SOL)"
+    elif "XRP" in sym_upper:
+        icon, asset_name = "💧", "Ripple (XRP)"
+    else:
+        icon, asset_name = "📈", sym_upper
 
     # Meter bar for indicator [-1.0, +1.0] scaled to [0, 100%]
     meter_pct = max(0.0, min(100.0, (pred.smoothed_indicator + 1.0) / 2.0 * 100.0))

@@ -718,10 +718,13 @@ class AutoTrader:
             "PAXG": "XAUTUSD",
             "XAUUSD": "XAUTUSD",
             "ETH": "ETHUSD",
+            "ETHEREUM": "ETHUSD",
             "ETHUSDT": "ETHUSD",
             "SOL": "SOLUSD",
+            "SOLANA": "SOLUSD",
             "SOLUSDT": "SOLUSD",
             "XRP": "XRPUSD",
+            "RIPPLE": "XRPUSD",
             "XRPUSDT": "XRPUSD",
         }
         return alias_map.get(cleaned, cleaned)
@@ -1683,17 +1686,7 @@ class AutoTrader:
 
     def fetch_candles(self, symbol: str, count: int = 120, resolution: str = "1") -> pd.DataFrame:
         """Fetch candle series from Delta Exchange API with fallback to synthetic data."""
-        cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
-        alias_map = {
-            "BTC": "BTCUSD",
-            "BITCOIN": "BTCUSD",
-            "BTCUSDT": "BTCUSD",
-            "XAU": "XAUTUSD",
-            "GOLD": "XAUTUSD",
-            "PAXG": "XAUTUSD",
-            "XAUUSD": "XAUTUSD",
-        }
-        target = alias_map.get(cleaned, cleaned)
+        target = self.normalize_symbol(symbol)
         now = int(time.time())
         
         # Determine minute multiplier for 'from_ts' calculation
@@ -1712,17 +1705,29 @@ class AutoTrader:
                 payload = resp.json()
                 res = payload.get("result", {})
                 if res and "c" in res and len(res["c"]) > 0:
-                    df = pd.DataFrame(
-                        {
-                            "open": res["o"],
-                            "high": res["h"],
-                            "low": res["l"],
-                            "close": res["c"],
-                            "volume": res.get("v", [100.0] * len(res["c"])),
-                        },
-                        index=pd.to_datetime(res["t"], unit="s", utc=True),
-                    ).astype(float)
-                    return df
+                    t_arr = res.get("t", [])
+                    o_arr = res.get("o", [])
+                    h_arr = res.get("h", [])
+                    l_arr = res.get("l", [])
+                    c_arr = res.get("c", [])
+                    v_arr = res.get("v", [])
+                    n = min(len(t_arr), len(o_arr), len(h_arr), len(l_arr), len(c_arr))
+                    if n > 0:
+                        v_slice = v_arr[:n] if len(v_arr) >= n else [100.0] * n
+                        df = pd.DataFrame(
+                            {
+                                "open": o_arr[:n],
+                                "high": h_arr[:n],
+                                "low": l_arr[:n],
+                                "close": c_arr[:n],
+                                "volume": v_slice,
+                            },
+                            index=pd.to_datetime(t_arr[:n], unit="s", utc=True),
+                        ).astype(float)
+                        df = df[~df.index.duplicated(keep="last")]
+                        df.sort_index(inplace=True)
+                        if not df.empty:
+                            return df
         except Exception as exc:
             logger.warning("Delta candle fetch error for %s: %s", target, exc)
 
@@ -1732,10 +1737,19 @@ class AutoTrader:
     def _generate_dummy_candles(self, target: str, count: int = 120) -> pd.DataFrame:
         """Generate deterministic synthetic candles for offline resilience, testing, and backtesting."""
         dates = pd.date_range(end=datetime.now(timezone.utc), periods=count, freq="1min")
-        is_btc = "BTC" in target
-        base = 82000.0 if is_btc else (4135.0 if "XAU" in target else 2650.0)
-        scale = 10.0 if is_btc else 0.4
-        spread = 15.0 if is_btc else 1.0
+        if "BTC" in target:
+            base, scale, spread = 82000.0, 10.0, 15.0
+        elif "XAU" in target:
+            base, scale, spread = 4135.0, 0.4, 1.0
+        elif "ETH" in target:
+            base, scale, spread = 2650.0, 0.5, 1.2
+        elif "SOL" in target:
+            base, scale, spread = 180.0, 0.1, 0.3
+        elif "XRP" in target:
+            base, scale, spread = 1.85, 0.002, 0.005
+        else:
+            base, scale, spread = 100.0, 0.05, 0.1
+
         p = base + np.arange(count, dtype=float) * scale
         return pd.DataFrame(
             {
@@ -2058,7 +2072,7 @@ class AutoTrader:
                             order_id = ord_msg
 
                         setup_str = getattr(sig.setup, "value", str(sig.setup))
-                        pos_id = f"TRADE_{sym[:3]}_{int(time.time())}"
+                        pos_id = f"TRADE_{sym[:3]}_{int(time.time())}_{len(self.positions) + 1}"
                         new_pos = AutoTradePosition(
                             id=pos_id,
                             symbol=sym,
@@ -2292,23 +2306,7 @@ class AutoTrader:
         and generates an actionable technical report with confluence score,
         key indicator readings, and recommended trade setups.
         """
-        cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
-        alias_map = {
-            "BTC": "BTCUSD",
-            "BITCOIN": "BTCUSD",
-            "BTCUSDT": "BTCUSD",
-            "ETH": "ETHUSD",
-            "ETHUSDT": "ETHUSD",
-            "SOL": "SOLUSD",
-            "SOLUSDT": "SOLUSD",
-            "XRP": "XRPUSD",
-            "XRPUSDT": "XRPUSD",
-            "XAU": "XAUTUSD",
-            "GOLD": "XAUTUSD",
-            "PAXG": "XAUTUSD",
-            "XAUUSD": "XAUTUSD",
-        }
-        target = alias_map.get(cleaned, cleaned)
+        target = self.normalize_symbol(symbol)
         df1 = self.fetch_candles(target, count=120)
         if df1.empty:
             return f"⚠️ Unable to fetch market candles for <b>{target}</b>."
@@ -2457,7 +2455,7 @@ class AutoTrader:
                 else:
                     lot_size = self.config.lot_size
 
-        pos_id = f"TRADE_{symbol_upper[:3]}_{int(time.time())}"
+        pos_id = f"TRADE_{symbol_upper[:3]}_{int(time.time())}_{len(self.positions) + 1}"
         new_pos = AutoTradePosition(
             id=pos_id,
             symbol=symbol_upper,
@@ -2667,23 +2665,7 @@ def generate_pinpoint_plan(
     """
     if trader is None:
         trader = get_auto_trader()
-    cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
-    alias_map = {
-        "BTC": "BTCUSD",
-        "BITCOIN": "BTCUSD",
-        "BTCUSDT": "BTCUSD",
-        "ETH": "ETHUSD",
-        "ETHUSDT": "ETHUSD",
-        "SOL": "SOLUSD",
-        "SOLUSDT": "SOLUSD",
-        "XRP": "XRPUSD",
-        "XRPUSDT": "XRPUSD",
-        "XAU": "XAUTUSD",
-        "GOLD": "XAUTUSD",
-        "PAXG": "XAUTUSD",
-        "XAUUSD": "XAUTUSD",
-    }
-    target = alias_map.get(cleaned, cleaned)
+    target = trader.normalize_symbol(symbol)
     df = trader.fetch_candles(target, count=120)
     if df.empty:
         df = trader._generate_dummy_candles(target, count=120)
@@ -2900,20 +2882,7 @@ def get_levels_report(symbol: str, trader: Optional[AutoTrader] = None) -> str:
     """
     if trader is None:
         trader = get_auto_trader()
-    cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
-    alias_map = {
-        "BTC": "BTCUSD",
-        "BITCOIN": "BTCUSD",
-        "BTCUSDT": "BTCUSD",
-        "ETH": "ETHUSD",
-        "ETHUSDT": "ETHUSD",
-        "SOL": "SOLUSD",
-        "SOLUSDT": "SOLUSD",
-        "XAU": "XAUTUSD",
-        "GOLD": "XAUTUSD",
-        "XAUUSD": "XAUTUSD",
-    }
-    target = alias_map.get(cleaned, cleaned)
+    target = trader.normalize_symbol(symbol)
     df = trader.fetch_candles(target, count=120)
     if df.empty:
         df = trader._generate_dummy_candles(target, count=120)
