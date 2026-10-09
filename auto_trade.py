@@ -52,6 +52,15 @@ import pandas as pd
 import requests
 
 from trading_strategy_indicators_pro import Direction, IndicatorsProStrategy, IndicatorEngine
+from itb_engine import (
+    ITBStrategy,
+    ITBPredictor,
+    ITBBacktester,
+    ITBFeatureGenerator,
+    ITBPredictionResult,
+    format_itb_card,
+    format_backtest_report,
+)
 
 logger = logging.getLogger("trading_bot.auto_trade")
 
@@ -423,6 +432,8 @@ class AutoTrader:
         self.is_running: bool = False
         self._strategy_pro: Optional[IndicatorsProStrategy] = None
         self._strategies_pro: Dict[str, IndicatorsProStrategy] = {}
+        self._strategy_itb: Optional[ITBStrategy] = None
+        self._strategies_itb: Dict[str, ITBStrategy] = {}
         self._init_strategy()
 
     @property
@@ -534,6 +545,7 @@ class AutoTrader:
 
     def _init_strategy(self) -> None:
         self._strategies_pro = {}
+        self._strategies_itb = {}
         for sym in self.config.symbols:
             self._strategies_pro[sym] = IndicatorsProStrategy(
                 symbol=sym,
@@ -545,8 +557,30 @@ class AutoTrader:
                 lot_size=self.config.lot_size,
                 lot_mode=self.config.lot_mode,
             )
+            self._strategies_itb[sym] = ITBStrategy(
+                symbol=sym,
+                risk_per_trade=self.config.risk_pct,
+                tp_mode=self.config.tp_mode,
+                sl_mode=self.config.sl_mode,
+                tp_value=self.config.tp_value,
+                sl_value=self.config.sl_value,
+                lot_size=self.config.lot_size,
+                lot_mode=self.config.lot_mode,
+            )
         self._strategy_pro = self._strategies_pro.get(self.config.symbol) or (
             IndicatorsProStrategy(
+                symbol=self.config.symbol,
+                risk_per_trade=self.config.risk_pct,
+                tp_mode=self.config.tp_mode,
+                sl_mode=self.config.sl_mode,
+                tp_value=self.config.tp_value,
+                sl_value=self.config.sl_value,
+                lot_size=self.config.lot_size,
+                lot_mode=self.config.lot_mode,
+            )
+        )
+        self._strategy_itb = self._strategies_itb.get(self.config.symbol) or (
+            ITBStrategy(
                 symbol=self.config.symbol,
                 risk_per_trade=self.config.risk_pct,
                 tp_mode=self.config.tp_mode,
@@ -594,6 +628,10 @@ class AutoTrader:
             strat.set_lot_size(self.config.lot_size, self.config.lot_mode)
         if self._strategy_pro:
             self._strategy_pro.set_lot_size(self.config.lot_size, self.config.lot_mode)
+        for strat_itb in self._strategies_itb.values():
+            strat_itb.set_lot_size(self.config.lot_size, self.config.lot_mode)
+        if self._strategy_itb:
+            self._strategy_itb.set_lot_size(self.config.lot_size, self.config.lot_mode)
         self.config.save()
 
         mode_desc = (
@@ -629,6 +667,20 @@ class AutoTrader:
             )
         if self._strategy_pro:
             self._strategy_pro.set_tp_sl(
+                tp_val=self.config.tp_value,
+                sl_val=self.config.sl_value,
+                tp_mode=self.config.tp_mode,
+                sl_mode=self.config.sl_mode,
+            )
+        for strat_itb in self._strategies_itb.values():
+            strat_itb.set_tp_sl(
+                tp_val=self.config.tp_value,
+                sl_val=self.config.sl_value,
+                tp_mode=self.config.tp_mode,
+                sl_mode=self.config.sl_mode,
+            )
+        if self._strategy_itb:
+            self._strategy_itb.set_tp_sl(
                 tp_val=self.config.tp_value,
                 sl_val=self.config.sl_value,
                 tp_mode=self.config.tp_mode,
@@ -741,11 +793,32 @@ class AutoTrader:
 
     def set_strategy_type(self, strategy_type: str) -> Tuple[bool, str]:
         st = strategy_type.strip().lower()
-        if st not in ("indicators_pro", "ai_learning"):
-            return False, "Unsupported strategy. Use 'indicators_pro' or 'ai_learning'."
-        self.config.strategy_type = st
+        alias_map = {
+            "itb": "itb_ml",
+            "intelligent": "itb_ml",
+            "itb_ml": "itb_ml",
+            "ml": "itb_ml",
+            "indicators": "indicators_pro",
+            "pro": "indicators_pro",
+            "indicators_pro": "indicators_pro",
+            "ai": "ai_learning",
+            "learning": "ai_learning",
+            "ai_learning": "ai_learning",
+        }
+        resolved = alias_map.get(st)
+        if not resolved:
+            return (
+                False,
+                "Unsupported strategy. Supported: 'indicators_pro' (Technical Indicators), 'itb_ml' (Intelligent Trading ML), 'ai_learning' (Adaptive AI).",
+            )
+        self.config.strategy_type = resolved
         self.config.save()
-        return True, f"Strategy switched to: {st}"
+        names = {
+            "itb_ml": "Intelligent Trading Bot (ITB Machine Learning)",
+            "indicators_pro": "Indicators Pro (Technical Indicator Confluence)",
+            "ai_learning": "AI Bot Learning (Adaptive Reinforcement)",
+        }
+        return True, f"Strategy switched to: <b>{names.get(resolved, resolved)}</b>"
 
     def set_trailing_sl(self, enabled: bool) -> str:
         self.config.trailing_sl = bool(enabled)
@@ -970,6 +1043,55 @@ class AutoTrader:
             f"• <code>/api test</code> — Test exchange connection & query live balance\n"
             f"• <code>/api clear</code> — Clear credentials & return to paper mode\n"
             f"• <code>/mode live</code> — Switch to live real-order trading"
+        )
+
+    # ------------------------------------------------------------------
+    # Intelligent Trading Bot (ITB) Machine Learning Engine Methods
+    # ------------------------------------------------------------------
+    def get_itb_analysis(self, symbol: Optional[str] = None) -> str:
+        """Run ITB Feature Engineering & ML Indicator prediction for symbol."""
+        target_sym = self.normalize_symbol(symbol) if symbol else self.config.symbol
+        df = self.fetch_candles(target_sym, count=120)
+        strat = self._strategies_itb.get(target_sym) or self._strategy_itb or ITBStrategy(symbol=target_sym)
+        pred = strat.predictor.predict(df, symbol=target_sym)
+        return format_itb_card(pred)
+
+    def run_itb_backtest(self, symbol: Optional[str] = None, count: int = 200, threshold: float = 0.12) -> str:
+        """Run ITB simulated trading backtest over historic/demo candles."""
+        target_sym = self.normalize_symbol(symbol) if symbol else self.config.symbol
+        df = self.fetch_candles(target_sym, count=max(60, count))
+        strat = self._strategies_itb.get(target_sym) or self._strategy_itb or ITBStrategy(symbol=target_sym)
+        perf = ITBBacktester.backtest(df, predictor=strat.predictor, threshold=threshold)
+        return format_backtest_report(perf, symbol=target_sym)
+
+    def train_itb_model(self, symbol: Optional[str] = None, count: int = 250) -> str:
+        """Fit ITB Ridge Regression ML Predictor weights on candle series."""
+        target_sym = self.normalize_symbol(symbol) if symbol else self.config.symbol
+        df = self.fetch_candles(target_sym, count=max(80, count))
+        strat = self._strategies_itb.get(target_sym) or self._strategy_itb or ITBStrategy(symbol=target_sym)
+        train_res = strat.predictor.train(df)
+        if "error" in train_res:
+            return f"❌ <b>ITB Training Failed:</b> {train_res['error']}"
+
+        weights_fmt = "\n".join(
+            f"• <code>{k:<12}</code>: <b>{v:+.4f}</b>"
+            for k, v in list(train_res.get("weights", {}).items())[:6]
+        )
+        return (
+            f"🧠 <b>INTELLIGENT TRADING BOT (ITB) MODEL TRAINED</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Symbol</b>: <code>{target_sym}</code>\n"
+            f"• <b>Samples Fitted</b>: <code>{train_res.get('samples', 0)}</code> candles\n"
+            f"• <b>R² Score</b>: <code>{train_res.get('r2_score', 0.0):.4f}</code>\n"
+            f"• <b>MAE</b>: <code>{train_res.get('mae', 0.0):.6f}</code>\n"
+            f"• <b>Model Bias</b>: <code>{train_res.get('bias', 0.0):+.4f}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Top Feature Weights:</b>\n"
+            f"{weights_fmt}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>💡 The trained model is now actively powering your ITB signals!</i>\n"
+            f"• Query live status: <code>/itb {target_sym}</code>\n"
+            f"• Run backtest: <code>/itb backtest {target_sym}</code>"
         )
 
     # ------------------------------------------------------------------
@@ -1439,6 +1561,11 @@ class AutoTrader:
         elif self._strategy_pro:
             self._strategy_pro.update(pnl)
 
+        if pos.symbol in self._strategies_itb:
+            self._strategies_itb[pos.symbol].update(pnl)
+        elif self._strategy_itb:
+            self._strategy_itb.update(pnl)
+
         sign = "+" if pnl >= 0 else ""
         return (
             f"🔄 Position Closed ({reason})\n"
@@ -1636,7 +1763,13 @@ class AutoTrader:
                         ),
                     )
 
-                strat = self._strategies_pro.get(sym) or self._strategy_pro
+                if self.config.strategy_type == "itb_ml":
+                    strat = self._strategies_itb.get(sym) or self._strategy_itb
+                    strat_label = "ITB ML Engine"
+                else:
+                    strat = self._strategies_pro.get(sym) or self._strategy_pro
+                    strat_label = "Indicators Pro"
+
                 if strat:
                     sig = strat.generate_signal(df1, daily)
                     if sig is not None and sig.direction != Direction.FLAT:
@@ -1649,7 +1782,7 @@ class AutoTrader:
                         if self.config.lot_mode == "fixed":
                             lots = self.config.lot_size
                         else:
-                            lots = strat.size(self.config.equity, entry, stop, sig.atr)
+                            lots = strat.size(self.config.equity, entry, stop, getattr(sig, "atr", 0.0))
 
                         mode = self.config.trading_mode
                         order_id = None
@@ -1668,6 +1801,7 @@ class AutoTrader:
                                 continue
                             order_id = ord_msg
 
+                        setup_str = getattr(sig.setup, "value", str(sig.setup))
                         pos_id = f"TRADE_{sym[:3]}_{int(time.time())}"
                         new_pos = AutoTradePosition(
                             id=pos_id,
@@ -1681,7 +1815,7 @@ class AutoTrader:
                             entry_time=datetime.now(timezone.utc).strftime(
                                 "%Y-%m-%d %H:%M:%S UTC"
                             ),
-                            strategy="Indicators Pro",
+                            strategy=strat_label,
                             reason=sig.reason,
                             highest_price=entry,
                             lowest_price=entry,
@@ -1702,7 +1836,7 @@ class AutoTrader:
                             f"• Take Profit: {new_pos.take_profit_1:.2f}\n"
                             f"• Stop Loss: {new_pos.stop_loss:.2f}\n"
                             f"• Strategy: {new_pos.strategy}\n"
-                            f"• Setup: {sig.setup.value}"
+                            f"• Setup: {setup_str}"
                         )
         # 3. Check and trigger Trade Level Alerts (Price levels, OB/FVG zones, Proximity)
         level_alerts = self.check_trade_level_alerts(candles_cache=candles_cache)
@@ -2973,6 +3107,21 @@ def run_live_pro(args):
     bot.run(once=args.once)
 
 
+def run_backtest_itb(args):
+    print("=" * 64)
+    print("  MODE: BACKTEST - Intelligent Trading Bot (ITB Machine Learning)")
+    print("=" * 64)
+    feed = get_feed(args.source, args.symbol, args.exchange)
+    data = feed.get_multi_tf(limit_1m=max(200, args.bars))
+    df = (
+        data.get("1m")
+        if data and "1m" in data and not data["1m"].empty
+        else feed.get_candles(limit=max(200, args.bars))
+    )
+    res = ITBBacktester.backtest(df, threshold=0.12)
+    print(format_backtest_report(res, symbol=args.symbol))
+
+
 # ==================================================================
 # 4. MAIN CLI PARSER & RUNNER
 # ==================================================================
@@ -2984,12 +3133,12 @@ def main():
     )
     p.add_argument(
         "mode",
-        choices=["backtest", "backtest-ai", "live", "both"],
-        help="backtest | backtest-ai | live | both",
+        choices=["backtest", "backtest-ai", "backtest-itb", "live", "both"],
+        help="backtest | backtest-ai | backtest-itb | live | both",
     )
     p.add_argument(
         "--strategy",
-        choices=["ai", "pro"],
+        choices=["ai", "pro", "itb"],
         default="ai",
         help="Which strategy for live mode (default: ai)",
     )
@@ -3036,6 +3185,8 @@ def main():
         run_backtest(args)
     elif args.mode == "backtest-ai":
         run_backtest_ai(args)
+    elif args.mode == "backtest-itb":
+        run_backtest_itb(args)
     elif args.mode == "live":
         run_live_pro(args) if args.strategy == "pro" else run_live_ai(args)
     elif args.mode == "both":

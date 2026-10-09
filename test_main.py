@@ -1714,6 +1714,192 @@ class TestTradeLevelAlerts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.trader.alerts), 0)
 
 
+class TestITBEngineAndIntegration(unittest.TestCase):
+    """Unit tests for Intelligent Trading Bot (ITB) ML engine, AutoTrader integration, and Telegram commands."""
+
+    def setUp(self):
+        import pandas as pd
+        import numpy as np
+        self.pd = pd
+        self.np = np
+
+        dates = pd.date_range("2026-01-01", periods=100, freq="1min")
+        close = 80000.0 + np.cumsum(np.random.RandomState(42).randn(100) * 15.0)
+        self.candles = pd.DataFrame(
+            {
+                "open": close - 5.0,
+                "high": close + 10.0,
+                "low": close - 10.0,
+                "close": close,
+                "volume": 200.0,
+            },
+            index=dates,
+        )
+
+        self.cfg_file = "/workspace/bright-darwin/.test_itb_cfg.json"
+        self.pos_file = "/workspace/bright-darwin/.test_itb_pos.json"
+        self.history_file = "/workspace/bright-darwin/.test_itb_hist.json"
+        self.alerts_file = "/workspace/bright-darwin/.test_itb_alts.json"
+
+        cfg = auto_trade.AutoTradeConfig(
+            config_file=self.cfg_file,
+            open_positions_file=self.pos_file,
+            trades_history_file=self.history_file,
+            alerts_file=self.alerts_file,
+            trading_mode="paper",
+            equity=100.0,
+            paper_capital=100.0,
+            symbols=["BTCUSD", "XAUTUSD"],
+            strategy_type="itb_ml",
+        )
+        self.trader = auto_trade.AutoTrader(config=cfg)
+
+    def tearDown(self):
+        for f in (self.cfg_file, self.pos_file, self.history_file, self.alerts_file):
+            if os.path.exists(f):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+
+    def test_itb_features_generation(self):
+        import itb_engine
+        feat_df, cols = itb_engine.ITBFeatureGenerator.generate_features(self.candles)
+        self.assertFalse(feat_df.empty)
+        self.assertIn("itb_slope_10", cols)
+        self.assertIn("itb_skew_15", cols)
+        self.assertIn("itb_kurt_15", cols)
+        self.assertIn("itb_hl_ratio_15", cols)
+        self.assertIn("itb_log_return", cols)
+        self.assertEqual(len(feat_df), len(self.candles))
+
+    def test_itb_predictor_predict_and_train(self):
+        import itb_engine
+        pred = itb_engine.ITBPredictor()
+        result = pred.predict(self.candles, symbol="BTCUSD")
+        self.assertIsInstance(result, itb_engine.ITBPredictionResult)
+        self.assertIn(result.zone, ("BUY ZONE", "SELL ZONE", "NEUTRAL"))
+        self.assertTrue(-1.0 <= result.indicator <= 1.0)
+        self.assertTrue(-1.0 <= result.smoothed_indicator <= 1.0)
+        self.assertTrue(0.0 <= result.confidence <= 1.0)
+
+        # Test model training
+        train_res = pred.train(self.candles)
+        self.assertNotIn("error", train_res)
+        self.assertIn("weights", train_res)
+        self.assertIn("r2_score", train_res)
+        self.assertIn("mae", train_res)
+        self.assertGreater(train_res["samples"], 20)
+
+    def test_itb_backtester(self):
+        import itb_engine
+        res = itb_engine.ITBBacktester.backtest(self.candles, threshold=0.05)
+        self.assertNotIn("error", res)
+        self.assertIn("total_transactions", res)
+        self.assertIn("win_rate", res)
+        self.assertIn("total_profit", res)
+        self.assertIn("long", res)
+        self.assertIn("short", res)
+        self.assertEqual(res["candles_evaluated"], len(self.candles))
+
+    def test_itb_strategy_lifecycle(self):
+        import itb_engine
+        strat = itb_engine.ITBStrategy(symbol="BTCUSD", min_threshold=0.01)
+        sig = strat.generate_signal(self.candles)
+        # Check signal interface
+        if sig:
+            self.assertIn(sig.direction.name, ("LONG", "SHORT"))
+            self.assertGreater(sig.entry, 0)
+            self.assertGreater(sig.stop, 0)
+            self.assertGreater(sig.tp1, 0)
+
+        # Test size calculation
+        lot = strat.size(1000.0, 80000.0, 79000.0)
+        self.assertGreater(lot, 0)
+
+        # Update PnL
+        strat.update(25.5)
+        self.assertEqual(strat.total_pnl, 25.5)
+
+    def test_autotrader_strategy_management(self):
+        # 1. Switch strategy
+        ok, msg = self.trader.set_strategy_type("itb")
+        self.assertTrue(ok)
+        self.assertEqual(self.trader.config.strategy_type, "itb_ml")
+        self.assertIn("Intelligent Trading Bot", msg)
+
+        ok, msg = self.trader.set_strategy_type("indicators")
+        self.assertTrue(ok)
+        self.assertEqual(self.trader.config.strategy_type, "indicators_pro")
+
+        ok, msg = self.trader.set_strategy_type("ai")
+        self.assertTrue(ok)
+        self.assertEqual(self.trader.config.strategy_type, "ai_learning")
+
+        ok, msg = self.trader.set_strategy_type("invalid_strat")
+        self.assertFalse(ok)
+
+        # 2. Trader ITB helper reports
+        analysis = self.trader.get_itb_analysis("BTCUSD")
+        self.assertIn("INTELLIGENT TRADING SIGNALS", analysis)
+
+        backtest = self.trader.run_itb_backtest("BTCUSD", count=50)
+        self.assertIn("ITB SIMULATED TRADE PERFORMANCE", backtest)
+
+        train_card = self.trader.train_itb_model("BTCUSD", count=60)
+        self.assertIn("INTELLIGENT TRADING BOT (ITB) MODEL TRAINED", train_card)
+
+    def test_autotrader_step_itb_execution(self):
+        self.trader.set_strategy_type("itb_ml")
+        self.trader.enable()
+        self.trader._strategies_itb["BTCUSD"].min_threshold = -1.0  # Force signal trigger
+        notifs = self.trader.step()
+        self.assertGreaterEqual(len(notifs), 1)
+        if self.trader.positions:
+            self.assertEqual(self.trader.positions[0].strategy, "ITB ML Engine")
+
+    async def test_itb_and_strategy_telegram_commands(self):
+        mock_update = unittest.mock.AsyncMock()
+        mock_update.message.reply_text = unittest.mock.AsyncMock()
+
+        # 1. /strategy without args
+        mock_ctx = unittest.mock.MagicMock()
+        mock_ctx.args = []
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.strategy_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("TRADING STRATEGY CONFIGURATION", sent)
+
+        # 2. /strategy itb
+        mock_ctx.args = ["itb"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.strategy_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Strategy switched to", sent)
+        self.assertEqual(self.trader.config.strategy_type, "itb_ml")
+
+        # 3. /itb live analysis
+        mock_ctx.args = []
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.itb_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("INTELLIGENT TRADING SIGNALS", sent)
+
+        # 4. /itb backtest BTC 60
+        mock_ctx.args = ["backtest", "BTC", "60"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.itb_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("ITB SIMULATED TRADE PERFORMANCE", sent)
+
+        # 5. /itb train BTC 70
+        mock_ctx.args = ["train", "BTC", "70"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.itb_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("INTELLIGENT TRADING BOT (ITB) MODEL TRAINED", sent)
+
+
 def tearDownModule():
     import glob
     for f in glob.glob("/workspace/bright-darwin/.test_*"):

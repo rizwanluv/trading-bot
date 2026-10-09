@@ -366,6 +366,10 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "• /levels [SYM] (/ob) — Smart Money Order Blocks & Fair Value Gaps\n"
         "• /calc [ENTRY] [SL] [TP] — Position sizing & Risk:Reward calc\n\n"
         "⚡ <b>3. Auto-Trading & Execution:</b>\n"
+        "• /itb [SYM] — Intelligent Indicator score, gauge & moments\n"
+        "• /itb backtest [SYM] [N] — ITB simulated trading backtest\n"
+        "• /itb train [SYM] — Train ridge regression weights\n"
+        "• /strategy [indicators|itb|ai] — Switch trading strategy\n"
         "• /autotrade [on|off|status|close|symbols] — Auto-trade controls\n"
         "• /execute [LOTS] — One-tap execute pinpoint trade plan\n"
         "• /buy | /sell — Instant long/short market orders\n"
@@ -385,6 +389,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "• /api test — Test authentication & query wallet balance\n"
         "• /api clear — Wipe credentials & return to paper mode\n\n"
         "🛡️ <b>6. Risk & Strategy Configuration:</b>\n"
+        "• /strategy — Inspect or switch active strategy (ITB/Indicators/AI)\n"
         "• /symbols [both|btc|gold|add|rm] — Active auto-trade pairs\n"
         "• /symbol [SYM] — View or switch primary symbol\n"
         "• /lotsize [SIZE|risk %] — Configure order lot sizing\n"
@@ -842,6 +847,99 @@ async def risk_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await reply_safely(update, f"❌ {msg}")
     except ValueError:
         await reply_safely(update, "Error: Invalid number. Example: /risk 3.0")
+
+
+async def itb_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Intelligent Trading Bot (ITB) Machine Learning analysis, backtest, and training."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+
+    if not args:
+        # Default: live analysis on primary symbol
+        card = trader.get_itb_analysis()
+        await reply_safely(update, card, parse_mode="HTML")
+        return
+
+    sub = args[0].lower()
+    if sub in ("backtest", "bt", "sim", "simulate"):
+        # /itb backtest [SYM] [COUNT]
+        sym = args[1] if len(args) > 1 and not args[1].isdigit() else trader.config.symbol
+        count = 150
+        for a in args[1:]:
+            if a.isdigit():
+                count = max(40, min(2000, int(a)))
+                break
+        await reply_safely(
+            update,
+            f"⏳ <i>Running ITB backtest simulation for {sym.upper()} ({count} candles)...</i>",
+            parse_mode="HTML",
+        )
+        report = trader.run_itb_backtest(symbol=sym, count=count)
+        await reply_safely(update, report, parse_mode="HTML")
+        return
+
+    if sub in ("train", "fit", "learn"):
+        # /itb train [SYM] [COUNT]
+        sym = args[1] if len(args) > 1 and not args[1].isdigit() else trader.config.symbol
+        count = 200
+        for a in args[1:]:
+            if a.isdigit():
+                count = max(60, min(3000, int(a)))
+                break
+        await reply_safely(
+            update,
+            f"🧠 <i>Fitting ITB ML regression weights on {sym.upper()} ({count} candles)...</i>",
+            parse_mode="HTML",
+        )
+        report = trader.train_itb_model(symbol=sym, count=count)
+        await reply_safely(update, report, parse_mode="HTML")
+        return
+
+    # /itb [SYM]
+    target_sym = trader.normalize_symbol(args[0])
+    card = trader.get_itb_analysis(target_sym)
+    await reply_safely(update, card, parse_mode="HTML")
+
+
+async def strategy_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """View or switch active automated trading strategy."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+
+    if not args:
+        current = trader.config.strategy_type
+        names = {
+            "itb_ml": "🤖 <b>Intelligent Trading Bot (ITB Machine Learning)</b>",
+            "indicators_pro": "📊 <b>Indicators Pro (Multi-Indicator Confluence)</b>",
+            "ai_learning": "🧠 <b>AI Bot Learning (Adaptive Learning)</b>",
+        }
+        active_name = names.get(current, current)
+        await reply_safely(
+            update,
+            f"🎯 <b>TRADING STRATEGY CONFIGURATION</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Active Strategy</b>: {active_name}\n\n"
+            f"<b>Available Strategies:</b>\n"
+            f"1. <b>ITB Machine Learning</b> (<code>/strategy itb</code>)\n"
+            f"   • Rolling trend slope, skewness & kurtosis moments\n"
+            f"   • Ridge regression combined Intelligent Indicator\n"
+            f"   • Dynamic ATR stops & automated execution\n\n"
+            f"2. <b>Indicators Pro</b> (<code>/strategy indicators</code>)\n"
+            f"   • EMA trend filter, RSI momentum & Bollinger channels\n"
+            f"   • Pinpoint pullback and breakout detection\n\n"
+            f"3. <b>AI Learning Bot</b> (<code>/strategy ai</code>)\n"
+            f"   • Adaptive reward-weighted reinforcement\n\n"
+            f"<i>Switch strategy: <code>/strategy itb</code> | <code>/strategy indicators</code></i>",
+            parse_mode="HTML",
+        )
+        return
+
+    choice = args[0].lower()
+    ok, msg = trader.set_strategy_type(choice)
+    if ok:
+        await reply_safely(update, f"✅ {msg}", parse_mode="HTML")
+    else:
+        await reply_safely(update, f"❌ {msg}", parse_mode="HTML")
 
 
 async def mode_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1368,6 +1466,7 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     pos_count = len(trader.positions)
     pos_str = f"{pos_count} active position(s)" if pos_count > 0 else "0 open"
     symbols_str = ", ".join(trader.config.symbols) if trader.config.symbols else trader.config.symbol
+    strat_str = trader.config.strategy_type.replace("_", " ").title()
     await reply_safely(
         update,
         f"🎛️ <b>TRADING BOT COMMAND MENU</b>\n"
@@ -1375,6 +1474,7 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"• <b>Engine Status</b>: <b>{status_str}</b>\n"
         f"• <b>Trading Mode</b>: <b>{mode_str}</b> (Equity: <code>${trader.config.equity:,.2f}</code>)\n"
         f"• <b>Monitored Pairs</b>: <code>{symbols_str}</code>\n"
+        f"• <b>Active Strategy</b>: <code>{strat_str}</code>\n"
         f"• <b>Positions</b>: <i>{pos_str} (Max {trader.config.max_positions})</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>📊 1. Market & Quotes:</b>\n"
@@ -1388,6 +1488,10 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"• /levels [SYM] — Order blocks & FVGs scanner\n"
         f"• /calc [ENTRY] [SL] [TP] — Position sizing & R:R\n\n"
         f"<b>⚡ 3. Auto-Trading & Execution:</b>\n"
+        f"• /itb [SYM] — Live Intelligent Indicator & feature moments\n"
+        f"• /itb backtest [SYM] [N] — ITB simulated backtest\n"
+        f"• /itb train [SYM] — Fit ML ridge regression weights\n"
+        f"• /strategy [indicators|itb|ai] — Switch strategy\n"
         f"• /autotrade on|off — Toggle automated trading\n"
         f"• /execute — One-tap execute pinpoint trade plan\n"
         f"• /buy | /sell — Instant market execution\n"
@@ -1407,6 +1511,7 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"• /api test — Test auth & query wallet balance\n"
         f"• /api clear — Clear API & return to paper mode\n\n"
         f"<b>🛡️ 6. Risk & Strategy:</b>\n"
+        f"• /strategy — Inspect or switch strategy\n"
         f"• /symbols — View or configure active pairs\n"
         f"• /symbol [SYM] — Switch primary symbol\n"
         f"• /lotsize [SIZE|risk %] — Configure lot sizing\n"
@@ -1597,6 +1702,10 @@ def main() -> None:
     app.add_handler(CommandHandler("ob", levels_command))
     app.add_handler(CommandHandler("analyze", analyze_command))
     app.add_handler(CommandHandler("signal", analyze_command))
+    app.add_handler(CommandHandler("itb", itb_command))
+    app.add_handler(CommandHandler("intelligent", itb_command))
+    app.add_handler(CommandHandler("strategy", strategy_command))
+    app.add_handler(CommandHandler("strat", strategy_command))
     app.add_handler(CommandHandler("symbol", symbol_command))
     app.add_handler(CommandHandler("symbols", symbols_command))
     app.add_handler(CommandHandler("pairs", symbols_command))

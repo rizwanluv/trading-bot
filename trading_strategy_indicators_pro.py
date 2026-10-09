@@ -106,6 +106,8 @@ class TradeSignal:
     atr: float = 0.0
     rel_vol: float = 1.0
 
+TradeSignalPro = TradeSignal
+
 
 @dataclass
 class Position:
