@@ -350,13 +350,15 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "• /calc [ENTRY] [SL] [TP] - Position Sizing & Risk:Reward Calculator\n"
         "• /analyze [SYMBOL] - Full technical analysis & signal report\n"
         "• /price [SYMBOL] - Price check on any Delta Exchange pair\n"
-        "• /symbol [SYMBOL] - View or switch active auto-trading symbol\n\n"
+        "• /symbols [both|btc|gold|add|rm] - Configure active auto-trade pairs\n"
+        "• /symbol [SYMBOL] - View or switch primary trading symbol\n\n"
         "Auto-Trade & Execution Controls:\n"
         "• /execute [LOTS|limit] - One-Tap Execution of Pinpoint Trade Plan\n"
         "• /buy - Quick Instant Long Market Order\n"
         "• /sell - Quick Instant Short Market Order\n"
-        "• /autotrade [on|off|status|close] - Control automated trading\n"
-        "• /position - Live active position dashboard & PnL\n"
+        "• /autotrade [on|off|status|close|symbols|max] - Control automated trading\n"
+        "• /position (/positions) - Live active positions dashboard & unrealized PnL\n"
+        "• /close [ID|SYM|all] - Close specific position, symbol, or all open trades\n"
         "• /pnl - Performance report & closed trades history\n"
         "• /lotsize [SIZE|risk %] - View or update order lot sizing\n"
         "• /tpsl [TP] [SL] [MODE] - Set strategy Take Profit and Stop Loss\n"
@@ -386,12 +388,15 @@ async def autotrade_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> N
     sub = args[0]
     if sub in ("on", "start", "enable"):
         msg = trader.enable(chat_id=chat_id)
+        syms_str = ", ".join(trader.config.symbols) if trader.config.symbols else trader.config.symbol
         reply = (
             f"🟢 <b>{msg}</b>\n\n"
-            f"• <b>Symbol</b>: {trader.config.symbol}\n"
+            f"• <b>Monitored Pairs</b>: {syms_str}\n"
+            f"• <b>Max Positions</b>: {trader.config.max_positions} (Max/pair: {trader.config.max_positions_per_symbol})\n"
             f"• <b>Lot Size</b>: {trader.config.lot_size}\n"
             f"• <b>TP</b>: {trader.config.tp_value} ({trader.config.tp_mode.upper()})\n"
             f"• <b>SL</b>: {trader.config.sl_value} ({trader.config.sl_mode.upper()})\n\n"
+            f"Both BTC & Gold (and configured pairs) are actively scanned. "
             f"Trade signals and executions will be sent directly to this chat."
         )
         await reply_safely(update, reply, parse_mode="HTML")
@@ -399,23 +404,171 @@ async def autotrade_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> N
         msg = trader.disable()
         await reply_safely(update, f"🔴 <b>{msg}</b>", parse_mode="HTML")
     elif sub == "close":
-        res = trader.close_current_position(reason="MANUAL")
-        if res:
-            await reply_safely(update, res, parse_mode="HTML")
+        if len(args) > 1:
+            target = args[1]
+            if target == "all":
+                closed_msgs = trader.close_all_positions(reason="MANUAL")
+                if closed_msgs:
+                    await reply_safely(update, "🔄 <b>Closed All Positions:</b>\n\n" + "\n\n".join(closed_msgs), parse_mode="HTML")
+                else:
+                    await reply_safely(update, "No open positions to close.")
+            elif trader.normalize_symbol(target) in [p.symbol for p in trader.positions]:
+                closed_msgs = trader.close_positions_by_symbol(target, reason="MANUAL")
+                await reply_safely(update, "\n\n".join(closed_msgs), parse_mode="HTML")
+            else:
+                res = trader.close_position_by_id(target, reason="MANUAL")
+                if res:
+                    await reply_safely(update, res, parse_mode="HTML")
+                else:
+                    await reply_safely(update, f"❌ Position <code>{target}</code> not found.", parse_mode="HTML")
         else:
-            await reply_safely(update, "No active position to close.")
+            if not trader.positions:
+                await reply_safely(update, "No active position to close.")
+            elif len(trader.positions) == 1:
+                res = trader.close_current_position(reason="MANUAL")
+                await reply_safely(update, res or "Closed.", parse_mode="HTML")
+            else:
+                lines = ["⚠️ <b>Multiple Open Positions:</b> Specify which one to close:"]
+                for p in trader.positions:
+                    lines.append(f"• <code>/autotrade close {p.id}</code> ({p.direction} {p.symbol})")
+                lines.append("• <code>/autotrade close all</code> (Close all open trades)")
+                await reply_safely(update, "\n".join(lines), parse_mode="HTML")
     elif sub in ("symbol", "pair") and len(args) > 1:
         msg = trader.set_symbol(args[1])
         await reply_safely(update, msg)
+    elif sub in ("symbols", "pairs"):
+        if len(args) > 1:
+            if args[1] == "both":
+                msg = trader.set_symbols(["BTCUSD", "XAUTUSD"])
+            else:
+                msg = trader.set_symbols(args[1:])
+            await reply_safely(update, msg)
+        else:
+            syms_str = ", ".join(trader.config.symbols)
+            await reply_safely(update, f"Monitored symbols: {syms_str}")
+    elif sub == "max" and len(args) > 1:
+        try:
+            total_m = int(args[1])
+            per_m = int(args[2]) if len(args) > 2 else 1
+            msg = trader.set_max_positions(total_m, per_m)
+            await reply_safely(update, f"✅ <b>{msg}</b>", parse_mode="HTML")
+        except ValueError:
+            await reply_safely(update, "Usage: /autotrade max <total_positions> [per_pair_limit]")
     else:
         await reply_safely(
             update,
             "Usage:\n"
-            "• /autotrade on - Turn auto trade ON\n"
+            "• /autotrade on - Turn auto trade ON (BTC & Gold)\n"
             "• /autotrade off - Turn auto trade OFF\n"
             "• /autotrade status - Show trading dashboard\n"
-            "• /autotrade close - Close open position manually\n"
-            "• /autotrade symbol [SYMBOL] - Change traded symbol",
+            "• /autotrade close [ID|SYM|all] - Close position(s)\n"
+            "• /autotrade symbols [both|btc|gold] - Set active trading pairs\n"
+            "• /autotrade max <total> [per_sym] - Configure max positions",
+        )
+
+
+async def symbols_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """View or configure multi-asset auto-trading pairs (BTC, Gold, etc.)."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+
+    if not args:
+        syms_str = ", ".join(f"<code>{s}</code>" for s in trader.config.symbols)
+        await reply_safely(
+            update,
+            f"🪙 <b>Active Auto-Trading Pairs</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Monitored Pairs</b>: {syms_str}\n"
+            f"• <b>Max Positions Total</b>: <code>{trader.config.max_positions}</code>\n"
+            f"• <b>Max Positions Per Pair</b>: <code>{trader.config.max_positions_per_symbol}</code>\n"
+            f"• <b>Auto-Trading</b>: {'🟢 ENABLED' if trader.config.enabled else '🔴 DISABLED'}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Commands:</b>\n"
+            f"• <code>/symbols both</code> — Monitor & trade both BTC and Gold\n"
+            f"• <code>/symbols btc gold eth</code> — Set custom active list\n"
+            f"• <code>/symbols add sol</code> — Add Solana to trading list\n"
+            f"• <code>/symbols remove xautusd</code> — Remove Gold from trading list\n"
+            f"• <code>/symbols btc</code> — Monitor & trade Bitcoin only\n"
+            f"• <code>/symbols gold</code> — Monitor & trade Gold only",
+            parse_mode="HTML",
+        )
+        return
+
+    sub = args[0].lower()
+    if sub == "both":
+        msg = trader.set_symbols(["BTCUSD", "XAUTUSD"])
+        await reply_safely(update, f"✅ <b>{msg}</b>", parse_mode="HTML")
+    elif sub == "add" and len(args) > 1:
+        msg = trader.add_symbol(args[1])
+        await reply_safely(update, f"✅ <b>{msg}</b>", parse_mode="HTML")
+    elif sub in ("remove", "rm", "del") and len(args) > 1:
+        msg = trader.remove_symbol(args[1])
+        await reply_safely(update, f"ℹ️ <b>{msg}</b>", parse_mode="HTML")
+    elif sub in ("btc", "bitcoin") and len(args) == 1:
+        msg = trader.set_symbols(["BTCUSD"])
+        await reply_safely(update, f"✅ <b>{msg}</b>", parse_mode="HTML")
+    elif sub in ("gold", "xau", "xautusd") and len(args) == 1:
+        msg = trader.set_symbols(["XAUTUSD"])
+        await reply_safely(update, f"✅ <b>{msg}</b>", parse_mode="HTML")
+    else:
+        msg = trader.set_symbols(args)
+        await reply_safely(update, f"✅ <b>{msg}</b>", parse_mode="HTML")
+
+
+async def close_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Close an active trade by ID, symbol, or all open positions."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+
+    if not trader.positions:
+        await reply_safely(update, "💼 No active positions to close.")
+        return
+
+    if not args:
+        if len(trader.positions) == 1:
+            res = trader.close_current_position(reason="MANUAL")
+            await reply_safely(update, res or "Closed.", parse_mode="HTML")
+            return
+
+        lines = [
+            "⚠️ <b>Multiple Open Positions Found:</b>",
+            "Specify which position to close, or close all:\n",
+        ]
+        for p in trader.positions:
+            lines.append(f"• <code>/close {p.id}</code> — {p.direction} {p.symbol} @ {p.entry_price:.2f}")
+        lines.append("\n• <code>/close all</code> — Close all open positions at market")
+        lines.append("• <code>/close btc</code> — Close Bitcoin positions")
+        lines.append("• <code>/close gold</code> — Close Gold positions")
+        await reply_safely(update, "\n".join(lines), parse_mode="HTML")
+        return
+
+    target = args[0].strip()
+    if target.lower() == "all":
+        closed_msgs = trader.close_all_positions(reason="MANUAL")
+        if closed_msgs:
+            msg = f"🔄 <b>Closed {len(closed_msgs)} Position(s):</b>\n\n" + "\n\n".join(closed_msgs)
+            await reply_safely(update, msg, parse_mode="HTML")
+        else:
+            await reply_safely(update, "No positions were closed.")
+        return
+
+    sym_normalized = trader.normalize_symbol(target)
+    matched_sym = [p for p in trader.positions if p.symbol == sym_normalized]
+    if matched_sym:
+        closed_msgs = trader.close_positions_by_symbol(sym_normalized, reason="MANUAL")
+        msg = f"🔄 <b>Closed {len(closed_msgs)} position(s) for {sym_normalized}:</b>\n\n" + "\n\n".join(closed_msgs)
+        await reply_safely(update, msg, parse_mode="HTML")
+        return
+
+    res = trader.close_position_by_id(target, reason="MANUAL")
+    if res:
+        await reply_safely(update, res, parse_mode="HTML")
+    else:
+        await reply_safely(
+            update,
+            f"❌ Position <code>{target}</code> not found.\n"
+            f"Use <code>/position</code> to view active positions and IDs, or <code>/close all</code> to exit all.",
+            parse_mode="HTML",
         )
 
 
@@ -798,14 +951,16 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Interactive command directory and quick dashboard."""
     trader = get_auto_trader()
     status_str = "🟢 AUTO-TRADING ON" if trader.config.enabled else "🔴 AUTO-TRADING OFF"
-    pos_str = f"Active: {trader.position.direction} {trader.position.symbol}" if trader.position else "No open position"
+    pos_count = len(trader.positions)
+    pos_str = f"{pos_count} active position(s)" if pos_count > 0 else "No open positions"
+    symbols_str = ", ".join(trader.config.symbols) if trader.config.symbols else trader.config.symbol
     await reply_safely(
         update,
         f"🎛️ <b>TRADING BOT COMMAND MENU</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• <b>Engine Status</b>: <b>{status_str}</b>\n"
-        f"• <b>Trading Pair</b>: <code>{trader.config.symbol}</code>\n"
-        f"• <b>Position</b>: <i>{pos_str}</i>\n"
+        f"• <b>Monitored Pairs</b>: <code>{symbols_str}</code>\n"
+        f"• <b>Positions</b>: <i>{pos_str} (Max {trader.config.max_positions})</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>Market & Analysis:</b>\n"
         f"• /entry [SYM] - Pinpoint Entry, Precision SL & TP Targets\n"
@@ -816,12 +971,14 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"• /eth - Ethereum Ticker Card\n"
         f"• /sol - Solana Ticker Card\n"
         f"• /analyze [SYM] - Technical Analysis & Confluence\n"
-        f"• /symbol [SYM] - Switch Traded Symbol\n\n"
+        f"• /symbols - View/Set Active Auto-Trade Pairs\n"
+        f"• /symbol [SYM] - Switch Primary Symbol\n\n"
         f"<b>Auto-Trading & Execution:</b>\n"
         f"• /execute - One-Tap Execute Pinpoint Plan\n"
         f"• /buy | /sell - Instant Market Orders\n"
         f"• /autotrade on|off - Start/Stop Automated Trades\n"
-        f"• /position - Live Active Position Dashboard\n"
+        f"• /position (/positions) - Live Active Positions Dashboard\n"
+        f"• /close [ID|SYM|all] - Close Position(s)\n"
         f"• /pnl - Performance Report & Trades History\n"
         f"• /lotsize [SIZE] - Set Order Sizing\n"
         f"• /tpsl [TP] [SL] - Set Strategy Targets\n"
@@ -1008,9 +1165,13 @@ def main() -> None:
     app.add_handler(CommandHandler("analyze", analyze_command))
     app.add_handler(CommandHandler("signal", analyze_command))
     app.add_handler(CommandHandler("symbol", symbol_command))
+    app.add_handler(CommandHandler("symbols", symbols_command))
+    app.add_handler(CommandHandler("pairs", symbols_command))
     app.add_handler(CommandHandler("price", price))
     app.add_handler(CommandHandler("autotrade", autotrade_command))
+    app.add_handler(CommandHandler("close", close_command))
     app.add_handler(CommandHandler("position", position_command))
+    app.add_handler(CommandHandler("positions", position_command))
     app.add_handler(CommandHandler("pos", position_command))
     app.add_handler(CommandHandler("pnl", pnl_command))
     app.add_handler(CommandHandler("performance", pnl_command))

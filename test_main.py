@@ -925,16 +925,18 @@ class TestPinpointAndLiquidity(unittest.TestCase):
     def setUp(self):
         self.tmp_cfg = "/workspace/bright-darwin/.test_pinpoint_cfg.json"
         self.tmp_hist = "/workspace/bright-darwin/.test_pinpoint_hist.json"
+        self.tmp_pos = "/workspace/bright-darwin/.test_pinpoint_pos.json"
         self.config = auto_trade.AutoTradeConfig(
             config_file=self.tmp_cfg,
             trades_history_file=self.tmp_hist,
+            open_positions_file=self.tmp_pos,
             equity=10000.0,
             symbol="BTCUSD",
         )
         self.trader = auto_trade.AutoTrader(config=self.config)
 
     def tearDown(self):
-        for p in (self.tmp_cfg, self.tmp_hist):
+        for p in (self.tmp_cfg, self.tmp_hist, self.tmp_pos):
             if os.path.exists(p):
                 os.remove(p)
 
@@ -1035,6 +1037,233 @@ class TestPinpointAndLiquidity(unittest.TestCase):
 
         err = auto_trade.calculate_risk_reward(80000.0, 80000.0)
         self.assertIn("Invalid Entry or Stop Loss", err)
+
+
+class TestMultiAssetMultiPositionAutoTrade(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.tmp_cfg = "/workspace/bright-darwin/.test_multi_cfg.json"
+        self.tmp_hist = "/workspace/bright-darwin/.test_multi_hist.json"
+        self.tmp_pos = "/workspace/bright-darwin/.test_multi_pos.json"
+        self.config = auto_trade.AutoTradeConfig(
+            config_file=self.tmp_cfg,
+            trades_history_file=self.tmp_hist,
+            open_positions_file=self.tmp_pos,
+            equity=10000.0,
+            symbols=["BTCUSD", "XAUTUSD"],
+            max_positions=5,
+            max_positions_per_symbol=1,
+        )
+        self.trader = auto_trade.AutoTrader(config=self.config)
+
+    def tearDown(self):
+        for p in (self.tmp_cfg, self.tmp_hist, self.tmp_pos):
+            if os.path.exists(p):
+                os.remove(p)
+
+    def test_default_config_includes_btc_and_gold(self):
+        cfg = auto_trade.AutoTradeConfig(symbol="BTCUSD")
+        self.assertIn("BTCUSD", cfg.symbols)
+        self.assertIn("XAUTUSD", cfg.symbols)
+
+        cfg_gold = auto_trade.AutoTradeConfig(symbol="XAUTUSD")
+        self.assertIn("BTCUSD", cfg_gold.symbols)
+        self.assertIn("XAUTUSD", cfg_gold.symbols)
+
+    def test_symbol_management_methods(self):
+        # Symbol normalization
+        self.assertEqual(self.trader.normalize_symbol("btc"), "BTCUSD")
+        self.assertEqual(self.trader.normalize_symbol("gold"), "XAUTUSD")
+        self.assertEqual(self.trader.normalize_symbol("xau"), "XAUTUSD")
+        self.assertEqual(self.trader.normalize_symbol("eth"), "ETHUSD")
+
+        # Set symbols
+        ok, msg = self.trader.set_symbols(["BTCUSD", "ETHUSD"])
+        self.assertTrue(ok)
+        self.assertEqual(self.trader.config.symbols, ["BTCUSD", "ETHUSD"])
+
+        # Add symbol
+        ok2, msg2 = self.trader.add_symbol("SOL")
+        self.assertTrue(ok2)
+        self.assertIn("SOLUSD", self.trader.config.symbols)
+
+        # Remove symbol
+        ok3, msg3 = self.trader.remove_symbol("ETH")
+        self.assertTrue(ok3)
+        self.assertNotIn("ETHUSD", self.trader.config.symbols)
+
+    def test_multiple_concurrent_positions(self):
+        # 1. Open BTC position
+        ok1, msg1, pos1 = self.trader.open_position_manually(
+            symbol="BTCUSD",
+            direction="LONG",
+            entry_price=82000.0,
+            stop_loss=81000.0,
+            take_profit_1=84000.0,
+            lot_size=0.05,
+        )
+        self.assertTrue(ok1)
+        self.assertEqual(len(self.trader.positions), 1)
+        self.assertEqual(self.trader.position.symbol, "BTCUSD")
+
+        # 2. Open Gold position simultaneously
+        ok2, msg2, pos2 = self.trader.open_position_manually(
+            symbol="XAUTUSD",
+            direction="LONG",
+            entry_price=4150.0,
+            stop_loss=4120.0,
+            take_profit_1=4210.0,
+            lot_size=0.1,
+        )
+        self.assertTrue(ok2)
+        self.assertEqual(len(self.trader.positions), 2)
+        self.assertEqual(self.trader.positions[0].symbol, "BTCUSD")
+        self.assertEqual(self.trader.positions[1].symbol, "XAUTUSD")
+
+        # 3. Opening 2nd BTC position when limit is 1 per symbol should fail
+        ok3, msg3, pos3 = self.trader.open_position_manually(
+            symbol="BTCUSD",
+            direction="SHORT",
+            entry_price=82500.0,
+            stop_loss=83500.0,
+            take_profit_1=81000.0,
+        )
+        self.assertFalse(ok3)
+        self.assertIn("already open", msg3)
+
+        # 4. Increasing limit allows 2nd BTC position
+        self.trader.set_max_positions(total=5, per_symbol=2)
+        ok4, msg4, pos4 = self.trader.open_position_manually(
+            symbol="BTCUSD",
+            direction="SHORT",
+            entry_price=82500.0,
+            stop_loss=83500.0,
+            take_profit_1=81000.0,
+        )
+        self.assertTrue(ok4)
+        self.assertEqual(len(self.trader.positions), 3)
+
+    def test_closing_positions_by_id_symbol_and_all(self):
+        # Open BTC and Gold positions
+        self.trader.open_position_manually("BTCUSD", "LONG", 82000.0, 81000.0, 84000.0, lot_size=0.1)
+        self.trader.open_position_manually("XAUTUSD", "LONG", 4150.0, 4120.0, 4210.0, lot_size=0.2)
+        self.assertEqual(len(self.trader.positions), 2)
+
+        btc_id = self.trader.positions[0].id
+
+        # Close BTC by ID
+        res_id = self.trader.close_position_by_id(btc_id, current_price=83000.0)
+        self.assertIsNotNone(res_id)
+        self.assertIn(btc_id, res_id)
+        self.assertEqual(len(self.trader.positions), 1)
+        self.assertEqual(self.trader.positions[0].symbol, "XAUTUSD")
+
+        # Close Gold by symbol
+        msgs_sym = self.trader.close_positions_by_symbol("gold", current_price=4180.0)
+        self.assertEqual(len(msgs_sym), 1)
+        self.assertEqual(len(self.trader.positions), 0)
+
+        # Open both again and close all
+        self.trader.open_position_manually("BTCUSD", "LONG", 82000.0, 81000.0, 84000.0, lot_size=0.1)
+        self.trader.open_position_manually("XAUTUSD", "LONG", 4150.0, 4120.0, 4210.0, lot_size=0.2)
+        self.assertEqual(len(self.trader.positions), 2)
+
+        all_msgs = self.trader.close_all_positions()
+        self.assertEqual(len(all_msgs), 2)
+        self.assertEqual(len(self.trader.positions), 0)
+        self.assertGreaterEqual(len(self.trader.closed_trades), 4)
+
+    def test_multi_position_step_tp_sl(self):
+        # Set up 1 BTC trade and 1 Gold trade
+        self.trader.open_position_manually("BTCUSD", "LONG", 82000.0, 81000.0, 84000.0, lot_size=0.1)
+        self.trader.open_position_manually("XAUTUSD", "LONG", 4150.0, 4120.0, 4210.0, lot_size=0.1)
+        self.assertEqual(len(self.trader.positions), 2)
+
+        btc_pos = self.trader.positions[0]
+        gold_pos = self.trader.positions[1]
+
+        # Mock candles: BTC hits TP (84100), Gold hits SL (4110)
+        def mock_fetch(symbol, count=120):
+            import pandas as pd
+            if "BTC" in symbol:
+                return pd.DataFrame([{"open": 82500, "high": 84100, "low": 82000, "close": 84050, "volume": 100}],
+                                    index=pd.date_range("2026-01-01", periods=1, freq="1m"))
+            else:
+                return pd.DataFrame([{"open": 4140, "high": 4145, "low": 4110, "close": 4115, "volume": 100}],
+                                    index=pd.date_range("2026-01-01", periods=1, freq="1m"))
+
+        self.trader.fetch_candles = mock_fetch
+        notifications = self.trader.step()
+
+        self.assertEqual(len(self.trader.positions), 0)
+        self.assertTrue(any("TAKE PROFIT HIT (BTCUSD)" in n for n in notifications))
+        self.assertTrue(any("STOP LOSS HIT (XAUTUSD)" in n for n in notifications))
+
+    async def test_symbols_command_telegram(self):
+        mock_update = unittest.mock.AsyncMock()
+        mock_ctx = unittest.mock.MagicMock()
+
+        # 1. /symbols without args
+        mock_ctx.args = []
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.symbols_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Active Auto-Trading Pairs", sent)
+        self.assertIn("BTCUSD", sent)
+        self.assertIn("XAUTUSD", sent)
+
+        # 2. /symbols both
+        mock_ctx.args = ["both"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.symbols_command(mock_update, mock_ctx)
+        self.assertEqual(self.trader.config.symbols, ["BTCUSD", "XAUTUSD"])
+
+        # 3. /symbols add eth
+        mock_ctx.args = ["add", "eth"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.symbols_command(mock_update, mock_ctx)
+        self.assertIn("ETHUSD", self.trader.config.symbols)
+
+    async def test_close_command_telegram(self):
+        mock_update = unittest.mock.AsyncMock()
+        mock_ctx = unittest.mock.MagicMock()
+
+        # 1. When no positions open
+        mock_ctx.args = []
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.close_command(mock_update, mock_ctx)
+        sent_empty = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("No active positions to close", sent_empty)
+
+        # 2. Open 2 positions
+        self.trader.open_position_manually("BTCUSD", "LONG", 82000.0, 81000.0, 84000.0, lot_size=0.1)
+        self.trader.open_position_manually("XAUTUSD", "LONG", 4150.0, 4120.0, 4210.0, lot_size=0.1)
+
+        # /close all
+        mock_ctx.args = ["all"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.close_command(mock_update, mock_ctx)
+        sent_all = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Closed 2 Position(s)", sent_all)
+        self.assertEqual(len(self.trader.positions), 0)
+
+    async def test_positions_dashboard_formatting(self):
+        self.trader.open_position_manually("BTCUSD", "LONG", 82000.0, 81000.0, 84000.0, lot_size=0.1)
+        self.trader.open_position_manually("XAUTUSD", "LONG", 4150.0, 4120.0, 4210.0, lot_size=0.2)
+
+        dashboard = self.trader.get_position_text()
+        self.assertIn("Active Positions (2/5)", dashboard)
+        self.assertIn("BTCUSD", dashboard)
+        self.assertIn("XAUTUSD", dashboard)
+        self.assertIn("Total Unrealized PnL", dashboard)
+
+
+def tearDownModule():
+    import glob
+    for f in glob.glob("/workspace/bright-darwin/.test_*"):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

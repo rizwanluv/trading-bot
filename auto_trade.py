@@ -58,6 +58,7 @@ AI_FILE = os.path.join(BASE, "ai_bot_learning.py")
 PRO_FILE = os.path.join(BASE, "trading_strategy_indicators_pro.py")
 CONFIG_FILE_PATH = os.path.join(BASE, "auto_trade_config.json")
 TRADES_HISTORY_PATH = os.path.join(BASE, "trades_history.json")
+OPEN_POSITIONS_PATH = os.path.join(BASE, "open_positions.json")
 DELTA_CHART_API = os.getenv(
     "DELTA_CHART_API", "https://api.india.delta.exchange/v2/chart/history"
 )
@@ -75,6 +76,9 @@ DELTA_TICKER_API = os.getenv(
 class AutoTradeConfig:
     enabled: bool = False
     symbol: str = "BTCUSD"
+    symbols: List[str] = field(default_factory=lambda: ["BTCUSD", "XAUTUSD"])
+    max_positions: int = 5
+    max_positions_per_symbol: int = 1
     lot_size: float = 0.01
     lot_mode: str = "fixed"  # "fixed" or "risk_pct"
     risk_pct: float = 1.0  # used if lot_mode is "risk_pct"
@@ -90,11 +94,24 @@ class AutoTradeConfig:
     notify_chat_id: Optional[int] = None
     config_file: str = CONFIG_FILE_PATH
     trades_history_file: str = TRADES_HISTORY_PATH
+    open_positions_file: str = OPEN_POSITIONS_PATH
+
+    def __post_init__(self):
+        if self.config_file != CONFIG_FILE_PATH and self.open_positions_file == OPEN_POSITIONS_PATH:
+            base, ext = os.path.splitext(self.config_file)
+            self.open_positions_file = f"{base}_open_positions{ext}"
+        if not self.symbols:
+            self.symbols = [self.symbol, "XAUTUSD"] if "XAU" not in self.symbol else ["BTCUSD", self.symbol]
+        elif self.symbol not in self.symbols:
+            self.symbols.insert(0, self.symbol)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "enabled": self.enabled,
             "symbol": self.symbol,
+            "symbols": self.symbols,
+            "max_positions": self.max_positions,
+            "max_positions_per_symbol": self.max_positions_per_symbol,
             "lot_size": self.lot_size,
             "lot_mode": self.lot_mode,
             "risk_pct": self.risk_pct,
@@ -128,6 +145,8 @@ class AutoTradeConfig:
                 for k, v in data.items():
                     if hasattr(cfg, k):
                         setattr(cfg, k, v)
+                if not getattr(cfg, "symbols", None):
+                    cfg.symbols = list(dict.fromkeys([cfg.symbol, "XAUTUSD"]))
                 logger.info("Loaded auto-trade configuration from %s", path)
             except Exception as exc:
                 logger.warning("Could not read auto-trade config %s: %s", path, exc)
@@ -177,11 +196,54 @@ class AutoTrader:
 
     def __init__(self, config: Optional[AutoTradeConfig] = None):
         self.config = config or AutoTradeConfig.load()
-        self.position: Optional[AutoTradePosition] = None
+        self.positions: List[AutoTradePosition] = self._load_open_positions()
         self.closed_trades: List[AutoTradePosition] = self._load_trades_history()
         self.is_running: bool = False
         self._strategy_pro: Optional[IndicatorsProStrategy] = None
+        self._strategies_pro: Dict[str, IndicatorsProStrategy] = {}
         self._init_strategy()
+
+    @property
+    def position(self) -> Optional[AutoTradePosition]:
+        """Returns primary active position for backwards compatibility."""
+        return self.positions[0] if self.positions else None
+
+    @position.setter
+    def position(self, pos: Optional[AutoTradePosition]) -> None:
+        """Sets or clears primary position for backwards compatibility."""
+        if pos is None:
+            self.positions = []
+        else:
+            if not self.positions:
+                self.positions = [pos]
+            else:
+                self.positions[0] = pos
+        self._save_open_positions()
+
+    def _load_open_positions(self) -> List[AutoTradePosition]:
+        open_path = getattr(self.config, "open_positions_file", OPEN_POSITIONS_PATH)
+        if os.path.exists(open_path):
+            try:
+                with open(open_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                positions = []
+                for item in data:
+                    if isinstance(item, dict):
+                        positions.append(AutoTradePosition(**item))
+                logger.info("Loaded %d open positions from %s", len(positions), open_path)
+                return positions
+            except Exception as exc:
+                logger.warning("Could not read open positions %s: %s", open_path, exc)
+        return []
+
+    def _save_open_positions(self) -> None:
+        open_path = getattr(self.config, "open_positions_file", OPEN_POSITIONS_PATH)
+        try:
+            with open(open_path, "w", encoding="utf-8") as f:
+                json.dump([asdict(p) for p in self.positions], f, indent=2)
+            logger.info("Saved %d open positions to %s", len(self.positions), open_path)
+        except Exception as exc:
+            logger.warning("Could not save open positions %s: %s", open_path, exc)
 
     def _load_trades_history(self) -> List[AutoTradePosition]:
         history_path = getattr(self.config, "trades_history_file", TRADES_HISTORY_PATH)
@@ -209,15 +271,29 @@ class AutoTrader:
             logger.warning("Could not save trades history %s: %s", history_path, exc)
 
     def _init_strategy(self) -> None:
-        self._strategy_pro = IndicatorsProStrategy(
-            symbol=self.config.symbol,
-            risk_per_trade=self.config.risk_pct,
-            tp_mode=self.config.tp_mode,
-            sl_mode=self.config.sl_mode,
-            tp_value=self.config.tp_value,
-            sl_value=self.config.sl_value,
-            lot_size=self.config.lot_size,
-            lot_mode=self.config.lot_mode,
+        self._strategies_pro = {}
+        for sym in self.config.symbols:
+            self._strategies_pro[sym] = IndicatorsProStrategy(
+                symbol=sym,
+                risk_per_trade=self.config.risk_pct,
+                tp_mode=self.config.tp_mode,
+                sl_mode=self.config.sl_mode,
+                tp_value=self.config.tp_value,
+                sl_value=self.config.sl_value,
+                lot_size=self.config.lot_size,
+                lot_mode=self.config.lot_mode,
+            )
+        self._strategy_pro = self._strategies_pro.get(self.config.symbol) or (
+            IndicatorsProStrategy(
+                symbol=self.config.symbol,
+                risk_per_trade=self.config.risk_pct,
+                tp_mode=self.config.tp_mode,
+                sl_mode=self.config.sl_mode,
+                tp_value=self.config.tp_value,
+                sl_value=self.config.sl_value,
+                lot_size=self.config.lot_size,
+                lot_mode=self.config.lot_mode,
+            )
         )
 
     def enable(self, chat_id: Optional[int] = None) -> str:
@@ -252,6 +328,8 @@ class AutoTrader:
 
         self.config.lot_size = float(size)
         self.config.lot_mode = mode.lower()
+        for strat in self._strategies_pro.values():
+            strat.set_lot_size(self.config.lot_size, self.config.lot_mode)
         if self._strategy_pro:
             self._strategy_pro.set_lot_size(self.config.lot_size, self.config.lot_mode)
         self.config.save()
@@ -280,6 +358,13 @@ class AutoTrader:
         self.config.tp_mode = tp_mode
         self.config.sl_mode = sl_mode
 
+        for strat in self._strategies_pro.values():
+            strat.set_tp_sl(
+                tp_val=self.config.tp_value,
+                sl_val=self.config.sl_value,
+                tp_mode=self.config.tp_mode,
+                sl_mode=self.config.sl_mode,
+            )
         if self._strategy_pro:
             self._strategy_pro.set_tp_sl(
                 tp_val=self.config.tp_value,
@@ -294,7 +379,8 @@ class AutoTrader:
             f"Strategy TP/SL updated:\n• Take Profit: {tp_val} (mode: {tp_mode})\n• Stop Loss: {sl_val} (mode: {sl_mode})",
         )
 
-    def set_symbol(self, symbol: str) -> str:
+    @staticmethod
+    def normalize_symbol(symbol: str) -> str:
         cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
         alias_map = {
             "BTC": "BTCUSD",
@@ -311,12 +397,85 @@ class AutoTrader:
             "XRP": "XRPUSD",
             "XRPUSDT": "XRPUSD",
         }
-        target = alias_map.get(cleaned, cleaned)
+        return alias_map.get(cleaned, cleaned)
+
+    def set_symbol(self, symbol: str) -> str:
+        target = self.normalize_symbol(symbol)
         self.config.symbol = target
-        if self._strategy_pro:
-            self._strategy_pro.set_symbol(target)
+        if target not in self.config.symbols:
+            self.config.symbols.insert(0, target)
+        self._init_strategy()
         self.config.save()
-        return f"Auto trade symbol set to: {self.config.symbol}"
+        return f"Auto trade symbol set to: {self.config.symbol} (Active: {', '.join(self.config.symbols)})"
+
+    def set_symbols(self, symbols: List[str]) -> Tuple[bool, str]:
+        """Configure which symbols the bot automatically scans and trades."""
+        cleaned_list: List[str] = []
+        for s in symbols:
+            target = self.normalize_symbol(s)
+            if target and target not in cleaned_list:
+                cleaned_list.append(target)
+
+        if not cleaned_list:
+            return False, "Error: No valid symbols provided."
+
+        self.config.symbols = cleaned_list
+        if cleaned_list:
+            self.config.symbol = cleaned_list[0]
+        self._init_strategy()
+        self.config.save()
+        syms_str = ", ".join(self.config.symbols)
+        return True, f"Auto-trading active symbols updated: {syms_str}"
+
+    def add_symbol(self, symbol: str) -> Tuple[bool, str]:
+        target = self.normalize_symbol(symbol)
+        if target in self.config.symbols:
+            return False, f"Symbol {target} is already in the active auto-trade list."
+        self.config.symbols.append(target)
+        self._init_strategy()
+        self.config.save()
+        return True, f"Added {target} to auto-trade list. Now trading: {', '.join(self.config.symbols)}"
+
+    def remove_symbol(self, symbol: str) -> Tuple[bool, str]:
+        target = self.normalize_symbol(symbol)
+        if target not in self.config.symbols:
+            return False, f"Symbol {target} is not in the active auto-trade list."
+        if len(self.config.symbols) <= 1:
+            return False, "Cannot remove the only remaining symbol. Add another symbol first."
+        self.config.symbols.remove(target)
+        if self.config.symbol == target:
+            self.config.symbol = self.config.symbols[0]
+        self._init_strategy()
+        self.config.save()
+        return True, f"Removed {target} from auto-trade list. Now trading: {', '.join(self.config.symbols)}"
+
+    def set_max_positions(
+        self,
+        max_pos: Optional[int] = None,
+        per_symbol: Optional[int] = None,
+        total: Optional[int] = None,
+    ) -> Tuple[bool, str]:
+        actual_max = total if total is not None else (max_pos if max_pos is not None else 5)
+        if actual_max < 1 or actual_max > 20:
+            return False, "Error: Max positions must be between 1 and 20."
+        self.config.max_positions = int(actual_max)
+        if per_symbol is not None:
+            if per_symbol < 1 or per_symbol > actual_max:
+                return False, f"Error: Max positions per symbol must be between 1 and {actual_max}."
+            self.config.max_positions_per_symbol = int(per_symbol)
+        self.config.save()
+        return (
+            True,
+            f"Position limits updated: Total max {self.config.max_positions} concurrent trades "
+            f"(Max {self.config.max_positions_per_symbol} per symbol).",
+        )
+
+    def get_positions(self, symbol: Optional[str] = None) -> List[AutoTradePosition]:
+        """Return all active positions, optionally filtered by symbol."""
+        if not symbol:
+            return list(self.positions)
+        target = self.normalize_symbol(symbol)
+        return [p for p in self.positions if p.symbol == target]
 
     def set_strategy_type(self, strategy_type: str) -> Tuple[bool, str]:
         st = strategy_type.strip().lower()
@@ -398,13 +557,12 @@ class AutoTrader:
             index=dates,
         )
 
-    def close_current_position(
-        self, current_price: Optional[float] = None, reason: str = "MANUAL"
-    ) -> Optional[str]:
-        if not self.position:
-            return None
-
-        pos = self.position
+    def _close_single_position(
+        self,
+        pos: AutoTradePosition,
+        current_price: Optional[float] = None,
+        reason: str = "MANUAL",
+    ) -> str:
         price = current_price if current_price is not None else pos.entry_price
         pnl = pos.current_pnl(price)
 
@@ -418,14 +576,20 @@ class AutoTrader:
         self.config.save()
         self.closed_trades.append(pos)
         self._save_trades_history()
-        self.position = None
 
-        if self._strategy_pro:
+        if pos in self.positions:
+            self.positions.remove(pos)
+            self._save_open_positions()
+
+        if pos.symbol in self._strategies_pro:
+            self._strategies_pro[pos.symbol].update(pnl)
+        elif self._strategy_pro:
             self._strategy_pro.update(pnl)
 
         sign = "+" if pnl >= 0 else ""
         return (
             f"🔄 Position Closed ({reason})\n"
+            f"• ID: <code>{pos.id}</code>\n"
             f"• Pair: {pos.symbol}\n"
             f"• Direction: {pos.direction}\n"
             f"• Entry: {pos.entry_price:.2f} | Exit: {price:.2f}\n"
@@ -434,72 +598,132 @@ class AutoTrader:
             f"• New Account Equity: ${self.config.equity:.2f}"
         )
 
+    def close_current_position(
+        self,
+        current_price: Optional[float] = None,
+        reason: str = "MANUAL",
+        position_id: Optional[str] = None,
+    ) -> Optional[str]:
+        if not self.positions:
+            return None
+
+        target_pos: Optional[AutoTradePosition] = None
+        if position_id:
+            for p in self.positions:
+                if p.id.lower() == position_id.strip().lower():
+                    target_pos = p
+                    break
+            if not target_pos:
+                return None
+        else:
+            target_pos = self.positions[0]
+
+        return self._close_single_position(target_pos, current_price=current_price, reason=reason)
+
+    def close_position_by_id(
+        self, pos_id: str, current_price: Optional[float] = None, reason: str = "MANUAL"
+    ) -> Optional[str]:
+        for pos in list(self.positions):
+            if pos.id.lower() == pos_id.strip().lower():
+                return self._close_single_position(pos, current_price=current_price, reason=reason)
+        return None
+
+    def close_positions_by_symbol(
+        self, symbol: str, current_price: Optional[float] = None, reason: str = "MANUAL"
+    ) -> List[str]:
+        sym_norm = self.normalize_symbol(symbol)
+        closed_msgs: List[str] = []
+        for pos in list(self.positions):
+            if pos.symbol.upper() == sym_norm:
+                msg = self._close_single_position(pos, current_price=current_price, reason=reason)
+                closed_msgs.append(msg)
+        return closed_msgs
+
+    def close_all_positions(
+        self, current_prices: Optional[Dict[str, float]] = None, reason: str = "MANUAL"
+    ) -> List[str]:
+        closed_msgs: List[str] = []
+        for pos in list(self.positions):
+            cp = current_prices.get(pos.symbol) if current_prices else None
+            msg = self._close_single_position(pos, current_price=cp, reason=reason)
+            closed_msgs.append(msg)
+        return closed_msgs
+
     def step(self) -> List[str]:
         """
         Runs one evaluation cycle:
-        1. Checks active position against market for TP/SL triggers.
-        2. If no position is open and auto trade is ON, evaluates strategy for entry.
+        1. Checks all active positions across pairs for TP/SL and Trailing SL triggers.
+        2. Enforces daily risk guard if max daily loss is reached.
+        3. If auto trade is ON and capacity permits, scans all configured symbols
+           (e.g. BTCUSD and XAUTUSD) and executes qualified setups.
         Returns a list of notification strings for any significant events.
         """
         notifications: List[str] = []
-        df1 = self.fetch_candles(self.config.symbol, count=120)
-        if df1.empty:
-            return notifications
+        candles_cache: Dict[str, pd.DataFrame] = {}
 
-        last_candle = df1.iloc[-1]
-        curr_high = float(last_candle["high"])
-        curr_low = float(last_candle["low"])
-        curr_close = float(last_candle["close"])
+        def get_candles(sym: str) -> pd.DataFrame:
+            if sym not in candles_cache:
+                candles_cache[sym] = self.fetch_candles(sym, count=120)
+            return candles_cache[sym]
 
-        # 1. Manage Active Position
-        if self.position is not None:
-            pos = self.position
+        # 1. Manage Active Positions across all pairs
+        for pos in list(self.positions):
+            df_pos = get_candles(pos.symbol)
+            if df_pos.empty:
+                continue
+            last_candle = df_pos.iloc[-1]
+            curr_high = float(last_candle["high"])
+            curr_low = float(last_candle["low"])
+            curr_close = float(last_candle["close"])
+
             pos.highest_price = max(pos.highest_price, curr_high)
             pos.lowest_price = min(pos.lowest_price, curr_low)
 
+            closed_event = False
             if pos.direction == "LONG":
                 # Check Take Profit
                 if curr_high >= pos.take_profit_1:
-                    msg = self.close_current_position(pos.take_profit_1, reason="TP1")
-                    if msg:
-                        notifications.append(f"🎯 <b>TAKE PROFIT HIT</b>\n{msg}")
+                    msg = self._close_single_position(pos, current_price=pos.take_profit_1, reason="TP1")
+                    notifications.append(f"🎯 <b>TAKE PROFIT HIT ({pos.symbol})</b>\n{msg}")
+                    closed_event = True
                 # Check Stop Loss
                 elif curr_low <= pos.stop_loss:
-                    msg = self.close_current_position(pos.stop_loss, reason="SL")
-                    if msg:
-                        notifications.append(f"🛑 <b>STOP LOSS HIT</b>\n{msg}")
+                    msg = self._close_single_position(pos, current_price=pos.stop_loss, reason="SL")
+                    notifications.append(f"🛑 <b>STOP LOSS HIT ({pos.symbol})</b>\n{msg}")
+                    closed_event = True
 
             elif pos.direction == "SHORT":
                 # Check Take Profit
                 if curr_low <= pos.take_profit_1:
-                    msg = self.close_current_position(pos.take_profit_1, reason="TP1")
-                    if msg:
-                        notifications.append(f"🎯 <b>TAKE PROFIT HIT</b>\n{msg}")
+                    msg = self._close_single_position(pos, current_price=pos.take_profit_1, reason="TP1")
+                    notifications.append(f"🎯 <b>TAKE PROFIT HIT ({pos.symbol})</b>\n{msg}")
+                    closed_event = True
                 # Check Stop Loss
                 elif curr_high >= pos.stop_loss:
-                    msg = self.close_current_position(pos.stop_loss, reason="SL")
-                    if msg:
-                        notifications.append(f"🛑 <b>STOP LOSS HIT</b>\n{msg}")
+                    msg = self._close_single_position(pos, current_price=pos.stop_loss, reason="SL")
+                    notifications.append(f"🛑 <b>STOP LOSS HIT ({pos.symbol})</b>\n{msg}")
+                    closed_event = True
 
-            # Trailing Stop Loss dynamic update
-            if self.position is not None and self.config.trailing_sl:
-                pos = self.position
+            # Trailing Stop Loss dynamic update if position is still open
+            if not closed_event and pos in self.positions and self.config.trailing_sl:
                 risk_amt = abs(pos.entry_price - pos.stop_loss)
                 if pos.direction == "LONG" and curr_close > pos.entry_price + risk_amt:
                     trail_target = round(curr_close - risk_amt, 2)
                     if trail_target > pos.stop_loss:
                         old_sl = pos.stop_loss
                         pos.stop_loss = trail_target
+                        self._save_open_positions()
                         notifications.append(
-                            f"🛡️ <b>Trailing Stop Moved Up:</b> SL updated from {old_sl:.2f} ➔ <b>{pos.stop_loss:.2f}</b>"
+                            f"🛡️ <b>Trailing Stop Moved Up ({pos.symbol}):</b> SL updated from {old_sl:.2f} ➔ <b>{pos.stop_loss:.2f}</b>"
                         )
                 elif pos.direction == "SHORT" and curr_close < pos.entry_price - risk_amt:
                     trail_target = round(curr_close + risk_amt, 2)
                     if trail_target < pos.stop_loss:
                         old_sl = pos.stop_loss
                         pos.stop_loss = trail_target
+                        self._save_open_positions()
                         notifications.append(
-                            f"🛡️ <b>Trailing Stop Moved Down:</b> SL updated from {old_sl:.2f} ➔ <b>{pos.stop_loss:.2f}</b>"
+                            f"🛡️ <b>Trailing Stop Moved Down ({pos.symbol}):</b> SL updated from {old_sl:.2f} ➔ <b>{pos.stop_loss:.2f}</b>"
                         )
 
         # Risk Management: check max daily loss limit
@@ -516,82 +740,96 @@ class AutoTrader:
                 f"(${abs(today_losses):.2f}). Auto-trade paused to preserve capital."
             )
 
-        # 2. Check for New Entry if no active position and auto-trade is ON
-        if self.position is None and self.config.enabled:
-            daily = (
-                df1.resample("1D")
-                .agg({"open": "first", "high": "max", "low": "min", "close": "last"})
-                .dropna()
-            )
-            if len(daily) < 2:
-                # Synthetic daily support
-                spread_d = 400.0 if "BTC" in self.config.symbol else 10.0
-                daily = pd.DataFrame(
-                    [
-                        {
-                            "open": curr_close - (spread_d * 0.5),
-                            "high": curr_close + spread_d,
-                            "low": curr_close - spread_d,
-                            "close": curr_close,
-                        },
-                        {
-                            "open": curr_close,
-                            "high": curr_close + (spread_d * 0.5),
-                            "low": curr_close - (spread_d * 0.5),
-                            "close": curr_close,
-                        },
-                    ],
-                    index=pd.date_range(
-                        end=datetime.now(timezone.utc), periods=2, freq="1D"
-                    ),
+        # 2. Check for New Entries across configured symbols if auto-trade is ON
+        if self.config.enabled and len(self.positions) < self.config.max_positions:
+            target_symbols = list(self.config.symbols) if self.config.symbols else [self.config.symbol]
+            for sym in target_symbols:
+                if len(self.positions) >= self.config.max_positions:
+                    break
+
+                sym_positions = [p for p in self.positions if p.symbol == sym]
+                if len(sym_positions) >= self.config.max_positions_per_symbol:
+                    continue
+
+                df1 = get_candles(sym)
+                if df1.empty:
+                    continue
+                curr_close = float(df1.iloc[-1]["close"])
+
+                daily = (
+                    df1.resample("1D")
+                    .agg({"open": "first", "high": "max", "low": "min", "close": "last"})
+                    .dropna()
                 )
-
-            if self._strategy_pro:
-                sig = self._strategy_pro.generate_signal(df1, daily)
-                if sig is not None and sig.direction != Direction.FLAT:
-                    entry = sig.entry
-                    stop = sig.stop
-                    tp1 = sig.tp1
-                    tp2 = sig.tp2
-
-                    # Calculate Lot Size
-                    if self.config.lot_mode == "fixed":
-                        lots = self.config.lot_size
-                    else:
-                        lots = self._strategy_pro.size(
-                            self.config.equity, entry, stop, sig.atr
-                        )
-
-                    pos_id = f"TRADE_{int(time.time())}"
-                    new_pos = AutoTradePosition(
-                        id=pos_id,
-                        symbol=self.config.symbol,
-                        direction=sig.direction.name,
-                        entry_price=round(entry, 2),
-                        stop_loss=round(stop, 2),
-                        take_profit_1=round(tp1, 2),
-                        take_profit_2=round(tp2, 2) if tp2 else None,
-                        lot_size=round(lots, 4),
-                        entry_time=datetime.now(timezone.utc).strftime(
-                            "%Y-%m-%d %H:%M:%S UTC"
+                if len(daily) < 2:
+                    spread_d = 400.0 if "BTC" in sym else 10.0
+                    daily = pd.DataFrame(
+                        [
+                            {
+                                "open": curr_close - (spread_d * 0.5),
+                                "high": curr_close + spread_d,
+                                "low": curr_close - spread_d,
+                                "close": curr_close,
+                            },
+                            {
+                                "open": curr_close,
+                                "high": curr_close + (spread_d * 0.5),
+                                "low": curr_close - (spread_d * 0.5),
+                                "close": curr_close,
+                            },
+                        ],
+                        index=pd.date_range(
+                            end=datetime.now(timezone.utc), periods=2, freq="1D"
                         ),
-                        strategy="Indicators Pro",
-                        reason=sig.reason,
-                        highest_price=entry,
-                        lowest_price=entry,
                     )
-                    self.position = new_pos
-                    notifications.append(
-                        f"🚀 <b>AUTO TRADE OPENED</b>\n"
-                        f"• Symbol: {new_pos.symbol}\n"
-                        f"• Direction: <b>{new_pos.direction}</b>\n"
-                        f"• Entry: {new_pos.entry_price:.2f}\n"
-                        f"• Lot Size: {new_pos.lot_size}\n"
-                        f"• Take Profit: {new_pos.take_profit_1:.2f}\n"
-                        f"• Stop Loss: {new_pos.stop_loss:.2f}\n"
-                        f"• Strategy: {new_pos.strategy}\n"
-                        f"• Setup: {sig.setup.value}"
-                    )
+
+                strat = self._strategies_pro.get(sym) or self._strategy_pro
+                if strat:
+                    sig = strat.generate_signal(df1, daily)
+                    if sig is not None and sig.direction != Direction.FLAT:
+                        entry = sig.entry
+                        stop = sig.stop
+                        tp1 = sig.tp1
+                        tp2 = sig.tp2
+
+                        # Calculate Lot Size
+                        if self.config.lot_mode == "fixed":
+                            lots = self.config.lot_size
+                        else:
+                            lots = strat.size(self.config.equity, entry, stop, sig.atr)
+
+                        pos_id = f"TRADE_{sym[:3]}_{int(time.time())}"
+                        new_pos = AutoTradePosition(
+                            id=pos_id,
+                            symbol=sym,
+                            direction=sig.direction.name,
+                            entry_price=round(entry, 2),
+                            stop_loss=round(stop, 2),
+                            take_profit_1=round(tp1, 2),
+                            take_profit_2=round(tp2, 2) if tp2 else None,
+                            lot_size=round(lots, 4),
+                            entry_time=datetime.now(timezone.utc).strftime(
+                                "%Y-%m-%d %H:%M:%S UTC"
+                            ),
+                            strategy="Indicators Pro",
+                            reason=sig.reason,
+                            highest_price=entry,
+                            lowest_price=entry,
+                        )
+                        self.positions.append(new_pos)
+                        self._save_open_positions()
+                        notifications.append(
+                            f"🚀 <b>AUTO TRADE OPENED ({new_pos.symbol})</b>\n"
+                            f"• ID: <code>{new_pos.id}</code>\n"
+                            f"• Symbol: {new_pos.symbol}\n"
+                            f"• Direction: <b>{new_pos.direction}</b>\n"
+                            f"• Entry: {new_pos.entry_price:.2f}\n"
+                            f"• Lot Size: {new_pos.lot_size}\n"
+                            f"• Take Profit: {new_pos.take_profit_1:.2f}\n"
+                            f"• Stop Loss: {new_pos.stop_loss:.2f}\n"
+                            f"• Strategy: {new_pos.strategy}\n"
+                            f"• Setup: {sig.setup.value}"
+                        )
 
         return notifications
 
@@ -604,14 +842,17 @@ class AutoTrader:
             if self.config.lot_mode == "fixed"
             else f"Risk {self.config.risk_pct}%"
         )
+        symbols_str = ", ".join(self.config.symbols) if self.config.symbols else self.config.symbol
 
         text = [
             "⚡ <b>AUTO TRADING DASHBOARD</b>",
             "━━━━━━━━━━━━━━━━━━━━━━",
             f"• <b>Status</b>: {status_icon}",
-            f"• <b>Symbol</b>: {self.config.symbol}",
+            f"• <b>Active Pairs</b>: <code>{symbols_str}</code>",
+            f"• <b>Primary Symbol</b>: <code>{self.config.symbol}</code>",
             f"• <b>Strategy</b>: {self.config.strategy_type.replace('_', ' ').title()}",
             f"• <b>Lot Size</b>: {self.config.lot_size} ({lot_mode_str})",
+            f"• <b>Max Positions</b>: {len(self.positions)}/{self.config.max_positions} (Max/pair: {self.config.max_positions_per_symbol})",
             f"• <b>Take Profit</b>: {self.config.tp_value} ({self.config.tp_mode.upper()})",
             f"• <b>Stop Loss</b>: {self.config.sl_value} ({self.config.sl_mode.upper()})",
             f"• <b>Trailing Stop</b>: {'🟢 ON' if self.config.trailing_sl else '⚪ OFF'}",
@@ -620,19 +861,23 @@ class AutoTrader:
             "━━━━━━━━━━━━━━━━━━━━━━",
         ]
 
-        if self.position:
-            pos = self.position
-            text.extend(
-                [
-                    "📊 <b>Active Position:</b>",
-                    f"  • {pos.direction} {pos.symbol} @ {pos.entry_price:.2f}",
-                    f"  • Lot: {pos.lot_size}",
-                    f"  • TP: {pos.take_profit_1:.2f} | SL: {pos.stop_loss:.2f}",
-                    f"  • Opened: {pos.entry_time}",
-                ]
-            )
+        if self.positions:
+            text.append(f"📊 <b>Active Positions ({len(self.positions)}/{self.config.max_positions}):</b>")
+            for pos in self.positions:
+                df = self.fetch_candles(pos.symbol, count=3)
+                cp = float(df["close"].iloc[-1]) if not df.empty else pos.entry_price
+                pnl = pos.current_pnl(cp)
+                sign = "+" if pnl >= 0 else ""
+                emoji = "🟢" if pnl >= 0 else "🔴"
+                text.extend(
+                    [
+                        f"  • <b>[{pos.id}]</b> {pos.direction} {pos.symbol} @ {pos.entry_price:.2f}",
+                        f"    Lot: {pos.lot_size} | TP: {pos.take_profit_1:.2f} | SL: {pos.stop_loss:.2f}",
+                        f"    PnL: {emoji} {sign}${pnl:.2f} | Time: {pos.entry_time}",
+                    ]
+                )
         else:
-            text.append("📊 <b>Active Position</b>: None")
+            text.append("📊 <b>Active Positions</b>: None (0 open)")
 
         text.append("━━━━━━━━━━━━━━━━━━━━━━")
         total_closed = len(self.closed_trades)
@@ -652,46 +897,64 @@ class AutoTrader:
         return "\n".join(text)
 
     def get_position_text(self) -> str:
-        """Return formatted dashboard text of current open position or idle status."""
-        if not self.position:
+        """Return formatted dashboard text of all open positions or idle status."""
+        if not self.positions:
+            symbols_str = ", ".join(self.config.symbols) if self.config.symbols else self.config.symbol
             return (
-                "💼 <b>Active Position Dashboard</b>\n"
+                "💼 <b>Active Positions Dashboard</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "• <b>Status</b>: No active open position\n"
-                f"• <b>Trading Pair</b>: <code>{self.config.symbol}</code>\n"
+                "• <b>Status</b>: No active open positions\n"
+                f"• <b>Monitoring Pairs</b>: <code>{symbols_str}</code>\n"
                 f"• <b>Auto-Trading</b>: {'🟢 ENABLED' if self.config.enabled else '🔴 DISABLED'}\n"
+                f"• <b>Capacity</b>: 0/{self.config.max_positions} (Max {self.config.max_positions_per_symbol}/pair)\n"
                 f"• <b>Account Equity</b>: <code>${self.config.equity:,.2f}</code>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "<i>💡 Market is continuously scanned for high-probability setups.</i>"
+                "<i>💡 Market is continuously scanned for BTC & Gold high-probability setups.</i>"
             )
 
-        pos = self.position
-        df = self.fetch_candles(pos.symbol, count=5)
-        current_price = float(df["close"].iloc[-1]) if not df.empty else pos.entry_price
-        pnl = pos.current_pnl(current_price)
-        pnl_pct = (
-            ((current_price - pos.entry_price) / pos.entry_price * 100.0)
-            if pos.direction == "LONG"
-            else ((pos.entry_price - current_price) / pos.entry_price * 100.0)
-        )
-        sign = "+" if pnl >= 0 else ""
-        pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+        total_unrealized = 0.0
+        lines = [
+            f"💼 <b>Active Positions ({len(self.positions)}/{self.config.max_positions})</b>",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+        ]
 
-        return (
-            f"💼 <b>Active Position: {pos.symbol}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"• <b>Direction</b>: <b>{pos.direction}</b> {'🟢' if pos.direction == 'LONG' else '🔴'}\n"
-            f"• <b>Entry Price</b>: <code>${pos.entry_price:,.2f}</code>\n"
-            f"• <b>Current Price</b>: <code>${current_price:,.2f}</code>\n"
-            f"• <b>Unrealized PnL</b>: {pnl_emoji} <b>{sign}${pnl:,.2f}</b> ({sign}{pnl_pct:.2f}%)\n"
-            f"• <b>Take Profit</b>: <code>${pos.take_profit_1:,.2f}</code>\n"
-            f"• <b>Stop Loss</b>: <code>${pos.stop_loss:,.2f}</code>\n"
-            f"• <b>Lot Size</b>: <code>{pos.lot_size}</code>\n"
-            f"• <b>Strategy</b>: {pos.strategy}\n"
-            f"• <b>Opened At</b>: {pos.entry_time}\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "<i>💡 Use /autotrade close to close this position manually at market price.</i>"
+        for idx, pos in enumerate(self.positions, start=1):
+            df = self.fetch_candles(pos.symbol, count=5)
+            current_price = float(df["close"].iloc[-1]) if not df.empty else pos.entry_price
+            pnl = pos.current_pnl(current_price)
+            total_unrealized += pnl
+            pnl_pct = (
+                ((current_price - pos.entry_price) / pos.entry_price * 100.0)
+                if pos.direction == "LONG"
+                else ((pos.entry_price - current_price) / pos.entry_price * 100.0)
+            )
+            sign = "+" if pnl >= 0 else ""
+            pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+            tp2_str = f" | TP2: <code>${pos.take_profit_2:,.2f}</code>" if pos.take_profit_2 else ""
+
+            lines.append(
+                f"<b>#{idx} • {pos.symbol} [{pos.id}]</b>\n"
+                f"• Direction: <b>{pos.direction}</b> {'🟢' if pos.direction == 'LONG' else '🔴'}\n"
+                f"• Entry: <code>${pos.entry_price:,.2f}</code> | Current: <code>${current_price:,.2f}</code>\n"
+                f"• PnL: {pnl_emoji} <b>{sign}${pnl:,.2f}</b> ({sign}{pnl_pct:.2f}%)\n"
+                f"• Lot: <code>{pos.lot_size}</code> | SL: <code>${pos.stop_loss:,.2f}</code> | TP1: <code>${pos.take_profit_1:,.2f}</code>{tp2_str}\n"
+                f"• Opened: <code>{pos.entry_time}</code>"
+            )
+            if idx < len(self.positions):
+                lines.append("──────────────────────")
+
+        sign_tot = "+" if total_unrealized >= 0 else ""
+        tot_emoji = "🟢" if total_unrealized >= 0 else "🔴"
+        lines.extend(
+            [
+                "━━━━━━━━━━━━━━━━━━━━━━",
+                f"• <b>Total Unrealized PnL</b>: {tot_emoji} <b>{sign_tot}${total_unrealized:,.2f}</b>",
+                f"• <b>Account Equity</b>: <code>${self.config.equity:,.2f}</code>",
+                "━━━━━━━━━━━━━━━━━━━━━━",
+                "<i>💡 Use <code>/close [ID|SYM|all]</code> or <code>/autotrade close [ID]</code> to exit positions.</i>",
+            ]
         )
+        return "\n".join(lines)
 
     def get_performance_report(self) -> str:
         """Generate comprehensive performance analytics and PnL breakdown."""
@@ -869,18 +1132,28 @@ class AutoTrader:
     ) -> Tuple[bool, str, Optional[AutoTradePosition]]:
         """
         Manually or semi-automatically open a new position with custom or pinpoint parameters.
-        Validates whether a position is already open and calculates position size if omitted.
+        Enforces maximum overall positions and per-symbol positions.
         """
-        if self.position is not None:
+        if len(self.positions) >= self.config.max_positions:
             return (
                 False,
-                f"⚠️ An active position is already open for <b>{self.position.symbol}</b> "
-                f"({self.position.direction} @ ${self.position.entry_price:,.2f}).\n"
-                f"Please close it first with <code>/autotrade close</code> before opening a new position.",
+                f"⚠️ Maximum total concurrent positions limit reached "
+                f"({len(self.positions)}/{self.config.max_positions}).\n"
+                f"Please close an existing position first using <code>/close [ID]</code> or <code>/close all</code>.",
                 None,
             )
 
-        symbol_upper = symbol.strip().upper()
+        symbol_upper = self.normalize_symbol(symbol)
+        sym_positions = [p for p in self.positions if p.symbol == symbol_upper]
+        if len(sym_positions) >= self.config.max_positions_per_symbol:
+            return (
+                False,
+                f"⚠️ An active position is already open for <b>{symbol_upper}</b> "
+                f"({len(sym_positions)}/{self.config.max_positions_per_symbol}).\n"
+                f"Please close the open {symbol_upper} position first with <code>/autotrade close</code> or increase limit with <code>/autotrade max</code>.",
+                None,
+            )
+
         if lot_size is None or lot_size <= 0:
             if self.config.lot_mode == "fixed":
                 lot_size = self.config.lot_size
@@ -894,7 +1167,7 @@ class AutoTrader:
                 else:
                     lot_size = self.config.lot_size
 
-        pos_id = f"TRADE_{int(time.time())}"
+        pos_id = f"TRADE_{symbol_upper[:3]}_{int(time.time())}"
         new_pos = AutoTradePosition(
             id=pos_id,
             symbol=symbol_upper,
@@ -910,7 +1183,8 @@ class AutoTrader:
             highest_price=entry_price,
             lowest_price=entry_price,
         )
-        self.position = new_pos
+        self.positions.append(new_pos)
+        self._save_open_positions()
         tp2_str = (
             f"• <b>Take Profit 2</b>: <code>${new_pos.take_profit_2:,.2f}</code>\n"
             if new_pos.take_profit_2
@@ -920,6 +1194,7 @@ class AutoTrader:
             True,
             f"🚀 <b>POSITION OPENED SUCCESSFULLY</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>ID</b>: <code>{new_pos.id}</code>\n"
             f"• <b>Symbol</b>: <code>{new_pos.symbol}</code>\n"
             f"• <b>Direction</b>: <b>{new_pos.direction}</b> {'🟢' if new_pos.direction == 'LONG' else '🔴'}\n"
             f"• <b>Entry Price</b>: <code>${new_pos.entry_price:,.2f}</code>\n"
@@ -930,7 +1205,7 @@ class AutoTrader:
             f"• <b>Strategy</b>: {new_pos.strategy}\n"
             f"• <b>Reason</b>: {new_pos.reason}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<i>💡 Managed automatically. Use /position or /autotrade close at any time.</i>",
+            f"<i>💡 Managed automatically. Use /position or /close at any time.</i>",
             new_pos,
         )
 

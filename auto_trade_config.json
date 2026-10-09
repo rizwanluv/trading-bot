@@ -1,6 +1,12 @@
 {
   "enabled": false,
   "symbol": "BTCUSD",
+  "symbols": [
+    "BTCUSD",
+    "XAUTUSD"
+  ],
+  "max_positions": 5,
+  "max_positions_per_symbol": 1,
   "lot_size": 2.0,
   "lot_mode": "risk_pct",
   "risk_pct": 2.0,
