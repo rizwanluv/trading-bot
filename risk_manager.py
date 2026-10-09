@@ -642,6 +642,21 @@ def lots_for_risk(equity: float, risk_pct: float, entry: float, stop: float, sym
     return max(profile["min_lot"], min(10.0, round(lots, 4)))
 
 
+# Backwards compatibility alias
+PracticalRiskManager = RiskManager
+
+__all__ = [
+    "RiskManager",
+    "PracticalRiskManager",
+    "RiskConfig",
+    "RiskMode",
+    "RiskState",
+    "TradeRiskResult",
+    "INSTRUMENTS",
+    "calc_lot_size",
+]
+
+
 if __name__ == "__main__":
     print("=" * 62)
     print("  RISK MANAGER – Auto BE + RF + Lot Size")

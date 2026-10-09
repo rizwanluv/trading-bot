@@ -81,6 +81,7 @@ logger = logging.getLogger("trading_bot")
 DEFAULT_SYMBOL = os.getenv("DEFAULT_SYMBOL", "XAUTUSD")
 DELTA_API = os.getenv("DELTA_API", "https://api.india.delta.exchange/v2/tickers")
 BINANCE_API = os.getenv("BINANCE_API", "https://api.binance.com/api/v3")
+BINANCE_FAPI = os.getenv("BINANCE_FAPI", "https://fapi.binance.com/fapi/v1")
 
 # Active Google Gemini Model Fleet (All models active concurrently)
 DEFAULT_ACTIVE_GOOGLE_MODELS = [
@@ -185,34 +186,58 @@ def get_telegram_token() -> Optional[str]:
 
 
 def get_binance_price(symbol: str) -> str:
-    """Fetch live ticker data from Binance REST API."""
+    """Fetch live ticker data from Binance REST API (with Futures failover)."""
     cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
     target = ExchangeApiClient.format_binance_symbol(cleaned)
-    try:
-        r = requests.get(f"{BINANCE_API}/ticker/24hr?symbol={target}", timeout=10)
-        r.raise_for_status()
-        t = r.json()
-        last_price = t.get("lastPrice", "0.0")
-        change_pct = t.get("priceChangePercent", "0.0")
-        high_price = t.get("highPrice", "0.0")
-        low_price = t.get("lowPrice", "0.0")
-        volume = t.get("volume", "0.0")
-        return (
-            f"{target} (Binance): last {last_price} ({change_pct}%) | "
-            f"high {high_price} | low {low_price} | vol {volume}"
-        )
-    except Exception as e:
-        return f"Binance price unavailable ({e})"
+    urls = [
+        f"{BINANCE_API}/ticker/24hr?symbol={target}",
+        f"{BINANCE_FAPI}/ticker/24hr?symbol={target}",
+    ]
+    for url in urls:
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                t = r.json()
+                last_price = t.get("lastPrice", "0.0")
+                change_pct = t.get("priceChangePercent", "0.0")
+                high_price = t.get("highPrice", "0.0")
+                low_price = t.get("lowPrice", "0.0")
+                volume = t.get("volume", "0.0")
+                market_tag = "Binance Futures" if "fapi" in url else "Binance"
+                return (
+                    f"{target} ({market_tag}): last {last_price} ({change_pct}%) | "
+                    f"high {high_price} | low {low_price} | vol {volume}"
+                )
+        except Exception:
+            continue
+    return f"Binance price unavailable for {target}"
 
 
 def get_binance_ticker_card(symbol: str) -> str:
     """Fetch live ticker data from Binance REST API and format as a rich HTML card."""
     cleaned = symbol.strip().upper().replace("/", "").replace("-", "")
     target = ExchangeApiClient.format_binance_symbol(cleaned)
+    urls = [
+        f"{BINANCE_API}/ticker/24hr?symbol={target}",
+        f"{BINANCE_FAPI}/ticker/24hr?symbol={target}",
+    ]
+    t = None
+    market_label = "Binance Public REST API"
+    for url in urls:
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                t = r.json()
+                if "fapi" in url:
+                    market_label = "Binance USD-M Futures REST API"
+                break
+        except Exception:
+            continue
+
+    if not t:
+        return f"⚠️ Binance price unavailable for {symbol.upper()}"
+
     try:
-        r = requests.get(f"{BINANCE_API}/ticker/24hr?symbol={target}", timeout=10)
-        r.raise_for_status()
-        t = r.json()
         last_price = float(t.get("lastPrice", 0.0) or 0.0)
         high_price = float(t.get("highPrice", 0.0) or 0.0)
         low_price = float(t.get("lowPrice", 0.0) or 0.0)
@@ -260,7 +285,7 @@ def get_binance_ticker_card(symbol: str) -> str:
             f"  Low: <code>${low_price:,.2f}</code> ➔ High: <code>${high_price:,.2f}</code>\n"
             f"• <b>24h Volume</b>: <code>{volume:,.2f}</code> ({quote_vol_str})\n"
             f"• <b>Order Book</b>: Bid <code>${bid:,.2f}</code> | Ask <code>${ask:,.2f}</code>\n"
-            f"• <b>Exchange</b>: Binance Public REST API\n"
+            f"• <b>Exchange</b>: {market_label}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"<i>💡 Actions: /entry {target} | /levels {target} | /price {target}</i>"
         )
@@ -1883,12 +1908,13 @@ async def api_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     elif sub in ("switch", "use"):
         if len(args) >= 2:
             target_ex = args[1].lower()
-            ok, msg = trader.switch_exchange(target_ex)
+            target_mkt = args[2].lower() if len(args) >= 3 else None
+            ok, msg = trader.switch_exchange(target_ex, market=target_mkt)
             await reply_safely(update, msg, parse_mode="HTML")
         else:
             await reply_safely(
                 update,
-                "Usage: <code>/api switch binance</code> or <code>/api switch delta</code>",
+                "Usage: <code>/api switch binance [spot|futures]</code> or <code>/api switch delta</code>",
                 parse_mode="HTML",
             )
     elif sub in ("ping", "public"):
@@ -1902,11 +1928,18 @@ async def api_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             parse_mode="HTML",
         )
     elif sub == "clear":
-        msg = trader.clear_exchange_api()
+        target = args[1].lower() if len(args) >= 2 else None
+        msg = trader.clear_exchange_api(exchange=target)
         await reply_safely(update, f"🧹 {msg}")
     elif sub == "set":
-        # /api set <exchange> <key> <secret> OR /api set <key> <secret>
-        if len(args) == 4:
+        # /api set <exchange> <key> <secret> [spot|futures] OR /api set <key> <secret>
+        market_arg = "auto"
+        if len(args) >= 5:
+            ex = args[1]
+            key = args[2]
+            sec = args[3]
+            market_arg = args[4].lower()
+        elif len(args) == 4:
             ex = args[1]
             key = args[2]
             sec = args[3]
@@ -1918,14 +1951,14 @@ async def api_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await reply_safely(
                 update,
                 "Usage:\n"
-                "• <code>/api set binance &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>\n"
+                "• <code>/api set binance &lt;API_KEY&gt; &lt;API_SECRET&gt; [spot|futures]</code>\n"
                 "• <code>/api set delta &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>\n"
-                "• <code>/api switch [binance|delta]</code>\n"
+                "• <code>/api switch binance [spot|futures]</code> (or <code>delta</code>)\n"
                 "• <code>/api ping</code>",
                 parse_mode="HTML",
             )
             return
-        ok, msg = trader.set_exchange_api(ex, key, sec)
+        ok, msg = trader.set_exchange_api(ex, key, sec, market=market_arg)
         await reply_safely(update, msg, parse_mode="HTML")
     else:
         report = trader.get_api_status_report()

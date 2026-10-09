@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import main
 import auto_trade
+from auto_trade import AutoTradeConfig, AutoTrader, ExchangeApiClient
 import pandas as pd
 
 
@@ -3097,6 +3098,149 @@ class TestGoogleMultiModelEnsemble(unittest.IsolatedAsyncioTestCase):
                 await main.models_command(update, ctx)
                 sent = update.message.reply_text.call_args[0][0]
                 self.assertIn("BTC is trending up.", sent)
+
+
+class TestBinanceDualMarketAndExchangeManagement(unittest.TestCase):
+    def setUp(self):
+        from auto_trade import AutoTradeConfig, AutoTrader, ExchangeApiClient
+        self.ExchangeApiClient = ExchangeApiClient
+        self.tmp_config = "/workspace/bright-darwin/.test_dual_mkt_cfg.json"
+        self.cfg = AutoTradeConfig(config_file=self.tmp_config)
+        self.trader = AutoTrader(self.cfg)
+
+    def tearDown(self):
+        if os.path.exists(self.tmp_config):
+            try:
+                os.remove(self.tmp_config)
+            except OSError:
+                pass
+
+    def test_risk_manager_practical_alias(self):
+        import risk_manager
+        self.assertIs(risk_manager.PracticalRiskManager, risk_manager.RiskManager)
+        rm = risk_manager.PracticalRiskManager(equity=10000.0, symbol="BTCUSDT")
+        self.assertEqual(rm.state.equity, 10000.0)
+
+    def test_exchange_api_client_binance_futures_connection_and_failover(self):
+        # 1. Spot succeeds
+        client_spot = ExchangeApiClient(exchange="binance", api_key="k1", api_secret="s1")
+        with patch("requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {"balances": [{"asset": "USDT", "free": "1250.50"}]}
+            mock_get.return_value = mock_resp
+
+            ok, msg, data = client_spot.test_connection()
+            self.assertTrue(ok)
+            self.assertEqual(data["balance"], 1250.50)
+            self.assertEqual(client_spot.market, "spot")
+
+        # 2. Spot returns 400 (futures key), failover to futures succeeds
+        client_futures = ExchangeApiClient(exchange="binance", api_key="k2", api_secret="s2")
+        with patch("requests.get") as mock_get:
+            def side_effect(url, **kwargs):
+                r = MagicMock()
+                if "fapi" in url:
+                    r.status_code = 200
+                    r.json.return_value = {"availableBalance": "3400.75"}
+                else:
+                    r.status_code = 400
+                    r.text = '{"code":-2015,"msg":"Invalid API-key"}'
+                return r
+            mock_get.side_effect = side_effect
+
+            ok, msg, data = client_futures.test_connection()
+            self.assertTrue(ok)
+            self.assertEqual(data["balance"], 3400.75)
+            self.assertEqual(client_futures.market, "futures")
+
+    def test_exchange_api_client_binance_place_and_cancel_order_futures_routing(self):
+        client = ExchangeApiClient(exchange="binance", api_key="k", api_secret="s", market="futures")
+        with patch("requests.post") as mock_post:
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {"orderId": 987654321}
+            mock_post.return_value = resp
+
+            ok, ord_id, data = client.place_order("BTCUSDT", "BUY", 0.05)
+            self.assertTrue(ok)
+            self.assertEqual(ord_id, "987654321")
+            call_url = mock_post.call_args[0][0]
+            self.assertIn("fapi.binance.com", call_url)
+
+        with patch("requests.delete") as mock_del:
+            resp = MagicMock()
+            resp.status_code = 200
+            mock_del.return_value = resp
+
+            ok_c, msg_c = client.cancel_order("BTCUSDT", "987654321")
+            self.assertTrue(ok_c)
+            self.assertIn("cancelled successfully", msg_c)
+            call_url = mock_del.call_args[0][0]
+            self.assertIn("fapi.binance.com", call_url)
+
+    def test_per_exchange_credentials_persistence_and_switching(self):
+        # Configure Delta
+        with patch.object(ExchangeApiClient, "test_connection", return_value=(True, "Delta OK", {"balance": 100})):
+            ok, msg = self.trader.set_exchange_api("delta", "delta_key_1234", "delta_sec_1234")
+            self.assertTrue(ok)
+            self.assertEqual(self.trader.config.delta_api_key, "delta_key_1234")
+            self.assertEqual(self.trader.config.live_exchange, "delta")
+
+        # Configure Binance with futures market
+        with patch.object(ExchangeApiClient, "test_connection", return_value=(True, "Binance Futures OK", {"balance": 500})):
+            ok, msg = self.trader.set_exchange_api("binance", "binance_key_9999", "binance_sec_9999", market="futures")
+            self.assertTrue(ok)
+            self.assertEqual(self.trader.config.binance_api_key, "binance_key_9999")
+            self.assertEqual(self.trader.config.binance_market, "futures")
+            self.assertEqual(self.trader.config.live_exchange, "binance")
+
+        # Switch back to Delta -> loads delta credentials automatically
+        ok, msg = self.trader.switch_exchange("delta")
+        self.assertTrue(ok)
+        self.assertEqual(self.trader.config.live_exchange, "delta")
+        self.assertEqual(self.trader.exchange_client.api_key, "delta_key_1234")
+
+        # Switch back to Binance -> loads binance credentials automatically
+        ok, msg = self.trader.switch_exchange("binance")
+        self.assertTrue(ok)
+        self.assertEqual(self.trader.config.live_exchange, "binance")
+        self.assertEqual(self.trader.exchange_client.api_key, "binance_key_9999")
+        self.assertEqual(self.trader.exchange_client.market, "futures")
+
+        # Check status report contains both saved profiles
+        rep = self.trader.get_api_status_report()
+        self.assertIn("Delta Exchange", rep)
+        self.assertIn("Binance (FUTURES)", rep)
+
+    def test_binance_ticker_and_card_failover_to_futures(self):
+        with patch("requests.get") as mock_get:
+            def side_effect(url, **kwargs):
+                r = MagicMock()
+                if "fapi" in url:
+                    r.status_code = 200
+                    r.json.return_value = {
+                        "lastPrice": "82500.00",
+                        "priceChangePercent": "2.50",
+                        "highPrice": "84000.00",
+                        "lowPrice": "81000.00",
+                        "volume": "15000.0",
+                        "quoteVolume": "1200000000.0",
+                        "bidPrice": "82499.00",
+                        "askPrice": "82501.00",
+                    }
+                else:
+                    r.status_code = 500
+                return r
+            mock_get.side_effect = side_effect
+
+            p_str = main.get_binance_price("BTCUSDT")
+            self.assertIn("82500.00", p_str)
+            self.assertIn("Binance Futures", p_str)
+
+            card = main.get_binance_ticker_card("BTCUSDT")
+            self.assertIn("Binance USD-M Futures REST API", card)
+            self.assertIn("$82,500.00", card)
 
 
 def tearDownModule():

@@ -137,6 +137,11 @@ class AutoTradeConfig:
     live_exchange: str = "delta"  # "delta", "binance"
     exchange_api_key: str = ""
     exchange_api_secret: str = ""
+    delta_api_key: str = ""
+    delta_api_secret: str = ""
+    binance_api_key: str = ""
+    binance_api_secret: str = ""
+    binance_market: str = "auto"  # "auto", "spot", "futures"
     notify_chat_id: Optional[int] = None
     config_file: str = CONFIG_FILE_PATH
     trades_history_file: str = TRADES_HISTORY_PATH
@@ -171,6 +176,12 @@ class AutoTradeConfig:
                 self.alerts_file = f"{base}_alerts{ext}"
             if self.risk_state_file == RISK_STATE_PATH:
                 self.risk_state_file = f"{base}_risk_state{ext}"
+        if not self.delta_api_key and self.live_exchange == "delta" and self.exchange_api_key:
+            self.delta_api_key = self.exchange_api_key
+            self.delta_api_secret = self.exchange_api_secret
+        elif not self.binance_api_key and self.live_exchange == "binance" and self.exchange_api_key:
+            self.binance_api_key = self.exchange_api_key
+            self.binance_api_secret = self.exchange_api_secret
         if not self.symbols:
             self.symbols = [self.symbol, "XAUTUSD"] if "XAU" not in self.symbol else ["BTCUSD", self.symbol]
         elif self.symbol not in self.symbols:
@@ -203,6 +214,11 @@ class AutoTradeConfig:
             "live_exchange": self.live_exchange,
             "exchange_api_key": self.exchange_api_key,
             "exchange_api_secret": self.exchange_api_secret,
+            "delta_api_key": self.delta_api_key,
+            "delta_api_secret": self.delta_api_secret,
+            "binance_api_key": self.binance_api_key,
+            "binance_api_secret": self.binance_api_secret,
+            "binance_market": self.binance_market,
             "notify_chat_id": self.notify_chat_id,
             "alerts_file": self.alerts_file,
             "weight_itb": self.weight_itb,
@@ -317,8 +333,10 @@ class ExchangeApiClient:
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
         testnet: bool = False,
+        market: str = "auto",
     ):
         self.exchange = (exchange or "delta").strip().lower()
+        self.market = (market or os.getenv("BINANCE_MARKET", "auto")).lower()
         if self.exchange == "binance":
             self.api_key = (api_key or os.getenv("BINANCE_API_KEY") or os.getenv("EXCHANGE_API_KEY") or "").strip()
             self.api_secret = (api_secret or os.getenv("BINANCE_API_SECRET") or os.getenv("EXCHANGE_API_SECRET") or "").strip()
@@ -339,11 +357,13 @@ class ExchangeApiClient:
         return f"{key[:4]}...{key[-4:]}"
 
     def get_masked_status(self) -> Dict[str, str]:
+        mkt_tag = f" ({self.market.upper()})" if self.exchange == "binance" else ""
         return {
-            "exchange": self.exchange.upper(),
+            "exchange": f"{self.exchange.upper()}{mkt_tag}",
             "api_key": self.mask_key(self.api_key),
             "api_secret": "***Configured***" if self.api_secret else "Not Configured",
             "status": "CONFIGURED 🟢" if self.is_configured else "NOT SET 🔴",
+            "market": self.market,
         }
 
     @staticmethod
@@ -425,35 +445,43 @@ class ExchangeApiClient:
                 return False, f"Network error connecting to Delta Exchange: {e}", {}
 
         elif self.exchange == "binance":
-            base_url = "https://testnet.binance.vision" if self.testnet else "https://api.binance.com"
-            path = "/api/v3/account"
             ts = int(time.time() * 1000)
             query = f"timestamp={ts}&recvWindow=5000"
             sig = hmac.new(self.api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
             headers = {"X-MBX-APIKEY": self.api_key, "User-Agent": "TradingBot/1.0"}
-            try:
-                resp = requests.get(f"{base_url}{path}?{query}&signature={sig}", headers=headers, timeout=10)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    usdt_bal = 0.0
-                    for b in data.get("balances", []):
-                        if b.get("asset") in ("USDT", "USD"):
-                            usdt_bal += float(b.get("free", 0.0))
-                    return True, f"Connected to Binance Spot successfully. Available: ${usdt_bal:,.2f} USDT", {"balance": usdt_bal, "raw": data, "market": "spot"}
-                elif resp.status_code in (401, 403, 400):
-                    # Check if API key is a Binance USD-M Futures key
-                    f_base = "https://fapi.binance.com"
-                    f_path = "/fapi/v2/account"
-                    f_resp = requests.get(f"{f_base}{f_path}?{query}&signature={sig}", headers=headers, timeout=10)
-                    if f_resp.status_code == 200:
-                        f_data = f_resp.json()
-                        usdt_bal = float(f_data.get("availableBalance", 0.0) or f_data.get("totalWalletBalance", 0.0))
-                        return True, f"Connected to Binance Futures successfully. Available: ${usdt_bal:,.2f} USDT", {"balance": usdt_bal, "raw": f_data, "market": "futures"}
-                    return False, f"Binance Authentication failed (HTTP {resp.status_code}): Invalid API Key or Secret.", {}
-                else:
-                    return False, f"Binance error (HTTP {resp.status_code}): {resp.text[:200]}", {}
-            except Exception as e:
-                return False, f"Network error connecting to Binance: {e}", {}
+
+            check_futures_first = (getattr(self, "market", "auto") == "futures")
+            endpoints = []
+            if check_futures_first:
+                endpoints.append(("futures", "https://testnet.binancefuture.com" if self.testnet else "https://fapi.binance.com", "/fapi/v2/account"))
+                endpoints.append(("spot", "https://testnet.binance.vision" if self.testnet else "https://api.binance.com", "/api/v3/account"))
+            else:
+                endpoints.append(("spot", "https://testnet.binance.vision" if self.testnet else "https://api.binance.com", "/api/v3/account"))
+                endpoints.append(("futures", "https://testnet.binancefuture.com" if self.testnet else "https://fapi.binance.com", "/fapi/v2/account"))
+
+            last_err = ""
+            for mkt_type, base_url, path in endpoints:
+                try:
+                    resp = requests.get(f"{base_url}{path}?{query}&signature={sig}", headers=headers, timeout=10)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        usdt_bal = 0.0
+                        if mkt_type == "futures":
+                            usdt_bal = float(data.get("availableBalance", 0.0) or data.get("totalWalletBalance", 0.0))
+                        else:
+                            for b in data.get("balances", []):
+                                if b.get("asset") in ("USDT", "USD"):
+                                    usdt_bal += float(b.get("free", 0.0))
+                        self.market = mkt_type
+                        return True, f"Connected to Binance {mkt_type.title()} successfully. Available: ${usdt_bal:,.2f} USDT", {"balance": usdt_bal, "raw": data, "market": mkt_type}
+                    elif resp.status_code in (401, 403, 400):
+                        last_err = f"Binance {mkt_type.title()} Auth failed (HTTP {resp.status_code}): Invalid Key or Permissions."
+                    else:
+                        last_err = f"Binance {mkt_type.title()} error (HTTP {resp.status_code}): {resp.text[:200]}"
+                except Exception as e:
+                    last_err = f"Network error connecting to Binance {mkt_type.title()}: {e}"
+
+            return False, last_err or "Binance authentication failed.", {}
 
         return False, f"Exchange '{self.exchange}' is not supported. Supported: delta, binance", {}
 
@@ -467,15 +495,22 @@ class ExchangeApiClient:
         """Fetch live ticker price for symbol from the configured exchange."""
         if self.exchange == "binance":
             b_sym = self.format_binance_symbol(symbol)
-            try:
-                resp = requests.get(f"https://api.binance.com/api/v3/ticker/24hr?symbol={b_sym}", timeout=8)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    last_price = float(data.get("lastPrice", 0.0))
-                    return True, last_price, data
-                return False, 0.0, {"error": resp.text[:200]}
-            except Exception as e:
-                return False, 0.0, {"error": str(e)}
+            endpoints = [
+                f"https://api.binance.com/api/v3/ticker/24hr?symbol={b_sym}",
+                f"https://fapi.binance.com/fapi/v1/ticker/24hr?symbol={b_sym}",
+            ]
+            if getattr(self, "market", "auto") == "futures":
+                endpoints.reverse()
+            for url in endpoints:
+                try:
+                    resp = requests.get(url, timeout=8)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        last_price = float(data.get("lastPrice", 0.0))
+                        return True, last_price, data
+                except Exception:
+                    continue
+            return False, 0.0, {"error": f"Binance price unavailable for {b_sym}"}
         else:
             target = symbol.strip().upper().replace("/", "").replace("-", "")
             try:
@@ -539,8 +574,6 @@ class ExchangeApiClient:
                 return False, f"Delta request failed: {e}", {}
 
         elif self.exchange == "binance":
-            base_url = "https://testnet.binance.vision" if self.testnet else "https://api.binance.com"
-            path = "/api/v3/order"
             ts = int(time.time() * 1000)
             side = "BUY" if direction.upper() in ("BUY", "LONG") else "SELL"
             b_sym = self.format_binance_symbol(symbol)
@@ -569,15 +602,30 @@ class ExchangeApiClient:
                 "X-MBX-APIKEY": self.api_key,
                 "User-Agent": "TradingBot/1.0",
             }
-            try:
-                resp = requests.post(f"{base_url}{path}?{query_str}&signature={sig}", headers=headers, timeout=10)
-                if resp.status_code in (200, 201):
-                    data = resp.json()
-                    order_id = str(data.get("orderId", f"BINANCE_{int(time.time())}"))
-                    return True, order_id, data
-                return False, f"Binance order rejected (HTTP {resp.status_code}): {resp.text[:200]}", {}
-            except Exception as e:
-                return False, f"Binance order request failed: {e}", {}
+
+            use_futures = getattr(self, "market", "auto") == "futures"
+            endpoints = []
+            if use_futures:
+                endpoints.append(("futures", "https://testnet.binancefuture.com" if self.testnet else "https://fapi.binance.com", "/fapi/v1/order"))
+                endpoints.append(("spot", "https://testnet.binance.vision" if self.testnet else "https://api.binance.com", "/api/v3/order"))
+            else:
+                endpoints.append(("spot", "https://testnet.binance.vision" if self.testnet else "https://api.binance.com", "/api/v3/order"))
+                endpoints.append(("futures", "https://testnet.binancefuture.com" if self.testnet else "https://fapi.binance.com", "/fapi/v1/order"))
+
+            last_err = ""
+            for mkt_type, base_url, path in endpoints:
+                try:
+                    resp = requests.post(f"{base_url}{path}?{query_str}&signature={sig}", headers=headers, timeout=10)
+                    if resp.status_code in (200, 201):
+                        self.market = mkt_type
+                        data = resp.json()
+                        order_id = str(data.get("orderId", f"BINANCE_{int(time.time())}"))
+                        return True, order_id, data
+                    last_err = f"Binance {mkt_type.title()} rejected (HTTP {resp.status_code}): {resp.text[:200]}"
+                except Exception as e:
+                    last_err = f"Binance {mkt_type.title()} order request failed: {e}"
+
+            return False, last_err, {}
 
         return False, f"Live ordering on {self.exchange} preview.", {}
 
@@ -587,8 +635,6 @@ class ExchangeApiClient:
             return False, "Exchange API is not configured."
 
         if self.exchange == "binance":
-            base_url = "https://testnet.binance.vision" if self.testnet else "https://api.binance.com"
-            path = "/api/v3/order"
             ts = int(time.time() * 1000)
             b_sym = self.format_binance_symbol(symbol)
             params = {
@@ -600,13 +646,27 @@ class ExchangeApiClient:
             query_str = urllib.parse.urlencode(params)
             sig = hmac.new(self.api_secret.encode("utf-8"), query_str.encode("utf-8"), hashlib.sha256).hexdigest()
             headers = {"X-MBX-APIKEY": self.api_key, "User-Agent": "TradingBot/1.0"}
-            try:
-                resp = requests.delete(f"{base_url}{path}?{query_str}&signature={sig}", headers=headers, timeout=10)
-                if resp.status_code == 200:
-                    return True, f"Binance order {order_id} cancelled successfully."
-                return False, f"Binance cancel failed (HTTP {resp.status_code}): {resp.text[:200]}"
-            except Exception as e:
-                return False, f"Binance cancel request failed: {e}"
+
+            use_futures = getattr(self, "market", "auto") == "futures"
+            endpoints = []
+            if use_futures:
+                endpoints.append(("futures", "https://testnet.binancefuture.com" if self.testnet else "https://fapi.binance.com", "/fapi/v1/order"))
+                endpoints.append(("spot", "https://testnet.binance.vision" if self.testnet else "https://api.binance.com", "/api/v3/order"))
+            else:
+                endpoints.append(("spot", "https://testnet.binance.vision" if self.testnet else "https://api.binance.com", "/api/v3/order"))
+                endpoints.append(("futures", "https://testnet.binancefuture.com" if self.testnet else "https://fapi.binance.com", "/fapi/v1/order"))
+
+            last_err = ""
+            for mkt_type, base_url, path in endpoints:
+                try:
+                    resp = requests.delete(f"{base_url}{path}?{query_str}&signature={sig}", headers=headers, timeout=10)
+                    if resp.status_code == 200:
+                        return True, f"Binance {mkt_type.title()} order {order_id} cancelled successfully."
+                    last_err = f"Binance {mkt_type.title()} cancel failed (HTTP {resp.status_code}): {resp.text[:200]}"
+                except Exception as e:
+                    last_err = f"Binance {mkt_type.title()} cancel request failed: {e}"
+
+            return False, last_err
 
         elif self.exchange == "delta":
             base_url = "https://cdn.testnet.delta.exchange" if self.testnet else "https://api.india.delta.exchange"
@@ -1068,10 +1128,17 @@ class AutoTrader:
 
     def __init__(self, config: Optional[AutoTradeConfig] = None):
         self.config = config or AutoTradeConfig.load()
+        if self.config.live_exchange == "binance":
+            init_k = self.config.binance_api_key or self.config.exchange_api_key
+            init_s = self.config.binance_api_secret or self.config.exchange_api_secret
+        else:
+            init_k = self.config.delta_api_key or self.config.exchange_api_key
+            init_s = self.config.delta_api_secret or self.config.exchange_api_secret
         self.exchange_client = ExchangeApiClient(
             exchange=self.config.live_exchange,
-            api_key=self.config.exchange_api_key,
-            api_secret=self.config.exchange_api_secret,
+            api_key=init_k,
+            api_secret=init_s,
+            market=getattr(self.config, "binance_market", "auto"),
         )
         self.positions: List[AutoTradePosition] = self._load_open_positions()
         self.closed_trades: List[AutoTradePosition] = self._load_trades_history()
@@ -1803,7 +1870,7 @@ class AutoTrader:
             f"• <code>/mode [paper|live]</code> — Switch trading mode"
         )
 
-    def set_exchange_api(self, exchange: str, api_key: str, api_secret: str) -> Tuple[bool, str]:
+    def set_exchange_api(self, exchange: str, api_key: str, api_secret: str, market: str = "auto") -> Tuple[bool, str]:
         """Configure live exchange API credentials."""
         ex = exchange.strip().lower()
         if ex not in ("delta", "binance"):
@@ -1812,11 +1879,21 @@ class AutoTrader:
         self.config.live_exchange = ex
         self.config.exchange_api_key = api_key.strip()
         self.config.exchange_api_secret = api_secret.strip()
+        if ex == "binance":
+            self.config.binance_api_key = api_key.strip()
+            self.config.binance_api_secret = api_secret.strip()
+            if market:
+                self.config.binance_market = market.lower()
+        elif ex == "delta":
+            self.config.delta_api_key = api_key.strip()
+            self.config.delta_api_secret = api_secret.strip()
+
         self.config.save()
         self.exchange_client = ExchangeApiClient(
             exchange=ex,
-            api_key=self.config.exchange_api_key,
-            api_secret=self.config.exchange_api_secret,
+            api_key=api_key.strip(),
+            api_secret=api_secret.strip(),
+            market=getattr(self.config, "binance_market", "auto"),
         )
         ok, msg, _ = self.exchange_client.test_connection()
         masked_k = self.exchange_client.mask_key(api_key)
@@ -1829,27 +1906,51 @@ class AutoTrader:
             f"<i>💡 To trade with this exchange, switch mode with /mode live</i>",
         )
 
-    def clear_exchange_api(self) -> str:
+    def clear_exchange_api(self, exchange: Optional[str] = None) -> str:
         """Clear exchange API credentials and revert safely to paper mode."""
+        ex = (exchange or self.config.live_exchange).strip().lower()
+        if ex == "binance":
+            self.config.binance_api_key = ""
+            self.config.binance_api_secret = ""
+        elif ex == "delta":
+            self.config.delta_api_key = ""
+            self.config.delta_api_secret = ""
         self.config.exchange_api_key = ""
         self.config.exchange_api_secret = ""
         if self.config.trading_mode == "live":
             self.config.trading_mode = "paper"
         self.config.save()
-        self.exchange_client = ExchangeApiClient(exchange=self.config.live_exchange)
-        return "Exchange API credentials cleared. Mode reverted to PAPER TRADING 📄."
+        self.exchange_client = ExchangeApiClient(
+            exchange=self.config.live_exchange,
+            market=getattr(self.config, "binance_market", "auto"),
+        )
+        return f"Exchange API credentials for {ex.upper()} cleared. Mode reverted to PAPER TRADING 📄."
 
-    def switch_exchange(self, exchange: str) -> Tuple[bool, str]:
+    def switch_exchange(self, exchange: str, market: Optional[str] = None) -> Tuple[bool, str]:
         """Switch active exchange between delta and binance."""
         ex = exchange.strip().lower()
         if ex not in ("delta", "binance"):
             return False, f"Unsupported exchange '{exchange}'. Supported: delta, binance"
         self.config.live_exchange = ex
+        if market and ex == "binance":
+            self.config.binance_market = market.lower()
+
+        if ex == "binance":
+            api_k = self.config.binance_api_key or os.getenv("BINANCE_API_KEY") or self.config.exchange_api_key
+            api_s = self.config.binance_api_secret or os.getenv("BINANCE_API_SECRET") or self.config.exchange_api_secret
+        else:
+            api_k = self.config.delta_api_key or os.getenv("DELTA_API_KEY") or self.config.exchange_api_key
+            api_s = self.config.delta_api_secret or os.getenv("DELTA_API_SECRET") or self.config.exchange_api_secret
+
+        self.config.exchange_api_key = api_k
+        self.config.exchange_api_secret = api_s
         self.config.save()
+
         self.exchange_client = ExchangeApiClient(
             exchange=ex,
-            api_key=self.config.exchange_api_key if self.config.live_exchange == ex else None,
-            api_secret=self.config.exchange_api_secret if self.config.live_exchange == ex else None,
+            api_key=api_k,
+            api_secret=api_s,
+            market=getattr(self.config, "binance_market", "auto"),
         )
         return (
             True,
@@ -1865,22 +1966,29 @@ class AutoTrader:
         conn_ok, conn_msg, conn_data = self.exchange_client.test_connection()
         conn_str = f"🟢 Connected" if conn_ok else f"🔴 Not Connected ({conn_msg})"
 
+        delta_status = "CONFIGURED 🟢" if (self.config.delta_api_key or (self.config.live_exchange == "delta" and self.config.exchange_api_key)) else "NOT SET 🔴"
+        binance_status = "CONFIGURED 🟢" if (self.config.binance_api_key or (self.config.live_exchange == "binance" and self.config.exchange_api_key)) else "NOT SET 🔴"
+
         return (
             f"🔌 <b>LIVE EXCHANGE API SYSTEM</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>Active Exchange</b>: <code>{st['exchange']}</code>\n"
-            f"• <b>API Status</b>: {st['status']}\n"
+            f"• <b>Active Credentials</b>: {st['status']}\n"
             f"• <b>API Key</b>: <code>{st['api_key']}</code>\n"
             f"• <b>API Secret</b>: <code>{st['api_secret']}</code>\n"
             f"• <b>Connectivity</b>: {conn_str}\n"
             f"• <b>Current Mode</b>: {'📄 PAPER TRADING' if self.config.trading_mode == 'paper' else '🚨 LIVE TRADING'}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Saved Profiles:</b>\n"
+            f"• <b>Delta Exchange</b>: {delta_status}\n"
+            f"• <b>Binance ({self.config.binance_market.upper()})</b>: {binance_status}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>Setup & Controls:</b>\n"
             f"• <code>/api set delta &lt;KEY&gt; &lt;SECRET&gt;</code> — Set Delta credentials\n"
-            f"• <code>/api set binance &lt;KEY&gt; &lt;SECRET&gt;</code> — Set Binance credentials\n"
-            f"• <code>/api switch binance</code> (or <code>delta</code>) — Switch active exchange\n"
+            f"• <code>/api set binance &lt;KEY&gt; &lt;SECRET&gt; [spot|futures]</code> — Set Binance credentials\n"
+            f"• <code>/api switch binance [spot|futures]</code> (or <code>delta</code>) — Switch active exchange\n"
             f"• <code>/api test</code> — Test exchange connection & query live balance\n"
-            f"• <code>/api clear</code> — Clear credentials & return to paper mode\n"
+            f"• <code>/api clear [binance|delta]</code> — Clear credentials & return to paper mode\n"
             f"• <code>/mode live</code> — Switch to live real-order trading"
         )
 
