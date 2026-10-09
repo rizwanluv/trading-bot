@@ -340,34 +340,48 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await reply_safely(
         update,
         "Trading assistant ready. Real-time analysis and automated trading for Bitcoin (BTC) & Gold (XAU).\n\n"
-        "Market & Analysis Commands:\n"
+        "📊 1. Market & Live Quotes:\n"
         "• /btc - Live Bitcoin (BTC) ticker, 24h stats & range\n"
-        "• /gold - Live Gold (XAU) ticker, 24h stats & range\n"
+        "• /gold (/xau) - Live Gold (XAU) ticker, 24h stats & range\n"
         "• /eth - Live Ethereum (ETH) ticker & stats\n"
         "• /sol - Live Solana (SOL) ticker & stats\n"
+        "• /price [SYM] - Price check on any Delta Exchange pair\n"
+        "• /analyze [SYMBOL] - Full 10-indicator technical analysis & confluence\n\n"
+        "🎯 2. Pinpoint Trade Planning & Smart Money:\n"
         "• /entry [SYM] - Pinpoint Entry, Precision SL & Multi-tier TP Targets\n"
-        "• /levels [SYM] - Smart Money Order Blocks (OB) & Fair Value Gaps (FVG)\n"
-        "• /calc [ENTRY] [SL] [TP] - Position Sizing & Risk:Reward Calculator\n"
-        "• /analyze [SYMBOL] - Full technical analysis & signal report\n"
-        "• /price [SYMBOL] - Price check on any Delta Exchange pair\n"
-        "• /symbols [both|btc|gold|add|rm] - Configure active auto-trade pairs\n"
-        "• /symbol [SYMBOL] - View or switch primary trading symbol\n\n"
-        "Auto-Trade & Execution Controls:\n"
+        "• /levels [SYM] (/ob) - Smart Money Order Blocks (OB) & Fair Value Gaps (FVG)\n"
+        "• /calc [ENTRY] [SL] [TP] - Position Sizing & Risk:Reward Calculator\n\n"
+        "⚡ 3. Auto-Trading & Execution Controls:\n"
+        "• /autotrade [on|off|status|close|symbols|max] - Control automated trading\n"
         "• /execute [LOTS|limit] - One-Tap Execution of Pinpoint Trade Plan\n"
         "• /buy - Quick Instant Long Market Order\n"
         "• /sell - Quick Instant Short Market Order\n"
-        "• /autotrade [on|off|status|close|symbols|max] - Control automated trading\n"
         "• /position (/positions) - Live active positions dashboard & unrealized PnL\n"
         "• /close [ID|SYM|all] - Close specific position, symbol, or all open trades\n"
-        "• /pnl - Performance report & closed trades history\n"
+        "• /pnl - Performance report & closed trades history\n\n"
+        "💼 4. Paper & Live Trading / Capital Management:\n"
+        "• /mode [paper|live] - Switch between Paper ($0 risk) and Live trading\n"
+        "• /capital (/funds) - View trading capital and funds dashboard\n"
+        "• /capital set [AMT] - Set base paper capital (default: $100.00)\n"
+        "• /deposit [AMT] (/capital add) - Add / deposit funds\n"
+        "• /withdraw [AMT] (/capital reduce) - Withdraw / reduce funds\n"
+        "• /capital reset - Reset paper capital back to default $100\n\n"
+        "🔌 5. Live Exchange API System:\n"
+        "• /api (/api status) - Exchange API connection & credentials status\n"
+        "• /api set [delta|binance] [KEY] [SECRET] - Configure live API keys\n"
+        "• /api test - Test API authentication & query live wallet balance\n"
+        "• /api clear - Wipe credentials & revert safely to paper mode\n\n"
+        "🛡️ 6. Risk & Strategy Configuration:\n"
+        "• /symbols [both|btc|gold|add|rm] - Configure active auto-trade pairs\n"
+        "• /symbol [SYMBOL] - View or switch primary trading symbol\n"
         "• /lotsize [SIZE|risk %] - View or update order lot sizing\n"
         "• /tpsl [TP] [SL] [MODE] - Set strategy Take Profit and Stop Loss\n"
         "• /trailing [on|off] - Dynamic trailing stop loss protection\n"
         "• /risk [PCT] - Max daily loss risk limit protection\n\n"
-        "Assistant Commands:\n"
-        "• /menu - Quick command directory\n"
-        "• /reset - Clear conversation history\n"
-        "• /help - Show this guide\n\n"
+        "⚙️ 7. Assistant & Diagnostics:\n"
+        "• /menu - Categorized command directory & live engine status\n"
+        "• /help - Show this guide\n"
+        "• /reset - Clear conversation history\n\n"
         "Send any message to chat with market context.",
     )
 
@@ -811,6 +825,253 @@ async def risk_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await reply_safely(update, "Error: Invalid number. Example: /risk 3.0")
 
 
+async def mode_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Switch or inspect trading mode (paper vs live)."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+    if not args:
+        mode_icon = "📄 PAPER TRADING" if trader.config.trading_mode == "paper" else "🚨 LIVE TRADING"
+        mode_color = "🟢" if trader.config.trading_mode == "paper" else "🔴"
+        api_st = trader.exchange_client.get_masked_status()
+        await reply_safely(
+            update,
+            f"🔄 <b>TRADING MODE CONFIGURATION</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Active Mode</b>: {mode_color} <b>{mode_icon}</b>\n"
+            f"• <b>Current Equity</b>: <code>${trader.config.equity:,.2f}</code>\n"
+            f"• <b>Exchange API</b>: <code>{api_st['exchange'].upper()}</code> ({api_st['status']})\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Switch Modes:</b>\n"
+            f"• <code>/mode paper</code> — Simulated funds, real market prices, zero risk\n"
+            f"• <code>/mode live</code> — Real orders dispatched via configured exchange API\n\n"
+            f"<i>💡 To use live mode, configure API credentials first via <code>/api set</code></i>",
+            parse_mode="HTML",
+        )
+        return
+
+    req_mode = args[0].lower()
+    ok, msg = trader.set_trading_mode(req_mode)
+    await reply_safely(update, msg, parse_mode="HTML")
+
+
+async def capital_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manage paper trading funds and capital (set, add/deposit, reduce/withdraw, reset)."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+    if not args:
+        report = trader.get_capital_report()
+        await reply_safely(update, report, parse_mode="HTML")
+        return
+
+    sub = args[0].lower()
+    # Check if user typed: /capital 100 or /capital 500 directly
+    try:
+        direct_amt = float(sub.replace("$", "").replace(",", ""))
+        ok, msg = trader.set_paper_capital(direct_amt)
+        if ok:
+            await reply_safely(update, f"✅ {msg}", parse_mode="HTML")
+        else:
+            await reply_safely(update, f"❌ {msg}")
+        return
+    except ValueError:
+        pass
+
+    if sub in ("set", "base"):
+        if len(args) < 2:
+            await reply_safely(
+                update,
+                "Usage: <code>/capital set &lt;amount&gt;</code>\nExample: <code>/capital set 100</code>",
+                parse_mode="HTML",
+            )
+            return
+        try:
+            amt = float(args[1].replace("$", "").replace(",", ""))
+            ok, msg = trader.set_paper_capital(amt)
+            if ok:
+                await reply_safely(update, f"✅ {msg}", parse_mode="HTML")
+            else:
+                await reply_safely(update, f"❌ {msg}")
+        except ValueError:
+            await reply_safely(update, "Error: Amount must be a valid number. Example: /capital set 100")
+
+    elif sub in ("add", "deposit", "plus", "+"):
+        if len(args) < 2:
+            await reply_safely(
+                update,
+                "Usage: <code>/capital add &lt;amount&gt;</code> (or <code>/deposit &lt;amount&gt;</code>)\nExample: <code>/capital add 50</code>",
+                parse_mode="HTML",
+            )
+            return
+        try:
+            amt = float(args[1].replace("$", "").replace(",", ""))
+            ok, msg = trader.add_funds(amt)
+            if ok:
+                await reply_safely(update, msg, parse_mode="HTML")
+            else:
+                await reply_safely(update, f"❌ {msg}")
+        except ValueError:
+            await reply_safely(update, "Error: Amount must be a valid number. Example: /capital add 50")
+
+    elif sub in ("reduce", "withdraw", "minus", "sub", "-"):
+        if len(args) < 2:
+            await reply_safely(
+                update,
+                "Usage: <code>/capital reduce &lt;amount&gt;</code> (or <code>/withdraw &lt;amount&gt;</code>)\nExample: <code>/capital reduce 25</code>",
+                parse_mode="HTML",
+            )
+            return
+        try:
+            amt = float(args[1].replace("$", "").replace(",", ""))
+            ok, msg = trader.reduce_funds(amt)
+            if ok:
+                await reply_safely(update, msg, parse_mode="HTML")
+            else:
+                await reply_safely(update, f"❌ {msg}")
+        except ValueError:
+            await reply_safely(update, "Error: Amount must be a valid number. Example: /capital reduce 25")
+
+    elif sub in ("reset", "default"):
+        target_amt = 100.0
+        if len(args) > 1:
+            try:
+                target_amt = float(args[1].replace("$", "").replace(",", ""))
+            except ValueError:
+                pass
+        ok, msg = trader.reset_funds(target_amt)
+        await reply_safely(update, f"✅ {msg}", parse_mode="HTML")
+
+    elif sub in ("status", "report", "show"):
+        report = trader.get_capital_report()
+        await reply_safely(update, report, parse_mode="HTML")
+
+    else:
+        await reply_safely(
+            update,
+            "<b>Capital Management Usage:</b>\n"
+            "• <code>/capital</code> — View capital & funds dashboard\n"
+            "• <code>/capital set 100</code> — Set base paper capital to $100\n"
+            "• <code>/capital add 50</code> (or <code>/deposit 50</code>) — Add / deposit funds\n"
+            "• <code>/capital reduce 20</code> (or <code>/withdraw 20</code>) — Reduce / withdraw funds\n"
+            "• <code>/capital reset</code> — Reset back to default $100.00",
+            parse_mode="HTML",
+        )
+
+
+async def deposit_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Quick deposit / add funds shortcut."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+    if not args:
+        await reply_safely(
+            update,
+            f"💰 <b>Deposit / Add Funds</b>\n\n"
+            f"Current Balance: <code>${trader.config.equity:,.2f}</code>\n\n"
+            f"<b>Usage:</b>\n"
+            f"• <code>/deposit 50</code> — Deposit $50 into paper capital\n"
+            f"• <code>/deposit 100</code> — Deposit $100 into paper capital",
+            parse_mode="HTML",
+        )
+        return
+    try:
+        amt = float(args[0].replace("$", "").replace(",", ""))
+        ok, msg = trader.add_funds(amt)
+        if ok:
+            await reply_safely(update, msg, parse_mode="HTML")
+        else:
+            await reply_safely(update, f"❌ {msg}")
+    except ValueError:
+        await reply_safely(update, "Error: Amount must be a valid number. Example: /deposit 50")
+
+
+async def withdraw_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Quick withdraw / reduce funds shortcut."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+    if not args:
+        await reply_safely(
+            update,
+            f"💸 <b>Withdraw / Reduce Funds</b>\n\n"
+            f"Current Balance: <code>${trader.config.equity:,.2f}</code>\n\n"
+            f"<b>Usage:</b>\n"
+            f"• <code>/withdraw 25</code> — Reduce $25 from paper capital\n"
+            f"• <code>/withdraw 50</code> — Reduce $50 from paper capital",
+            parse_mode="HTML",
+        )
+        return
+    try:
+        amt = float(args[0].replace("$", "").replace(",", ""))
+        ok, msg = trader.reduce_funds(amt)
+        if ok:
+            await reply_safely(update, msg, parse_mode="HTML")
+        else:
+            await reply_safely(update, f"❌ {msg}")
+    except ValueError:
+        await reply_safely(update, "Error: Amount must be a valid number. Example: /withdraw 25")
+
+
+async def api_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Live exchange API configuration, authentication test, and balance query."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+    if not args or args[0].lower() in ("status", "info"):
+        report = trader.get_api_status_report()
+        await reply_safely(update, report, parse_mode="HTML")
+        return
+
+    sub = args[0].lower()
+    if sub == "test":
+        ok, msg, data = trader.exchange_client.test_connection()
+        if ok:
+            bal_str = ""
+            bal_val = trader.exchange_client.get_balance()
+            if bal_val is not None:
+                bal_str = f"\n• <b>Live Wallet Balance</b>: <code>${bal_val:,.2f} USDT</code>"
+            await reply_safely(
+                update,
+                f"✅ <b>Exchange API Connected Successfully</b>\n"
+                f"• Exchange: <code>{trader.config.live_exchange.upper()}</code>\n"
+                f"• Result: <i>{msg}</i>{bal_str}\n\n"
+                f"<i>Ready for live trading. Switch mode with /mode live</i>",
+                parse_mode="HTML",
+            )
+        else:
+            await reply_safely(
+                update,
+                f"❌ <b>Exchange API Connection Failed</b>\n"
+                f"• Exchange: <code>{trader.config.live_exchange.upper()}</code>\n"
+                f"• Error: <i>{msg}</i>\n\n"
+                f"Check your API Key and Secret with <code>/api set</code>",
+                parse_mode="HTML",
+            )
+    elif sub == "clear":
+        msg = trader.clear_exchange_api()
+        await reply_safely(update, f"🧹 {msg}")
+    elif sub == "set":
+        # /api set <exchange> <key> <secret> OR /api set <key> <secret>
+        if len(args) == 4:
+            ex = args[1]
+            key = args[2]
+            sec = args[3]
+        elif len(args) == 3:
+            ex = trader.config.live_exchange
+            key = args[1]
+            sec = args[2]
+        else:
+            await reply_safely(
+                update,
+                "Usage:\n"
+                "• <code>/api set delta &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>\n"
+                "• <code>/api set binance &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>",
+                parse_mode="HTML",
+            )
+            return
+        ok, msg = trader.set_exchange_api(ex, key, sec)
+        await reply_safely(update, msg, parse_mode="HTML")
+    else:
+        report = trader.get_api_status_report()
+        await reply_safely(update, report, parse_mode="HTML")
+
+
 async def entry_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Analyze pinpoint trade entry, precision SL (Swing + ATR buffer), and multi-tier TP targets."""
     trader = get_auto_trader()
@@ -951,43 +1212,58 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Interactive command directory and quick dashboard."""
     trader = get_auto_trader()
     status_str = "🟢 AUTO-TRADING ON" if trader.config.enabled else "🔴 AUTO-TRADING OFF"
+    mode_str = "📄 PAPER" if trader.config.trading_mode == "paper" else "🚨 LIVE"
     pos_count = len(trader.positions)
-    pos_str = f"{pos_count} active position(s)" if pos_count > 0 else "No open positions"
+    pos_str = f"{pos_count} active position(s)" if pos_count > 0 else "0 open"
     symbols_str = ", ".join(trader.config.symbols) if trader.config.symbols else trader.config.symbol
     await reply_safely(
         update,
         f"🎛️ <b>TRADING BOT COMMAND MENU</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• <b>Engine Status</b>: <b>{status_str}</b>\n"
+        f"• <b>Trading Mode</b>: <b>{mode_str}</b> (Equity: <code>${trader.config.equity:,.2f}</code>)\n"
         f"• <b>Monitored Pairs</b>: <code>{symbols_str}</code>\n"
         f"• <b>Positions</b>: <i>{pos_str} (Max {trader.config.max_positions})</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>Market & Analysis:</b>\n"
-        f"• /entry [SYM] - Pinpoint Entry, Precision SL & TP Targets\n"
-        f"• /levels [SYM] - Order Blocks (OB) & FVGs Scanner\n"
-        f"• /calc [ENTRY] [SL] - Position Sizing & R:R Calculator\n"
-        f"• /btc - Bitcoin Ticker Card\n"
-        f"• /gold - Gold Ticker Card\n"
-        f"• /eth - Ethereum Ticker Card\n"
-        f"• /sol - Solana Ticker Card\n"
-        f"• /analyze [SYM] - Technical Analysis & Confluence\n"
-        f"• /symbols - View/Set Active Auto-Trade Pairs\n"
-        f"• /symbol [SYM] - Switch Primary Symbol\n\n"
-        f"<b>Auto-Trading & Execution:</b>\n"
-        f"• /execute - One-Tap Execute Pinpoint Plan\n"
-        f"• /buy | /sell - Instant Market Orders\n"
-        f"• /autotrade on|off - Start/Stop Automated Trades\n"
-        f"• /position (/positions) - Live Active Positions Dashboard\n"
-        f"• /close [ID|SYM|all] - Close Position(s)\n"
-        f"• /pnl - Performance Report & Trades History\n"
-        f"• /lotsize [SIZE] - Set Order Sizing\n"
-        f"• /tpsl [TP] [SL] - Set Strategy Targets\n"
-        f"• /trailing on|off - Dynamic Trailing Stop Loss\n"
-        f"• /risk [PCT] - Max Daily Drawdown Protection\n\n"
-        f"<b>General:</b>\n"
-        f"• /price [SYM] - Custom Pair Price Check\n"
-        f"• /reset - Clear Dialogue History\n"
-        f"• /help - Full Guide",
+        f"<b>📊 1. Market & Quotes:</b>\n"
+        f"• /btc — Bitcoin ticker card & 24h stats\n"
+        f"• /gold — Gold ticker card & 24h stats\n"
+        f"• /eth | /sol — Ethereum & Solana tickers\n"
+        f"• /analyze [SYM] — 10-indicator confluence report\n"
+        f"• /price [SYM] — Live price check\n\n"
+        f"<b>🎯 2. Pinpoint Trade Planning:</b>\n"
+        f"• /entry [SYM] — Pinpoint entry, precision SL & TPs\n"
+        f"• /levels [SYM] — Order blocks & FVGs scanner\n"
+        f"• /calc [ENTRY] [SL] [TP] — Position sizing & R:R\n\n"
+        f"<b>⚡ 3. Auto-Trading & Execution:</b>\n"
+        f"• /autotrade on|off — Toggle automated trading\n"
+        f"• /execute — One-tap execute pinpoint trade plan\n"
+        f"• /buy | /sell — Instant market execution\n"
+        f"• /position — Open positions & unrealized PnL\n"
+        f"• /close [ID|SYM|all] — Close open trade(s)\n"
+        f"• /pnl — Performance & closed trades history\n\n"
+        f"<b>💼 4. Paper/Live Mode & Capital:</b>\n"
+        f"• /mode [paper|live] — Switch trading mode\n"
+        f"• /capital (/funds) — View capital dashboard\n"
+        f"• /capital set 100 — Set paper capital ($100 default)\n"
+        f"• /deposit [AMT] — Add / deposit funds to balance\n"
+        f"• /withdraw [AMT] — Reduce / withdraw funds\n"
+        f"• /capital reset — Reset paper funds to $100\n\n"
+        f"<b>🔌 5. Live Exchange API System:</b>\n"
+        f"• /api — View API status & connectivity\n"
+        f"• /api set delta &lt;KEY&gt; &lt;SECRET&gt; — Setup Delta API\n"
+        f"• /api test — Test auth & query wallet balance\n"
+        f"• /api clear — Clear API & return to paper mode\n\n"
+        f"<b>🛡️ 6. Risk & Strategy:</b>\n"
+        f"• /symbols — View or configure active pairs\n"
+        f"• /symbol [SYM] — Switch primary symbol\n"
+        f"• /lotsize [SIZE|risk %] — Configure lot sizing\n"
+        f"• /tpsl [TP] [SL] — Set strategy TP & SL\n"
+        f"• /trailing on|off — Trailing stop loss guard\n"
+        f"• /risk [PCT] — Daily drawdown safety limit\n\n"
+        f"<b>⚙️ 7. General:</b>\n"
+        f"• /help — Full command guide\n"
+        f"• /reset — Clear AI conversation",
         parse_mode="HTML",
     )
 
@@ -1180,6 +1456,12 @@ def main() -> None:
     app.add_handler(CommandHandler("risk", risk_command))
     app.add_handler(CommandHandler("lotsize", lotsize_command))
     app.add_handler(CommandHandler("tpsl", tpsl_command))
+    app.add_handler(CommandHandler("mode", mode_command))
+    app.add_handler(CommandHandler("capital", capital_command))
+    app.add_handler(CommandHandler("funds", capital_command))
+    app.add_handler(CommandHandler("deposit", deposit_command))
+    app.add_handler(CommandHandler("withdraw", withdraw_command))
+    app.add_handler(CommandHandler("api", api_command))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 

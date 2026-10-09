@@ -37,6 +37,8 @@ import json
 import logging
 import os
 import sys
+import hashlib
+import hmac
 import tempfile
 import time
 import time as time_module
@@ -90,7 +92,17 @@ class AutoTradeConfig:
     max_daily_loss_pct: float = 3.0
     strategy_type: str = "indicators_pro"  # "indicators_pro" or "ai_learning"
     poll_seconds: int = 15
-    equity: float = 10000.0
+    # Mode & Funds: Paper trade capital default $100
+    trading_mode: str = "paper"  # "paper" or "live"
+    paper_capital: float = 100.0  # Base paper trading capital ($100 default)
+    equity: float = 100.0  # Active trading funds / account equity (default $100.00)
+    initial_paper_capital: float = 100.0
+    total_deposited: float = 0.0
+    total_withdrawn: float = 0.0
+    # Live exchange credentials
+    live_exchange: str = "delta"  # "delta", "binance"
+    exchange_api_key: str = ""
+    exchange_api_secret: str = ""
     notify_chat_id: Optional[int] = None
     config_file: str = CONFIG_FILE_PATH
     trades_history_file: str = TRADES_HISTORY_PATH
@@ -123,7 +135,15 @@ class AutoTradeConfig:
             "max_daily_loss_pct": self.max_daily_loss_pct,
             "strategy_type": self.strategy_type,
             "poll_seconds": self.poll_seconds,
+            "trading_mode": self.trading_mode,
+            "paper_capital": self.paper_capital,
             "equity": self.equity,
+            "initial_paper_capital": self.initial_paper_capital,
+            "total_deposited": self.total_deposited,
+            "total_withdrawn": self.total_withdrawn,
+            "live_exchange": self.live_exchange,
+            "exchange_api_key": self.exchange_api_key,
+            "exchange_api_secret": self.exchange_api_secret,
             "notify_chat_id": self.notify_chat_id,
         }
 
@@ -173,6 +193,8 @@ class AutoTradePosition:
     exit_time: Optional[str] = None
     exit_reason: Optional[str] = None  # "TP1", "TP2", "SL", "MANUAL"
     pnl: float = 0.0
+    mode: str = "paper"  # "paper" or "live"
+    exchange_order_id: Optional[str] = None
 
     def current_pnl(self, current_price: float) -> float:
         if self.direction == "LONG":
@@ -180,6 +202,165 @@ class AutoTradePosition:
         else:
             diff = self.entry_price - current_price
         return round(diff * self.lot_size, 2)
+
+
+class ExchangeApiClient:
+    """
+    Unified client for Live Exchange Trading and Account Management.
+    Supports Delta Exchange (India / Global) and Binance REST APIs.
+    Handles HMAC SHA256 request signing, balance queries, order execution, and connectivity testing.
+    """
+
+    def __init__(
+        self,
+        exchange: str = "delta",
+        api_key: Optional[str] = None,
+        api_secret: Optional[str] = None,
+        testnet: bool = False,
+    ):
+        self.exchange = (exchange or "delta").strip().lower()
+        self.api_key = (api_key or os.getenv("EXCHANGE_API_KEY") or os.getenv("DELTA_API_KEY") or "").strip()
+        self.api_secret = (api_secret or os.getenv("EXCHANGE_API_SECRET") or os.getenv("DELTA_API_SECRET") or "").strip()
+        self.testnet = testnet
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.api_key and self.api_secret)
+
+    def mask_key(self, key: str) -> str:
+        if not key:
+            return "Not Configured"
+        if len(key) <= 8:
+            return "***"
+        return f"{key[:4]}...{key[-4:]}"
+
+    def get_masked_status(self) -> Dict[str, str]:
+        return {
+            "exchange": self.exchange.upper(),
+            "api_key": self.mask_key(self.api_key),
+            "api_secret": "***Configured***" if self.api_secret else "Not Configured",
+            "status": "CONFIGURED 🟢" if self.is_configured else "NOT SET 🔴",
+        }
+
+    def _sign_delta_request(self, method: str, path: str, payload_str: str, timestamp: str) -> str:
+        msg = method.upper() + timestamp + path + payload_str
+        return hmac.new(self.api_secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def test_connection(self) -> Tuple[bool, str, Dict[str, Any]]:
+        """Verify API credentials and return connectivity status with account info."""
+        if not self.is_configured:
+            return False, "Exchange API Key or Secret is not configured. Use /api set <exchange> <key> <secret>", {}
+
+        if self.exchange == "delta":
+            base_url = "https://cdn.testnet.delta.exchange" if self.testnet else "https://api.india.delta.exchange"
+            path = "/v2/wallet/balances"
+            ts = str(int(time.time()))
+            sig = self._sign_delta_request("GET", path, "", ts)
+            headers = {
+                "api-key": self.api_key,
+                "timestamp": ts,
+                "signature": sig,
+                "Content-Type": "application/json",
+                "User-Agent": "TradingBot/1.0",
+            }
+            try:
+                resp = requests.get(f"{base_url}{path}", headers=headers, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    balances = data.get("result", [])
+                    usdt_bal = 0.0
+                    for b in balances:
+                        if b.get("asset_symbol") in ("USDT", "USD"):
+                            usdt_bal += float(b.get("balance", 0.0))
+                    return True, f"Connected to Delta Exchange successfully. Balance: ${usdt_bal:,.2f} USDT", {"balance": usdt_bal, "raw": data}
+                elif resp.status_code in (401, 403):
+                    return False, f"Delta Exchange Authentication failed (HTTP {resp.status_code}): Invalid API Key or Secret.", {}
+                else:
+                    return False, f"Delta Exchange returned HTTP {resp.status_code}: {resp.text[:200]}", {}
+            except Exception as e:
+                return False, f"Network error connecting to Delta Exchange: {e}", {}
+
+        elif self.exchange == "binance":
+            base_url = "https://testnet.binance.vision" if self.testnet else "https://api.binance.com"
+            path = "/api/v3/account"
+            ts = int(time.time() * 1000)
+            query = f"timestamp={ts}&recvWindow=5000"
+            sig = hmac.new(self.api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
+            headers = {"X-MBX-APIKEY": self.api_key}
+            try:
+                resp = requests.get(f"{base_url}{path}?{query}&signature={sig}", headers=headers, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    usdt_bal = 0.0
+                    for b in data.get("balances", []):
+                        if b.get("asset") in ("USDT", "USD"):
+                            usdt_bal += float(b.get("free", 0.0))
+                    return True, f"Connected to Binance successfully. Available: ${usdt_bal:,.2f} USDT", {"balance": usdt_bal, "raw": data}
+                else:
+                    return False, f"Binance error (HTTP {resp.status_code}): {resp.text[:200]}", {}
+            except Exception as e:
+                return False, f"Network error connecting to Binance: {e}", {}
+
+        return False, f"Exchange '{self.exchange}' is not supported. Supported: delta, binance", {}
+
+    def get_balance(self) -> Tuple[bool, float, str]:
+        ok, msg, data = self.test_connection()
+        if ok and "balance" in data:
+            return True, float(data["balance"]), msg
+        return False, 0.0, msg
+
+    def place_order(
+        self,
+        symbol: str,
+        direction: str,
+        size: float,
+        order_type: str = "market",
+        price: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """Place live order on exchange."""
+        if not self.is_configured:
+            return False, "Exchange API is not configured.", {}
+
+        if self.exchange == "delta":
+            base_url = "https://cdn.testnet.delta.exchange" if self.testnet else "https://api.india.delta.exchange"
+            path = "/v2/orders"
+            ts = str(int(time.time()))
+            side = "buy" if direction.upper() in ("BUY", "LONG") else "sell"
+            payload = {
+                "product_symbol": symbol,
+                "size": int(size) if "BTC" not in symbol else max(1, int(size)),
+                "side": side,
+                "order_type": "market_order" if order_type == "market" else "limit_order",
+            }
+            if order_type != "market" and price:
+                payload["limit_price"] = str(price)
+            if stop_loss:
+                payload["stop_loss_price"] = str(stop_loss)
+            if take_profit:
+                payload["take_profit_price"] = str(take_profit)
+
+            body_str = json.dumps(payload)
+            sig = self._sign_delta_request("POST", path, body_str, ts)
+            headers = {
+                "api-key": self.api_key,
+                "timestamp": ts,
+                "signature": sig,
+                "Content-Type": "application/json",
+            }
+            try:
+                resp = requests.post(f"{base_url}{path}", headers=headers, data=body_str, timeout=10)
+                if resp.status_code in (200, 201):
+                    data = resp.json()
+                    order_id = str(data.get("result", {}).get("id", f"DELTA_{int(time.time())}"))
+                    return True, order_id, data
+                return False, f"Delta order rejected (HTTP {resp.status_code}): {resp.text[:200]}", {}
+            except Exception as e:
+                return False, f"Delta request failed: {e}", {}
+
+        return False, f"Live ordering on {self.exchange} preview.", {}
+
 
 
 # ==================================================================
@@ -196,6 +377,11 @@ class AutoTrader:
 
     def __init__(self, config: Optional[AutoTradeConfig] = None):
         self.config = config or AutoTradeConfig.load()
+        self.exchange_client = ExchangeApiClient(
+            exchange=self.config.live_exchange,
+            api_key=self.config.exchange_api_key,
+            api_secret=self.config.exchange_api_secret,
+        )
         self.positions: List[AutoTradePosition] = self._load_open_positions()
         self.closed_trades: List[AutoTradePosition] = self._load_trades_history()
         self.is_running: bool = False
@@ -229,7 +415,12 @@ class AutoTrader:
                 positions = []
                 for item in data:
                     if isinstance(item, dict):
-                        positions.append(AutoTradePosition(**item))
+                        filtered = {
+                            k: v
+                            for k, v in item.items()
+                            if k in AutoTradePosition.__dataclass_fields__
+                        }
+                        positions.append(AutoTradePosition(**filtered))
                 logger.info("Loaded %d open positions from %s", len(positions), open_path)
                 return positions
             except Exception as exc:
@@ -254,7 +445,12 @@ class AutoTrader:
                 trades = []
                 for item in data:
                     if isinstance(item, dict):
-                        trades.append(AutoTradePosition(**item))
+                        filtered = {
+                            k: v
+                            for k, v in item.items()
+                            if k in AutoTradePosition.__dataclass_fields__
+                        }
+                        trades.append(AutoTradePosition(**filtered))
                 logger.info("Loaded %d historical trades from %s", len(trades), history_path)
                 return trades
             except Exception as exc:
@@ -497,6 +693,216 @@ class AutoTrader:
         self.config.max_daily_loss_pct = float(pct)
         self.config.save()
         return True, f"Max daily loss risk limit updated to: {self.config.max_daily_loss_pct}% equity."
+
+    # ------------------------------------------------------------------
+    # Trading Mode & Capital / Funds Management
+    # ------------------------------------------------------------------
+    def set_trading_mode(self, mode: str) -> Tuple[bool, str]:
+        """Switch between Paper Trading (simulated funds) and Live Trading (real exchange API)."""
+        target = mode.strip().lower()
+        if target in ("paper", "demo", "sim", "virtual"):
+            self.config.trading_mode = "paper"
+            self.config.save()
+            return (
+                True,
+                f"📄 <b>PAPER TRADING MODE ACTIVATED</b>\n"
+                f"• Paper Capital: <code>${self.config.equity:,.2f}</code>\n"
+                f"• Simulated execution with real-time market data.\n"
+                f"• Zero financial risk to real capital.\n\n"
+                f"<i>💡 Use /capital add or /capital set to adjust funds anytime.</i>",
+            )
+        elif target in ("live", "real", "prod"):
+            if not self.exchange_client.is_configured:
+                return (
+                    False,
+                    f"⚠️ <b>CANNOT ACTIVATE LIVE TRADING</b>\n\n"
+                    f"Exchange API credentials are not configured.\n"
+                    f"To enable live trading with real funds, configure your exchange API:\n"
+                    f"• <code>/api set delta &lt;API_KEY&gt; &lt;API_SECRET&gt;</code>\n"
+                    f"• or export <code>EXCHANGE_API_KEY</code> and <code>EXCHANGE_API_SECRET</code>\n\n"
+                    f"<i>Trading remains safely in PAPER mode.</i>",
+                )
+            self.config.trading_mode = "live"
+            self.config.save()
+            return (
+                True,
+                f"🚨 <b>LIVE TRADING MODE ACTIVATED</b>\n"
+                f"• Exchange: <code>{self.config.live_exchange.upper()}</code>\n"
+                f"• Real orders will be dispatched to the exchange.\n"
+                f"• API Key: <code>{self.exchange_client.mask_key(self.exchange_client.api_key)}</code>\n\n"
+                f"<i>⚠️ Monitor open positions carefully with /positions or /close.</i>",
+            )
+        else:
+            return (
+                False,
+                f"Unknown mode '{mode}'. Use <code>/mode paper</code> or <code>/mode live</code>.",
+            )
+
+    def set_paper_capital(self, amount: float) -> Tuple[bool, str]:
+        """Set base paper trading capital (e.g. $100)."""
+        if amount <= 0:
+            return False, "Error: Capital must be greater than $0."
+        old = self.config.equity
+        self.config.paper_capital = float(amount)
+        self.config.equity = float(amount)
+        self.config.save()
+        return (
+            True,
+            f"Paper trading capital set to <b>${amount:,.2f}</b> (Previous: ${old:,.2f}).",
+        )
+
+    def add_funds(self, amount: float) -> Tuple[bool, str]:
+        """Deposit / add funds to current paper capital."""
+        if amount <= 0:
+            return False, "Error: Deposit amount must be greater than $0."
+        old = self.config.equity
+        self.config.equity += float(amount)
+        self.config.total_deposited += float(amount)
+        self.config.save()
+        return (
+            True,
+            f"💰 <b>Funds Added Successfully</b>\n"
+            f"• Deposited: <code>+${amount:,.2f}</code>\n"
+            f"• Previous Balance: <code>${old:,.2f}</code>\n"
+            f"• New Balance: <b>${self.config.equity:,.2f}</b>",
+        )
+
+    def reduce_funds(self, amount: float) -> Tuple[bool, str]:
+        """Withdraw / reduce funds from current paper capital."""
+        if amount <= 0:
+            return False, "Error: Reduction amount must be greater than $0."
+        if amount > self.config.equity:
+            return (
+                False,
+                f"Error: Cannot reduce ${amount:,.2f}. Current balance is only ${self.config.equity:,.2f}.",
+            )
+        old = self.config.equity
+        self.config.equity -= float(amount)
+        self.config.total_withdrawn += float(amount)
+        self.config.save()
+        return (
+            True,
+            f"💸 <b>Funds Reduced Successfully</b>\n"
+            f"• Withdrawn: <code>-${amount:,.2f}</code>\n"
+            f"• Previous Balance: <code>${old:,.2f}</code>\n"
+            f"• New Balance: <b>${self.config.equity:,.2f}</b>",
+        )
+
+    def reset_funds(self, amount: float = 100.0) -> Tuple[bool, str]:
+        """Reset paper trading capital back to default $100 or specified value."""
+        old = self.config.equity
+        self.config.paper_capital = float(amount)
+        self.config.equity = float(amount)
+        self.config.total_deposited = 0.0
+        self.config.total_withdrawn = 0.0
+        self.config.save()
+        return (
+            True,
+            f"🔄 Paper capital reset to <b>${amount:,.2f}</b> (Previous: ${old:,.2f}).",
+        )
+
+    def get_capital_report(self) -> str:
+        """Detailed capital, deposits, withdrawals, and equity dashboard."""
+        mode_icon = "📄 PAPER TRADING" if self.config.trading_mode == "paper" else "🚨 LIVE TRADING"
+        mode_color = "🟢" if self.config.trading_mode == "paper" else "🔴"
+
+        unrealized = 0.0
+        for p in self.positions:
+            df = self.fetch_candles(p.symbol, count=1)
+            cp = float(df["close"].iloc[-1]) if not df.empty else p.entry_price
+            unrealized += p.current_pnl(cp)
+
+        realized = sum(t.pnl for t in self.closed_trades)
+        net_pnl = realized + unrealized
+        sign = "+" if net_pnl >= 0 else ""
+        pnl_emoji = "🟢" if net_pnl >= 0 else "🔴"
+        gain_pct = (
+            ((self.config.equity - self.config.paper_capital) / self.config.paper_capital * 100.0)
+            if self.config.paper_capital > 0
+            else 0.0
+        )
+        gain_sign = "+" if gain_pct >= 0 else ""
+
+        return (
+            f"💼 <b>TRADING CAPITAL & FUNDS DASHBOARD</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Trading Mode</b>: {mode_color} <b>{mode_icon}</b>\n"
+            f"• <b>Current Equity / Funds</b>: <code>${self.config.equity:,.2f}</code>\n"
+            f"• <b>Base Paper Capital</b>: <code>${self.config.paper_capital:,.2f}</code>\n"
+            f"• <b>Total Deposited</b>: <code>+${self.config.total_deposited:,.2f}</code>\n"
+            f"• <b>Total Withdrawn</b>: <code>-${self.config.total_withdrawn:,.2f}</code>\n"
+            f"• <b>Net PnL (Closed)</b>: <code>{'+' if realized >= 0 else ''}${realized:,.2f}</code>\n"
+            f"• <b>Unrealized PnL</b>: <code>{'+' if unrealized >= 0 else ''}${unrealized:,.2f}</code>\n"
+            f"• <b>Total Return (ROI)</b>: {pnl_emoji} <b>{gain_sign}{gain_pct:.2f}%</b> ({sign}${net_pnl:,.2f})\n"
+            f"• <b>Open Positions</b>: <code>{len(self.positions)} / {self.config.max_positions}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Manage Funds:</b>\n"
+            f"• <code>/capital set 100</code> — Set capital to $100\n"
+            f"• <code>/capital add 50</code> (or <code>/deposit 50</code>) — Add funds\n"
+            f"• <code>/capital reduce 25</code> (or <code>/withdraw 25</code>) — Reduce funds\n"
+            f"• <code>/capital reset</code> — Reset back to default $100\n"
+            f"• <code>/mode [paper|live]</code> — Switch trading mode"
+        )
+
+    def set_exchange_api(self, exchange: str, api_key: str, api_secret: str) -> Tuple[bool, str]:
+        """Configure live exchange API credentials."""
+        ex = exchange.strip().lower()
+        if ex not in ("delta", "binance"):
+            return False, f"Unsupported exchange '{exchange}'. Supported: delta, binance"
+
+        self.config.live_exchange = ex
+        self.config.exchange_api_key = api_key.strip()
+        self.config.exchange_api_secret = api_secret.strip()
+        self.config.save()
+        self.exchange_client = ExchangeApiClient(
+            exchange=ex,
+            api_key=self.config.exchange_api_key,
+            api_secret=self.config.exchange_api_secret,
+        )
+        ok, msg, _ = self.exchange_client.test_connection()
+        masked_k = self.exchange_client.mask_key(api_key)
+        return (
+            True,
+            f"✅ <b>Exchange API Configured</b>\n"
+            f"• Exchange: <code>{ex.upper()}</code>\n"
+            f"• API Key: <code>{masked_k}</code>\n"
+            f"• Connection Test: <i>{msg}</i>\n\n"
+            f"<i>💡 To trade with this exchange, switch mode with /mode live</i>",
+        )
+
+    def clear_exchange_api(self) -> str:
+        """Clear exchange API credentials and revert safely to paper mode."""
+        self.config.exchange_api_key = ""
+        self.config.exchange_api_secret = ""
+        if self.config.trading_mode == "live":
+            self.config.trading_mode = "paper"
+        self.config.save()
+        self.exchange_client = ExchangeApiClient(exchange=self.config.live_exchange)
+        return "Exchange API credentials cleared. Mode reverted to PAPER TRADING 📄."
+
+    def get_api_status_report(self) -> str:
+        """Report live exchange API credentials and connectivity test."""
+        st = self.exchange_client.get_masked_status()
+        conn_ok, conn_msg, conn_data = self.exchange_client.test_connection()
+        conn_str = f"🟢 Connected" if conn_ok else f"🔴 Not Connected ({conn_msg})"
+
+        return (
+            f"🔌 <b>LIVE EXCHANGE API SYSTEM</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Active Exchange</b>: <code>{st['exchange']}</code>\n"
+            f"• <b>API Status</b>: {st['status']}\n"
+            f"• <b>API Key</b>: <code>{st['api_key']}</code>\n"
+            f"• <b>API Secret</b>: <code>{st['api_secret']}</code>\n"
+            f"• <b>Connectivity</b>: {conn_str}\n"
+            f"• <b>Current Mode</b>: {'📄 PAPER TRADING' if self.config.trading_mode == 'paper' else '🚨 LIVE TRADING'}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Setup & Controls:</b>\n"
+            f"• <code>/api set delta &lt;KEY&gt; &lt;SECRET&gt;</code> — Set Delta credentials\n"
+            f"• <code>/api set binance &lt;KEY&gt; &lt;SECRET&gt;</code> — Set Binance credentials\n"
+            f"• <code>/api test</code> — Test exchange connection & query live balance\n"
+            f"• <code>/api clear</code> — Clear credentials & return to paper mode\n"
+            f"• <code>/mode live</code> — Switch to live real-order trading"
+        )
 
     def fetch_candles(self, symbol: str, count: int = 120) -> pd.DataFrame:
         """Fetch 1m candle series from Delta Exchange API with fallback to synthetic data."""
@@ -798,6 +1204,23 @@ class AutoTrader:
                         else:
                             lots = strat.size(self.config.equity, entry, stop, sig.atr)
 
+                        mode = self.config.trading_mode
+                        order_id = None
+                        if mode == "live":
+                            ok_ord, ord_msg, _ = self.exchange_client.place_order(
+                                symbol=sym,
+                                direction=sig.direction.name,
+                                size=lots,
+                                stop_loss=stop,
+                                take_profit=tp1,
+                            )
+                            if not ok_ord:
+                                notifications.append(
+                                    f"⚠️ <b>LIVE ORDER REJECTED ({sym})</b>: {ord_msg}"
+                                )
+                                continue
+                            order_id = ord_msg
+
                         pos_id = f"TRADE_{sym[:3]}_{int(time.time())}"
                         new_pos = AutoTradePosition(
                             id=pos_id,
@@ -815,12 +1238,16 @@ class AutoTrader:
                             reason=sig.reason,
                             highest_price=entry,
                             lowest_price=entry,
+                            mode=mode,
+                            exchange_order_id=order_id,
                         )
                         self.positions.append(new_pos)
                         self._save_open_positions()
+                        mode_tag = " [LIVE 🚨]" if mode == "live" else " [PAPER 📄]"
                         notifications.append(
-                            f"🚀 <b>AUTO TRADE OPENED ({new_pos.symbol})</b>\n"
+                            f"🚀 <b>AUTO TRADE OPENED ({new_pos.symbol}){mode_tag}</b>\n"
                             f"• ID: <code>{new_pos.id}</code>\n"
+                            f"• Mode: <b>{new_pos.mode.upper()}</b>\n"
                             f"• Symbol: {new_pos.symbol}\n"
                             f"• Direction: <b>{new_pos.direction}</b>\n"
                             f"• Entry: {new_pos.entry_price:.2f}\n"
@@ -843,11 +1270,14 @@ class AutoTrader:
             else f"Risk {self.config.risk_pct}%"
         )
         symbols_str = ", ".join(self.config.symbols) if self.config.symbols else self.config.symbol
+        mode_icon = "📄 PAPER TRADING" if self.config.trading_mode == "paper" else "🚨 LIVE TRADING"
+        mode_color = "🟢" if self.config.trading_mode == "paper" else "🔴"
 
         text = [
             "⚡ <b>AUTO TRADING DASHBOARD</b>",
             "━━━━━━━━━━━━━━━━━━━━━━",
             f"• <b>Status</b>: {status_icon}",
+            f"• <b>Trading Mode</b>: {mode_color} <b>{mode_icon}</b>",
             f"• <b>Active Pairs</b>: <code>{symbols_str}</code>",
             f"• <b>Primary Symbol</b>: <code>{self.config.symbol}</code>",
             f"• <b>Strategy</b>: {self.config.strategy_type.replace('_', ' ').title()}",
@@ -857,7 +1287,7 @@ class AutoTrader:
             f"• <b>Stop Loss</b>: {self.config.sl_value} ({self.config.sl_mode.upper()})",
             f"• <b>Trailing Stop</b>: {'🟢 ON' if self.config.trailing_sl else '⚪ OFF'}",
             f"• <b>Daily Risk Guard</b>: {self.config.max_daily_loss_pct}% equity",
-            f"• <b>Account Equity</b>: ${self.config.equity:.2f}",
+            f"• <b>Capital / Equity</b>: <code>${self.config.equity:,.2f}</code>",
             "━━━━━━━━━━━━━━━━━━━━━━",
         ]
 
@@ -1182,7 +1612,21 @@ class AutoTrader:
             reason=reason,
             highest_price=entry_price,
             lowest_price=entry_price,
+            mode=self.config.trading_mode,
         )
+
+        if self.config.trading_mode == "live":
+            ok_ord, ord_msg, _ = self.exchange_client.place_order(
+                symbol=symbol_upper,
+                direction=direction.upper(),
+                size=lot_size,
+                stop_loss=stop_loss,
+                take_profit=take_profit_1,
+            )
+            if not ok_ord:
+                return False, f"⚠️ Exchange live order rejected: {ord_msg}", None
+            new_pos.exchange_order_id = ord_msg
+
         self.positions.append(new_pos)
         self._save_open_positions()
         tp2_str = (
@@ -1190,11 +1634,13 @@ class AutoTrader:
             if new_pos.take_profit_2
             else ""
         )
+        mode_tag = " [LIVE 🚨]" if new_pos.mode == "live" else " [PAPER 📄]"
         return (
             True,
-            f"🚀 <b>POSITION OPENED SUCCESSFULLY</b>\n"
+            f"🚀 <b>POSITION OPENED SUCCESSFULLY{mode_tag}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>ID</b>: <code>{new_pos.id}</code>\n"
+            f"• <b>Mode</b>: <b>{new_pos.mode.upper()}</b>\n"
             f"• <b>Symbol</b>: <code>{new_pos.symbol}</code>\n"
             f"• <b>Direction</b>: <b>{new_pos.direction}</b> {'🟢' if new_pos.direction == 'LONG' else '🔴'}\n"
             f"• <b>Entry Price</b>: <code>${new_pos.entry_price:,.2f}</code>\n"

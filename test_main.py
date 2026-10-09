@@ -1257,6 +1257,274 @@ class TestMultiAssetMultiPositionAutoTrade(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Total Unrealized PnL", dashboard)
 
 
+class TestTradingModeAndCapital(unittest.TestCase):
+    def setUp(self):
+        self.tmp_cfg = "/workspace/bright-darwin/.test_mode_cfg.json"
+        self.tmp_pos = "/workspace/bright-darwin/.test_mode_pos.json"
+        self.tmp_hist = "/workspace/bright-darwin/.test_mode_hist.json"
+        for p in (self.tmp_cfg, self.tmp_hist, self.tmp_pos):
+            if os.path.exists(p):
+                os.remove(p)
+        self.config = auto_trade.AutoTradeConfig(
+            config_file=self.tmp_cfg,
+            trades_history_file=self.tmp_hist,
+            open_positions_file=self.tmp_pos,
+            paper_capital=100.0,
+            equity=100.0,
+            trading_mode="paper",
+        )
+        self.trader = auto_trade.AutoTrader(config=self.config)
+
+    def tearDown(self):
+        for p in (self.tmp_cfg, self.tmp_hist, self.tmp_pos):
+            if os.path.exists(p):
+                os.remove(p)
+
+    def test_default_capital_is_100(self):
+        cfg = auto_trade.AutoTradeConfig()
+        self.assertEqual(cfg.paper_capital, 100.0)
+        self.assertEqual(cfg.equity, 100.0)
+        self.assertEqual(cfg.trading_mode, "paper")
+        self.assertEqual(self.trader.config.trading_mode, "paper")
+
+    def test_set_paper_capital(self):
+        ok, msg = self.trader.set_paper_capital(250.0)
+        self.assertTrue(ok)
+        self.assertEqual(self.trader.config.paper_capital, 250.0)
+        self.assertEqual(self.trader.config.equity, 250.0)
+
+        # Invalid amount
+        ok_inv, _ = self.trader.set_paper_capital(-50.0)
+        self.assertFalse(ok_inv)
+
+    def test_add_funds(self):
+        self.trader.set_paper_capital(100.0)
+        ok, msg = self.trader.add_funds(50.0)
+        self.assertTrue(ok)
+        self.assertEqual(self.trader.config.equity, 150.0)
+        self.assertEqual(self.trader.config.total_deposited, 50.0)
+
+    def test_reduce_funds(self):
+        self.trader.set_paper_capital(100.0)
+        ok, msg = self.trader.reduce_funds(30.0)
+        self.assertTrue(ok)
+        self.assertEqual(self.trader.config.equity, 70.0)
+        self.assertEqual(self.trader.config.total_withdrawn, 30.0)
+
+        # Excess reduction error
+        ok_fail, msg_fail = self.trader.reduce_funds(200.0)
+        self.assertFalse(ok_fail)
+        self.assertIn("Cannot reduce", msg_fail)
+
+    def test_reset_funds(self):
+        self.trader.set_paper_capital(500.0)
+        self.trader.add_funds(100.0)
+        ok, msg = self.trader.reset_funds()
+        self.assertTrue(ok)
+        self.assertEqual(self.trader.config.paper_capital, 100.0)
+        self.assertEqual(self.trader.config.equity, 100.0)
+        self.assertEqual(self.trader.config.total_deposited, 0.0)
+        self.assertEqual(self.trader.config.total_withdrawn, 0.0)
+
+    def test_capital_report(self):
+        self.trader.set_paper_capital(100.0)
+        self.trader.add_funds(25.0)
+        report = self.trader.get_capital_report()
+        self.assertIn("TRADING CAPITAL & FUNDS DASHBOARD", report)
+        self.assertIn("PAPER TRADING", report)
+        self.assertIn("$125.00", report)
+        self.assertIn("$100.00", report)
+
+    def test_mode_switching_guard(self):
+        # Unconfigured live mode should fail
+        self.trader.exchange_client.api_key = ""
+        self.trader.exchange_client.api_secret = ""
+        ok, msg = self.trader.set_trading_mode("live")
+        self.assertFalse(ok)
+        self.assertIn("CANNOT ACTIVATE LIVE TRADING", msg)
+        self.assertEqual(self.trader.config.trading_mode, "paper")
+
+        # Configured live mode should succeed
+        self.trader.exchange_client.api_key = "test_key_123"
+        self.trader.exchange_client.api_secret = "test_secret_456"
+        ok_live, msg_live = self.trader.set_trading_mode("live")
+        self.assertTrue(ok_live)
+        self.assertEqual(self.trader.config.trading_mode, "live")
+        self.assertIn("LIVE TRADING MODE ACTIVATED", msg_live)
+
+        # Switch back to paper
+        ok_paper, msg_paper = self.trader.set_trading_mode("paper")
+        self.assertTrue(ok_paper)
+        self.assertEqual(self.trader.config.trading_mode, "paper")
+        self.assertIn("PAPER TRADING MODE ACTIVATED", msg_paper)
+
+    def test_exchange_api_credentials_and_test(self):
+        with patch.object(self.trader.exchange_client, "test_connection", return_value=(True, "Success (Mock)", {"mock": True})):
+            ok, msg = self.trader.set_exchange_api("delta", "my_api_key_delta", "my_api_secret_delta")
+            self.assertTrue(ok)
+            self.assertEqual(self.trader.config.live_exchange, "delta")
+            self.assertEqual(self.trader.config.exchange_api_key, "my_api_key_delta")
+
+        report = self.trader.get_api_status_report()
+        self.assertIn("LIVE EXCHANGE API SYSTEM", report)
+        self.assertIn("DELTA", report)
+        self.assertIn("my_a...elta", report)
+
+        clear_msg = self.trader.clear_exchange_api()
+        self.assertIn("cleared", clear_msg)
+        self.assertEqual(self.trader.config.exchange_api_key, "")
+        self.assertEqual(self.trader.config.trading_mode, "paper")
+
+
+class TestModeCapitalApiTelegramCommands(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.tmp_cfg = "/workspace/bright-darwin/.test_cmd_cfg.json"
+        self.tmp_pos = "/workspace/bright-darwin/.test_cmd_pos.json"
+        self.tmp_hist = "/workspace/bright-darwin/.test_cmd_hist.json"
+        for p in (self.tmp_cfg, self.tmp_hist, self.tmp_pos):
+            if os.path.exists(p):
+                os.remove(p)
+        self.config = auto_trade.AutoTradeConfig(
+            config_file=self.tmp_cfg,
+            trades_history_file=self.tmp_hist,
+            open_positions_file=self.tmp_pos,
+            paper_capital=100.0,
+            equity=100.0,
+            trading_mode="paper",
+        )
+        self.trader = auto_trade.AutoTrader(config=self.config)
+
+    def tearDown(self):
+        for p in (self.tmp_cfg, self.tmp_hist, self.tmp_pos):
+            if os.path.exists(p):
+                os.remove(p)
+
+    async def test_mode_command_telegram(self):
+        mock_update = unittest.mock.AsyncMock()
+        mock_ctx = unittest.mock.MagicMock()
+
+        # 1. /mode status
+        mock_ctx.args = []
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.mode_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("TRADING MODE CONFIGURATION", sent)
+        self.assertIn("PAPER TRADING", sent)
+
+        # 2. /mode live without keys
+        mock_ctx.args = ["live"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.mode_command(mock_update, mock_ctx)
+        sent_live_fail = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("CANNOT ACTIVATE LIVE TRADING", sent_live_fail)
+
+        # 3. /mode paper
+        mock_ctx.args = ["paper"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.mode_command(mock_update, mock_ctx)
+        sent_paper = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("PAPER TRADING MODE ACTIVATED", sent_paper)
+
+    async def test_capital_command_telegram(self):
+        mock_update = unittest.mock.AsyncMock()
+        mock_ctx = unittest.mock.MagicMock()
+
+        # 1. /capital (view report)
+        mock_ctx.args = []
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.capital_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("TRADING CAPITAL & FUNDS DASHBOARD", sent)
+
+        # 2. /capital set 100
+        mock_ctx.args = ["set", "100"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.capital_command(mock_update, mock_ctx)
+        self.assertEqual(self.trader.config.paper_capital, 100.0)
+
+        # 3. /capital 200 (direct number)
+        mock_ctx.args = ["200"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.capital_command(mock_update, mock_ctx)
+        self.assertEqual(self.trader.config.paper_capital, 200.0)
+
+        # 4. /deposit 50 (via deposit_command)
+        mock_ctx.args = ["50"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.deposit_command(mock_update, mock_ctx)
+        self.assertEqual(self.trader.config.equity, 250.0)
+
+        # 5. /withdraw 25 (via withdraw_command)
+        mock_ctx.args = ["25"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.withdraw_command(mock_update, mock_ctx)
+        self.assertEqual(self.trader.config.equity, 225.0)
+
+        # 6. /capital reset
+        mock_ctx.args = ["reset"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.capital_command(mock_update, mock_ctx)
+        self.assertEqual(self.trader.config.equity, 100.0)
+
+    async def test_api_command_telegram(self):
+        mock_update = unittest.mock.AsyncMock()
+        mock_ctx = unittest.mock.MagicMock()
+
+        # 1. /api status
+        mock_ctx.args = []
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.api_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("LIVE EXCHANGE API SYSTEM", sent)
+
+        # 2. /api set delta key secret
+        mock_ctx.args = ["set", "delta", "key123", "sec456"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader), \
+             unittest.mock.patch.object(self.trader.exchange_client, "test_connection", return_value=(True, "Connected", {})):
+            await main.api_command(mock_update, mock_ctx)
+        sent_set = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Exchange API Configured", sent_set)
+        self.assertEqual(self.trader.config.exchange_api_key, "key123")
+
+        # 3. /api clear
+        mock_ctx.args = ["clear"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.api_command(mock_update, mock_ctx)
+        sent_clear = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("cleared", sent_clear)
+        self.assertEqual(self.trader.config.exchange_api_key, "")
+
+    async def test_start_and_menu_command_categories(self):
+        mock_update = unittest.mock.AsyncMock()
+        mock_ctx = unittest.mock.MagicMock()
+
+        # Test /start contains categories
+        await main.start(mock_update, mock_ctx)
+        start_txt = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("1. Market & Live Quotes", start_txt)
+        self.assertIn("2. Pinpoint Trade Planning", start_txt)
+        self.assertIn("3. Auto-Trading & Execution", start_txt)
+        self.assertIn("4. Paper & Live Trading / Capital Management", start_txt)
+        self.assertIn("5. Live Exchange API System", start_txt)
+        self.assertIn("6. Risk & Strategy Configuration", start_txt)
+        self.assertIn("7. Assistant & Diagnostics", start_txt)
+        self.assertIn("/mode", start_txt)
+        self.assertIn("/capital", start_txt)
+        self.assertIn("/api", start_txt)
+
+        # Test /menu contains categories
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.menu_command(mock_update, mock_ctx)
+        menu_txt = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("TRADING BOT COMMAND MENU", menu_txt)
+        self.assertIn("1. Market & Quotes", menu_txt)
+        self.assertIn("2. Pinpoint Trade Planning", menu_txt)
+        self.assertIn("3. Auto-Trading & Execution", menu_txt)
+        self.assertIn("4. Paper/Live Mode & Capital", menu_txt)
+        self.assertIn("5. Live Exchange API System", menu_txt)
+        self.assertIn("6. Risk & Strategy", menu_txt)
+
+
 def tearDownModule():
     import glob
     for f in glob.glob("/workspace/bright-darwin/.test_*"):
@@ -1268,4 +1536,5 @@ def tearDownModule():
 
 if __name__ == "__main__":
     unittest.main()
+
 
