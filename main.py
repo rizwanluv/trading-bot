@@ -19,9 +19,11 @@ Commands:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 import sys
+import time
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -76,22 +78,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger("trading_bot")
 
-MODEL = os.getenv("GEMINI_MODEL") or os.getenv("MODEL") or "gemini-2.5-flash"
 DEFAULT_SYMBOL = os.getenv("DEFAULT_SYMBOL", "XAUTUSD")
 DELTA_API = os.getenv("DELTA_API", "https://api.india.delta.exchange/v2/tickers")
 BINANCE_API = os.getenv("BINANCE_API", "https://api.binance.com/api/v3")
 
-# Fallback candidate models if primary model is unavailable
-_raw_candidate_models = [
-    MODEL,
+# Active Google Gemini Model Fleet (All models active concurrently)
+DEFAULT_ACTIVE_GOOGLE_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.0-flash",
     "gemini-1.5-flash",
+    "gemini-2.5-pro",
 ]
-_seen: set[str] = set()
-CANDIDATE_MODELS = [
-    m for m in _raw_candidate_models if m and not (m in _seen or _seen.add(m))
-]
+
+
+def get_active_gemini_models() -> List[str]:
+    """Retrieve all active Google Gemini models configured to run concurrently in parallel."""
+    env_m = os.getenv("GEMINI_MODELS", "").strip()
+    if env_m:
+        raw_list = [m.strip() for m in env_m.split(",") if m.strip()]
+    else:
+        primary = os.getenv("GEMINI_MODEL") or os.getenv("MODEL") or "gemini-2.5-flash"
+        raw_list = [primary] + [m for m in DEFAULT_ACTIVE_GOOGLE_MODELS if m != primary]
+
+    seen: set[str] = set()
+    result: List[str] = []
+    for m in raw_list:
+        if m and m not in seen:
+            seen.add(m)
+            result.append(m)
+    return result
+
+
+ACTIVE_GEMINI_MODELS = get_active_gemini_models()
+MODEL = ACTIVE_GEMINI_MODELS[0] if ACTIVE_GEMINI_MODELS else "gemini-2.5-flash"
+CANDIDATE_MODELS = ACTIVE_GEMINI_MODELS
 
 SYSTEM = """You are a trading assistant on Telegram. Focus on technical analysis,
 risk management, position sizing, and trade planning. Keep replies short and
@@ -359,12 +379,208 @@ def get_ticker_card(symbol: str) -> str:
         return f"⚠️ Price unavailable for {symbol.upper()} ({e})"
 
 
+def call_single_gemini_rest(
+    model_name: str,
+    contents: List[Dict[str, Any]],
+    system_instruction: str = SYSTEM,
+    max_output_tokens: int = 800,
+    api_key: Optional[str] = None,
+    timeout: int = 25,
+) -> Dict[str, Any]:
+    """Call an individual Google Gemini model via REST and record performance telemetry."""
+    if not api_key:
+        api_key = get_gemini_api_key()
+    if not api_key:
+        raise ValueError(
+            "GEMINI_API_KEY is not configured. Please set GEMINI_API_KEY in environment or .env file."
+        )
+
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key,
+    }
+    payload: Dict[str, Any] = {
+        "contents": contents,
+        "generationConfig": {
+            "maxOutputTokens": max_output_tokens,
+        },
+    }
+    if system_instruction:
+        payload["systemInstruction"] = {
+            "parts": [{"text": system_instruction}]
+        }
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+    t0 = time.time()
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        latency = round(time.time() - t0, 2)
+        data = resp.json()
+        if resp.status_code == 200:
+            candidates = data.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                text = "".join(p.get("text", "") for p in parts).strip()
+                return {
+                    "model": model_name,
+                    "success": True,
+                    "text": text or "No content returned.",
+                    "latency": latency,
+                    "status_code": 200,
+                }
+            return {
+                "model": model_name,
+                "success": False,
+                "error": "No response candidates returned",
+                "latency": latency,
+                "status_code": 200,
+            }
+        error_data = data.get("error", {})
+        err_msg = error_data.get("message", f"HTTP {resp.status_code}")
+        return {
+            "model": model_name,
+            "success": False,
+            "error": f"{resp.status_code}: {err_msg}",
+            "latency": latency,
+            "status_code": resp.status_code,
+        }
+    except Exception as exc:
+        latency = round(time.time() - t0, 2)
+        return {
+            "model": model_name,
+            "success": False,
+            "error": str(exc),
+            "latency": latency,
+            "status_code": 0,
+        }
+
+
+def call_all_gemini_combined(
+    contents: List[Dict[str, Any]],
+    system_instruction: str = SYSTEM,
+    max_output_tokens: int = 800,
+    models: Optional[List[str]] = None,
+    timeout: int = 25,
+) -> Dict[str, Any]:
+    """
+    Executes parallel concurrent queries across ALL active Google Gemini models simultaneously.
+    Combines individual model outputs and telemetry for multi-model synthesis.
+    """
+    api_key = get_gemini_api_key()
+    if not api_key:
+        raise ValueError(
+            "GEMINI_API_KEY is not configured. Please set GEMINI_API_KEY in environment or .env file."
+        )
+
+    active_models = models or get_active_gemini_models()
+    if not active_models:
+        active_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+
+    results: Dict[str, Dict[str, Any]] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(active_models), 8)) as executor:
+        futures = {
+            executor.submit(
+                call_single_gemini_rest,
+                model_name=m,
+                contents=contents,
+                system_instruction=system_instruction,
+                max_output_tokens=max_output_tokens,
+                api_key=api_key,
+                timeout=timeout,
+            ): m
+            for m in active_models
+        }
+        for fut in concurrent.futures.as_completed(futures):
+            m = futures[fut]
+            try:
+                results[m] = fut.result()
+            except Exception as exc:
+                results[m] = {
+                    "model": m,
+                    "success": False,
+                    "error": str(exc),
+                    "latency": 0.0,
+                    "status_code": 0,
+                }
+
+    ordered_results = [results[m] for m in active_models if m in results]
+    successful = [r for r in ordered_results if r.get("success") and r.get("text")]
+    failed = [r for r in ordered_results if not r.get("success")]
+
+    return {
+        "all_results": results,
+        "ordered_results": ordered_results,
+        "successful": successful,
+        "failed": failed,
+        "active_models": active_models,
+        "total_active": len(active_models),
+        "total_responded": len(successful),
+    }
+
+
+def format_gemini_ensemble_response(successful: List[Dict[str, Any]]) -> str:
+    """
+    Synthesizes multiple concurrent Google Gemini model outputs into a unified,
+    cross-validated consensus response.
+    """
+    if not successful:
+        return "No active Google models returned a valid response."
+
+    # If only 1 model responded, return its output directly
+    if len(successful) == 1:
+        return successful[0]["text"]
+
+    # Check if all responses are identical
+    first_text = successful[0]["text"].strip()
+    if all(s.get("text", "").strip() == first_text for s in successful):
+        active_names = ", ".join(f"<code>{s['model']}</code>" for s in successful)
+        return (
+            f"{first_text}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚡ <i>Unanimously confirmed by all {len(successful)} active Google models ({active_names}) concurrently.</i>"
+        )
+
+    # Find the richest / primary response
+    primary = max(successful, key=lambda s: len(s.get("text", "")))
+    primary_text = primary["text"].strip()
+
+    # Build consensus summary cards for each active model
+    model_cards = []
+    for s in successful:
+        m_name = s.get("model", "gemini")
+        lat = s.get("latency", 0.0)
+        t = s.get("text", "").strip()
+
+        # Extract the key headline or takeaway from each model
+        lines = [line.strip() for line in t.split("\n") if line.strip() and not line.startswith("#")]
+        summary = lines[0] if lines else t[:160]
+        if len(summary) > 160:
+            summary = summary[:157] + "..."
+
+        is_primary = (s["model"] == primary["model"])
+        star = "🌟 " if is_primary else "• "
+        model_cards.append(
+            f"{star}<b>{m_name}</b> (<code>{lat:.2f}s</code>): <i>{summary}</i>"
+        )
+
+    return (
+        f"🌐 <b>GOOGLE MULTI-MODEL COMBINED CONSENSUS</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{primary_text}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🧠 <b>Simultaneous Multi-Model Validation ({len(successful)} Active Models):</b>\n"
+        f"{chr(10).join(model_cards)}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<i>💡 All Google Gemini models run concurrently in parallel to eliminate blind spots and verify signals.</i>"
+    )
+
+
 def call_gemini_rest(
     contents: List[Dict[str, Any]],
     system_instruction: str = SYSTEM,
     max_output_tokens: int = 800,
 ) -> str:
-    """Call Google Gemini REST API directly using requests."""
+    """Call Google Gemini REST API directly using requests with candidate fallback."""
     api_key = get_gemini_api_key()
     if not api_key:
         raise ValueError(
@@ -421,13 +637,31 @@ def call_gemini(
     contents: List[Dict[str, Any]],
     system_instruction: str = SYSTEM,
     max_output_tokens: int = 800,
+    combined: bool = True,
 ) -> str:
-    """Unified entry point for Gemini generation (SDK if installed, REST otherwise)."""
+    """Unified entry point for Gemini generation (Concurrent Multi-Model Combined Ensemble)."""
     api_key = get_gemini_api_key()
     if not api_key:
         raise ValueError(
             "GEMINI_API_KEY is not configured. Please set GEMINI_API_KEY in environment or .env file."
         )
+
+    # When combined=True (default), all active Google models run concurrently in parallel
+    if combined:
+        try:
+            res = call_all_gemini_combined(
+                contents=contents,
+                system_instruction=system_instruction,
+                max_output_tokens=max_output_tokens,
+            )
+            successful = res.get("successful", [])
+            if successful:
+                return format_gemini_ensemble_response(successful)
+        except Exception as exc:
+            logger.warning(
+                "Combined Google multi-model execution encountered error (%s), using sequential fallback.",
+                exc,
+            )
 
     # Use google-genai SDK if available
     if _HAS_GENAI and genai is not None and genai_types is not None:
@@ -511,6 +745,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "• /binance [SYM] — Live Binance ticker card, 24h metrics & order book\n"
         "• /scan [SYM] — Ultimate Master Scan (Deliberation, Trend, Levels, Entry)\n"
         "• /discussion [SYM] (/consensus) — 5-Layer Inter-Engine Deliberation forum & debate\n"
+        "• /gemini [SYM|PROMPT] (/models) — Google Multi-Model Ensemble (All models active simultaneously)\n"
         "• /entry [SYM] — Pinpoint precise Entry, Stop Loss & Take Profit targets\n"
         "• /alert [SYM] [PRICE] — Set automatic price notifications\n\n"
         "🤖 <b>2. Auto-Trading Ensemble (ITB + Indicators + AI)</b>\n"
@@ -1313,6 +1548,116 @@ async def learn_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await reply_safely(update, report, parse_mode="HTML")
 
 
+async def models_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Inspect or test all active Google Gemini models operating concurrently,
+    or query the multi-model ensemble for market analysis.
+    """
+    trader = get_auto_trader()
+    args = ctx.args or []
+    api_key = get_gemini_api_key()
+
+    if not api_key:
+        await reply_safely(
+            update,
+            "⚠️ <b>Google Gemini API Key is not configured.</b>\n"
+            "Please set <code>GEMINI_API_KEY</code> in environment or .env file to enable the Multi-Model Ensemble.",
+            parse_mode="HTML",
+        )
+        return
+
+    # If arguments are provided (e.g. /gemini BTCUSD or /gemini analyze Gold)
+    if args:
+        query_sym = trader.normalize_symbol(args[0]) if (args[0].upper() in trader.config.symbols or args[0].upper() in SYMBOL_ALIASES) else ""
+        prompt_text = " ".join(args)
+
+        price_info = f"[Live Market Price] {get_price(query_sym or DEFAULT_SYMBOL)}\n" if query_sym else ""
+        contents = [
+            {
+                "role": "user",
+                "parts": [{
+                    "text": (
+                        f"{price_info}Trader Query: {prompt_text}\n\n"
+                        f"Please provide an actionable technical analysis, key levels, trade setup (entry, stop loss, take profit), and risk considerations."
+                    )
+                }]
+            }
+        ]
+
+        await reply_safely(
+            update,
+            f"⚡ <i>Querying all Google Gemini models concurrently in parallel ({', '.join(get_active_gemini_models())})...</i>",
+            parse_mode="HTML",
+        )
+
+        try:
+            res = call_all_gemini_combined(contents=contents)
+            successful = res.get("successful", [])
+            if successful:
+                ans = format_gemini_ensemble_response(successful)
+            else:
+                ans = call_gemini_rest(contents)
+        except Exception as exc:
+            ans = f"⚠️ Multi-Model query error: {exc}"
+
+        await reply_safely(update, ans, parse_mode="HTML")
+        return
+
+    # No arguments: Run concurrent ping/health test across all models
+    await reply_safely(
+        update,
+        "🔍 <i>Pinging all active Google Gemini models concurrently to assess live status and latency...</i>",
+        parse_mode="HTML",
+    )
+
+    test_content = [{"role": "user", "parts": [{"text": "Ping: Respond with 1 sentence stating you are ready for trading analysis."}]}]
+    res = call_all_gemini_combined(
+        contents=test_content,
+        max_output_tokens=50,
+        timeout=15,
+    )
+
+    active_models = res.get("active_models", [])
+    all_res = res.get("all_results", {})
+    successful = res.get("successful", [])
+
+    model_lines = []
+    for m in active_models:
+        r = all_res.get(m, {})
+        if r.get("success"):
+            lat = r.get("latency", 0.0)
+            model_lines.append(f"• 🟢 <b>{m}</b>: <code>Active</code> ({lat:.2f}s latency)")
+        else:
+            err = r.get("error", "Offline")
+            if "404" in err:
+                status_desc = "Not Available / 404 ⚪"
+            elif "429" in err:
+                status_desc = "Rate Limited 🟡"
+            else:
+                status_desc = f"Failed ({err[:30]}) 🔴"
+            model_lines.append(f"• 🔴 <b>{m}</b>: <code>{status_desc}</code>")
+
+    status_icon = "🟢" if len(successful) == len(active_models) else ("🟡" if successful else "🔴")
+    await reply_safely(
+        update,
+        f"🤖 <b>GOOGLE MULTI-MODEL ENSEMBLE STATUS {status_icon}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Operating Architecture</b>: ⚡ <b>All Models Active Concurrently</b>\n"
+        f"• <b>Active Model Count</b>: <code>{len(successful)} / {len(active_models)} operational</code>\n"
+        f"• <b>Consensus Mode</b>: Parallel Multi-Model Synthesis\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>Google Model Fleet Latency & Telemetry:</b>\n"
+        f"{chr(10).join(model_lines)}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<i>💡 How to use:</i>\n"
+        f"• Send any regular message to chat with all models combined\n"
+        f"• <code>/gemini [SYM]</code> — Multi-model technical analysis on a symbol\n"
+        f"• <code>/gemini [QUERY]</code> — Multi-model prompt synthesis\n"
+        f"• Set <code>GEMINI_MODELS=m1,m2,m3</code> in .env to customize active models",
+        parse_mode="HTML",
+    )
+
+
 async def mode_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Switch or inspect trading mode (paper vs live)."""
     trader = get_auto_trader()
@@ -1892,6 +2237,8 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"• /eth | /sol | /xrp — Ethereum, Solana & Ripple tickers\n"
         f"• /scan [SYM] — Ultimate Master Scan (Deliberation + Trend + Levels)\n"
         f"• /discussion [SYM] (/consensus) — 5-Layer Deliberation forum & cross-critique\n"
+        f"• /gemini [SYM|PROMPT] — Google Multi-Model Ensemble (All models combined)\n"
+        f"• /models — View active Google model fleet status & latencies\n"
         f"• /analyze [SYM] — 10-indicator confluence report\n        • /trend [SYM] — Multi-timeframe trend scanner\n"
         f"• /price [SYM] — Live price check\n\n"
         f"<b>🎯 2. Pinpoint Trade Planning:</b>\n"
@@ -2019,15 +2366,19 @@ def run_diagnostics() -> bool:
     else:
         print("    Status        : MISSING (set TELEGRAM_TOKEN or TELEGRAM_BOT_TOKEN)")
 
-    # 4. Gemini API Key Check
-    print("\n[4] Checking Gemini API Key...")
+    # 4. Gemini API Key & Multi-Model Fleet Check
+    print("\n[4] Checking Gemini API Key & Multi-Model Fleet...")
     api_key = get_gemini_api_key()
+    active_models = get_active_gemini_models()
     if api_key:
         masked_k = api_key[:6] + "..." + api_key[-4:] if len(api_key) > 10 else "***"
         print(f"    API Key       : {masked_k}")
         print("    Status        : CONFIGURED")
+        print(f"    Active Models : {', '.join(active_models)} (Concurrent Active)")
+        print("    Ensemble Mode : ALL GOOGLE MODELS COMBINED & ACTIVE AT THE SAME TIME ⚡")
     else:
         print("    Status        : MISSING (set GEMINI_API_KEY in environment or .env)")
+        print(f"    Model Fleet   : {', '.join(active_models)}")
 
     # 5. Active Live Exchange Credentials Check
     print("\n[5] Checking Exchange Credentials...")
@@ -2166,6 +2517,10 @@ def main() -> None:
     app.add_handler(CommandHandler("forum", discussion_command))
     app.add_handler(CommandHandler("learn", learn_command))
     app.add_handler(CommandHandler("learning", learn_command))
+    app.add_handler(CommandHandler("gemini", models_command))
+    app.add_handler(CommandHandler("models", models_command))
+    app.add_handler(CommandHandler("model", models_command))
+    app.add_handler(CommandHandler("ai", models_command))
     app.add_handler(CommandHandler("symbol", symbol_command))
     app.add_handler(CommandHandler("symbols", symbols_command))
     app.add_handler(CommandHandler("pairs", symbols_command))

@@ -2948,6 +2948,148 @@ class TestDynamicAutoAnalysisAndLearning(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Quality Gate & MTF", ens_rep)
 
 
+class TestGoogleMultiModelEnsemble(unittest.IsolatedAsyncioTestCase):
+    def test_get_active_gemini_models_defaults_and_env(self):
+        with patch.dict(os.environ, {}, clear=True):
+            models = main.get_active_gemini_models()
+            self.assertIn("gemini-2.5-flash", models)
+            self.assertIn("gemini-2.0-flash", models)
+            self.assertIn("gemini-1.5-flash", models)
+            self.assertTrue(len(models) >= 3)
+
+        with patch.dict(os.environ, {"GEMINI_MODELS": "gemini-2.5-flash, gemini-custom-model"}):
+            models = main.get_active_gemini_models()
+            self.assertEqual(models, ["gemini-2.5-flash", "gemini-custom-model"])
+
+    @patch("requests.post")
+    def test_call_single_gemini_rest_success(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": "Bullish structure on BTCUSD."}]}}]
+        }
+        mock_post.return_value = mock_resp
+
+        res = main.call_single_gemini_rest(
+            model_name="gemini-2.5-flash",
+            contents=[{"role": "user", "parts": [{"text": "Analyze BTC"}]}],
+            api_key="test-api-key",
+        )
+        self.assertTrue(res["success"])
+        self.assertEqual(res["model"], "gemini-2.5-flash")
+        self.assertEqual(res["text"], "Bullish structure on BTCUSD.")
+        self.assertTrue(res["latency"] >= 0.0)
+
+    @patch("requests.post")
+    def test_call_all_gemini_combined_concurrent(self, mock_post):
+        def side_effect(url, headers, json, timeout):
+            mock_r = MagicMock()
+            if "gemini-2.5-flash" in url:
+                mock_r.status_code = 200
+                mock_r.json.return_value = {
+                    "candidates": [{"content": {"parts": [{"text": "Model 2.5: Strong buy at 82k."}]}}]
+                }
+            elif "gemini-2.0-flash" in url:
+                mock_r.status_code = 200
+                mock_r.json.return_value = {
+                    "candidates": [{"content": {"parts": [{"text": "Model 2.0: Bullish continuation with tight SL."}]}}]
+                }
+            else:
+                mock_r.status_code = 404
+                mock_r.json.return_value = {"error": {"message": "Model not enabled"}}
+            return mock_r
+
+        mock_post.side_effect = side_effect
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}):
+            res = main.call_all_gemini_combined(
+                contents=[{"role": "user", "parts": [{"text": "analyze"}]}],
+                models=["gemini-2.5-flash", "gemini-2.0-flash", "gemini-offline"],
+            )
+            self.assertEqual(res["total_active"], 3)
+            self.assertEqual(res["total_responded"], 2)
+            self.assertEqual(len(res["successful"]), 2)
+            self.assertEqual(len(res["failed"]), 1)
+
+    def test_format_gemini_ensemble_response_single_and_multi(self):
+        # 1. Single model response returns plain text directly
+        single = [{"model": "gemini-2.5-flash", "text": "Direct response", "latency": 0.4}]
+        self.assertEqual(main.format_gemini_ensemble_response(single), "Direct response")
+
+        # 2. Unanimous identical response returns text with confirmation footer
+        unanimous = [
+            {"model": "gemini-2.5-flash", "text": "BTC is bullish.", "latency": 0.3},
+            {"model": "gemini-2.0-flash", "text": "BTC is bullish.", "latency": 0.35},
+        ]
+        res_u = main.format_gemini_ensemble_response(unanimous)
+        self.assertIn("BTC is bullish.", res_u)
+        self.assertIn("Unanimously confirmed by all 2 active Google models", res_u)
+
+        # 3. Diverse multi-model outputs return synthesized consensus with individual breakdowns
+        diverse = [
+            {"model": "gemini-2.5-flash", "text": "Targeting 85,000 with strong momentum.", "latency": 0.32},
+            {"model": "gemini-2.0-flash", "text": "Caution: watch 83,200 resistance band.", "latency": 0.41},
+        ]
+        res_d = main.format_gemini_ensemble_response(diverse)
+        self.assertIn("GOOGLE MULTI-MODEL COMBINED CONSENSUS", res_d)
+        self.assertIn("gemini-2.5-flash", res_d)
+        self.assertIn("gemini-2.0-flash", res_d)
+
+    @patch("main.call_all_gemini_combined")
+    def test_call_gemini_uses_combined_mode(self, mock_combined):
+        mock_combined.return_value = {
+            "successful": [
+                {"model": "gemini-2.5-flash", "text": "Combined output 1", "latency": 0.3},
+                {"model": "gemini-2.0-flash", "text": "Combined output 2", "latency": 0.4},
+            ]
+        }
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}):
+            reply = main.call_gemini([{"role": "user", "parts": [{"text": "hi"}]}], combined=True)
+            self.assertTrue(mock_combined.called)
+            self.assertIn("GOOGLE MULTI-MODEL COMBINED CONSENSUS", reply)
+
+    async def test_models_command_handler(self):
+        update = MagicMock()
+        update.effective_chat.id = 12345
+        update.message = AsyncMock()
+        ctx = MagicMock()
+
+        # 1. Missing API Key
+        with patch.dict(os.environ, {}, clear=True):
+            await main.models_command(update, ctx)
+            sent = update.message.reply_text.call_args[0][0]
+            self.assertIn("Google Gemini API Key is not configured", sent)
+
+        # 2. Status inspection (no args)
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}):
+            with patch("main.call_all_gemini_combined") as mock_all:
+                mock_all.return_value = {
+                    "active_models": ["gemini-2.5-flash", "gemini-2.0-flash"],
+                    "all_results": {
+                        "gemini-2.5-flash": {"success": True, "latency": 0.35},
+                        "gemini-2.0-flash": {"success": True, "latency": 0.42},
+                    },
+                    "successful": [{"model": "gemini-2.5-flash"}, {"model": "gemini-2.0-flash"}],
+                }
+                ctx.args = []
+                await main.models_command(update, ctx)
+                sent = update.message.reply_text.call_args[0][0]
+                self.assertIn("GOOGLE MULTI-MODEL ENSEMBLE STATUS", sent)
+                self.assertIn("gemini-2.5-flash", sent)
+                self.assertIn("gemini-2.0-flash", sent)
+
+        # 3. Query with symbol argument
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}):
+            with patch("main.call_all_gemini_combined") as mock_all:
+                mock_all.return_value = {
+                    "successful": [{"model": "gemini-2.5-flash", "text": "BTC is trending up.", "latency": 0.3}]
+                }
+                ctx.args = ["BTCUSD"]
+                await main.models_command(update, ctx)
+                sent = update.message.reply_text.call_args[0][0]
+                self.assertIn("BTC is trending up.", sent)
+
+
 def tearDownModule():
     import glob
     for f in glob.glob("/workspace/bright-darwin/.test_*"):
