@@ -378,7 +378,8 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "ITB Machine Learning, and AI Adaptive Reinforcement for maximum precision.\n\n"
         "📊 <b>1. Market Analysis & Planning</b>\n"
         "• /market — Global market overview of major assets\n"
-        "• /scan [SYM] — Ultimate Master Scan (Trend, Levels, Indicators, AI)\n"
+        "• /scan [SYM] — Ultimate Master Scan (Deliberation, Trend, Levels, Entry)\n"
+        "• /discussion [SYM] (/consensus) — 5-Layer Inter-Engine Deliberation forum & debate\n"
         "• /entry [SYM] — Pinpoint precise Entry, Stop Loss & Take Profit targets\n"
         "• /alert [SYM] [PRICE] — Set automatic price notifications\n\n"
         "🤖 <b>2. Auto-Trading Ensemble (ITB + Indicators + AI)</b>\n"
@@ -982,6 +983,15 @@ async def itb_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await reply_safely(update, card, parse_mode="HTML")
 
 
+async def discussion_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Inter-engine deliberation forum dialogue where all 5 layers cross-examine each other."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+    target_sym = trader.normalize_symbol(args[0]) if args else trader.config.symbol
+    report = trader.generate_deliberation_report(target_sym)
+    await reply_safely(update, report, parse_mode="HTML")
+
+
 async def strategy_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """View or configure active automated trading strategy."""
     trader = get_auto_trader()
@@ -991,21 +1001,32 @@ async def strategy_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> No
         await reply_safely(update, msg, parse_mode="HTML")
         return
 
+    w_itb = getattr(trader.config, "weight_itb", 0.35) * 100.0
+    w_pro = getattr(trader.config, "weight_pro", 0.35) * 100.0
+    w_ai = getattr(trader.config, "weight_ai", 0.30) * 100.0
+    cycles = getattr(trader.config, "learning_cycles", 0)
+    last_retrain = getattr(trader.config, "last_retrain_time", "") or "Continuous background active"
+
     await reply_safely(
         update,
-        f"🎯 <b>TRADING STRATEGY CONFIGURATION</b>\n"
+        f"🎯 <b>TRADING STRATEGY CONFIGURATION & ARCHITECTURE</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"• <b>Active Strategy</b>: 🌟 <b>COMBINED ENSEMBLE SYSTEM</b>\n\n"
-        f"<b>Active Engines (Working Together):</b>\n"
-        f"1. <b>ITB Machine Learning</b> 🤖\n"
-        f"   • Rolling trend slope, skewness & kurtosis moments\n"
-        f"   • Ridge regression prediction logic\n\n"
-        f"2. <b>Indicators Pro</b> 📊\n"
-        f"   • EMA trend filter, RSI momentum & Bollinger channels\n"
-        f"   • Pinpoint pullback and breakout detection\n\n"
-        f"3. <b>AI Learning Bot</b> 🧠\n"
-        f"   • Adaptive reward-weighted reinforcement\n\n"
-        f"<i>The bot now runs all three engines simultaneously. It will only execute trades when the algorithms achieve confluence (agree on direction).</i>",
+        f"• <b>Active System</b>: 🌟 <b>MULTI-LAYER DELIBERATIVE ENSEMBLE</b>\n"
+        f"• <b>Deliberation Mode</b>: 🗣️ Continuous Mutual Cross-Examination\n"
+        f"• <b>Autonomous Learning</b>: 🔄 Online Background Retraining (Cycle #{cycles})\n"
+        f"• <b>Last Retrain</b>: <code>{last_retrain}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>Dynamic Self-Learned Allocation:</b>\n"
+        f"1. 🤖 <b>ITB Machine Learning</b>: <code>{w_itb:.1f}%</code>\n"
+        f"   • Ridge regression forward trajectory & statistical moments\n"
+        f"2. 📊 <b>Indicators Pro</b>: <code>{w_pro:.1f}%</code>\n"
+        f"   • EMA trend filter, RSI momentum, ADX velocity & Supertrend\n"
+        f"3. 🧠 <b>AI Learning Bot</b>: <code>{w_ai:.1f}%</code>\n"
+        f"   • Permanent memory expectancy & dynamic regime calibration\n"
+        f"4. 🧱 <b>SMC & Structure</b>: Institutional Order Blocks & FVGs\n"
+        f"5. 🛡️ <b>Risk Guardian</b>: Cross-layer vetoes & conviction sizing arbiter\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<i>💡 All engines run together with mutual dependency. View live debate: <code>/discussion</code> or <code>/consensus</code></i>",
         parse_mode="HTML",
     )
 
@@ -1540,7 +1561,7 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     pos_count = len(trader.positions)
     pos_str = f"{pos_count} active position(s)" if pos_count > 0 else "0 open"
     symbols_str = ", ".join(trader.config.symbols) if trader.config.symbols else trader.config.symbol
-    strat_str = "Combined Ensemble (ITB + Pro + AI)"
+    strat_str = "Deliberative Multi-Layer Ensemble (5 Engines)"
     await reply_safely(
         update,
         f"🎛️ <b>TRADING BOT COMMAND MENU</b>\n"
@@ -1555,7 +1576,9 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"• /market — Global overview of BTC, ETH, SOL, XRP, GOLD\n        • /btc — Bitcoin ticker card & 24h stats\n"
         f"• /gold — Gold ticker card & 24h stats\n"
         f"• /eth | /sol | /xrp — Ethereum, Solana & Ripple tickers\n"
-        f"• /scan [SYM] — Ultimate Master Scan (Trend + Levels + Entry)\n        • /analyze [SYM] — 10-indicator confluence report\n        • /trend [SYM] — Multi-timeframe trend scanner\n"
+        f"• /scan [SYM] — Ultimate Master Scan (Deliberation + Trend + Levels)\n"
+        f"• /discussion [SYM] (/consensus) — 5-Layer Deliberation forum & cross-critique\n"
+        f"• /analyze [SYM] — 10-indicator confluence report\n        • /trend [SYM] — Multi-timeframe trend scanner\n"
         f"• /price [SYM] — Live price check\n\n"
         f"<b>🎯 2. Pinpoint Trade Planning:</b>\n"
         f"• /entry [SYM] — Pinpoint entry, precision SL & TPs\n"
@@ -1789,6 +1812,10 @@ def main() -> None:
     app.add_handler(CommandHandler("intelligent", itb_command))
     app.add_handler(CommandHandler("strategy", strategy_command))
     app.add_handler(CommandHandler("strat", strategy_command))
+    app.add_handler(CommandHandler("discussion", discussion_command))
+    app.add_handler(CommandHandler("consensus", discussion_command))
+    app.add_handler(CommandHandler("deliberate", discussion_command))
+    app.add_handler(CommandHandler("forum", discussion_command))
     app.add_handler(CommandHandler("symbol", symbol_command))
     app.add_handler(CommandHandler("symbols", symbols_command))
     app.add_handler(CommandHandler("pairs", symbols_command))

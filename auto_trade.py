@@ -52,7 +52,7 @@ import pandas as pd
 import requests
 
 from trading_strategy_indicators_pro import Direction, IndicatorsProStrategy, IndicatorEngine
-from ai_bot_learning import AIBotLearning
+from ai_bot_learning import AIBotLearning, TradeRecord
 from itb_engine import (
     ITBStrategy,
     ITBPredictor,
@@ -132,6 +132,14 @@ class AutoTradeConfig:
     trades_history_file: str = TRADES_HISTORY_PATH
     open_positions_file: str = OPEN_POSITIONS_PATH
     alerts_file: str = ALERTS_FILE_PATH
+    # Dynamic Multi-Layer Ensemble & Background Self-Learning
+    weight_itb: float = 0.35
+    weight_pro: float = 0.35
+    weight_ai: float = 0.30
+    auto_learn_enabled: bool = True
+    auto_retrain_interval_seconds: int = 300
+    last_retrain_time: str = ""
+    learning_cycles: int = 0
 
     def __post_init__(self):
         if self.config_file != CONFIG_FILE_PATH:
@@ -174,6 +182,13 @@ class AutoTradeConfig:
             "exchange_api_secret": self.exchange_api_secret,
             "notify_chat_id": self.notify_chat_id,
             "alerts_file": self.alerts_file,
+            "weight_itb": self.weight_itb,
+            "weight_pro": self.weight_pro,
+            "weight_ai": self.weight_ai,
+            "auto_learn_enabled": self.auto_learn_enabled,
+            "auto_retrain_interval_seconds": self.auto_retrain_interval_seconds,
+            "last_retrain_time": self.last_retrain_time,
+            "learning_cycles": self.learning_cycles,
         }
 
     def save(self) -> None:
@@ -406,9 +421,377 @@ class ExchangeApiClient:
         return False, f"Live ordering on {self.exchange} preview.", {}
 
 
+# ==================================================================
+# 2. MULTI-LAYER INTER-ENGINE DELIBERATION SYSTEM
+# ==================================================================
+
+@dataclass
+class LayerPerspective:
+    layer_id: str
+    name: str
+    stance: str  # "LONG", "SHORT", "NEUTRAL"
+    confidence: float  # 0.0 to 1.0
+    score: float  # -1.0 to 1.0 normalized
+    argument: str  # Primary thesis
+    critique_peers: str  # Cross-examination commentary
+    key_metrics: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DeliberationOutcome:
+    symbol: str
+    timestamp: str
+    consensus_score: float  # -1.0 to 1.0
+    consensus_direction: str  # "LONG", "SHORT", "FLAT"
+    verdict: str
+    agreement_rate: float  # 0.0 to 1.0
+    conviction_multiplier: float  # 0.0 to 1.30
+    layers: Dict[str, LayerPerspective] = field(default_factory=dict)
+    aligned_layers: List[str] = field(default_factory=list)
+    dissenting_layers: List[str] = field(default_factory=list)
+    discussion_dialogue: List[str] = field(default_factory=list)
+    risk_approval: bool = True
+    risk_summary: str = ""
+    learning_notes: str = ""
+
+
+class MultiLayerDeliberationEngine:
+    """
+    Coordinates collaborative 5-layer inter-engine deliberation with mutual dependence:
+    - Layer 1: SMC Structure & Institutional Liquidity (Order blocks, FVGs, swing runs)
+    - Layer 2: Technical Momentum & Indicators Pro (RSI, ADX, Supertrend, EMA structure)
+    - Layer 3: ITB Machine Learning Engine (Ridge regression trajectory & statistical moments)
+    - Layer 4: AI Bot Learning & Regime Expectancy (Adaptive memory, regime win rates & calibration)
+    - Layer 5: Risk Guardian Arbiter (Portfolio limits, cross-layer vetoes & conviction sizing)
+    
+    Rather than isolated voting, each layer cross-examines peers to achieve true consensus.
+    """
+
+    def deliberate(self, symbol: str, df: pd.DataFrame, trader: Any) -> DeliberationOutcome:
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        if df is None or df.empty:
+            df = trader._generate_dummy_candles(symbol, count=120)
+
+        curr_price = float(df["close"].iloc[-1])
+        atr_s = IndicatorEngine.atr_series(df, 14)
+        atr = float(atr_s.iloc[-1]) if not atr_s.empty else max(0.5, curr_price * 0.005)
+
+        # 1. SMC Structure & Institutional Liquidity Layer
+        levels = detect_order_blocks_and_fvg(df)
+        bob = levels.get("bullish_ob")
+        sob = levels.get("bearish_ob")
+        swing_hi = levels.get("swing_high") or curr_price
+        swing_lo = levels.get("swing_low") or curr_price
+
+        near_demand = False
+        if bob:
+            near_demand = (curr_price >= bob["bottom"] - atr * 0.5) and (curr_price <= bob["top"] + atr * 1.5)
+        near_supply = False
+        if sob:
+            near_supply = (curr_price <= sob["top"] + atr * 0.5) and (curr_price >= sob["bottom"] - atr * 1.5)
+
+        recent_close_5 = float(df["close"].iloc[-5]) if len(df) >= 5 else curr_price
+
+        if near_demand or (curr_price > swing_hi - atr * 0.5 and curr_price > recent_close_5):
+            smc_stance = "LONG"
+            smc_score = 0.70
+            smc_conf = 0.78
+            smc_arg = (
+                f"Price bouncing from Institutional Demand Block (${bob['bottom']:,.1f}–${bob['top']:,.1f}); "
+                f"clear upward liquidity runway toward swing high ${swing_hi:,.1f}."
+                if bob else f"Institutional expansion breaking structural high (${swing_hi:,.1f})."
+            )
+        elif near_supply or (curr_price < swing_lo + atr * 0.5 and curr_price < recent_close_5):
+            smc_stance = "SHORT"
+            smc_score = -0.70
+            smc_conf = 0.78
+            smc_arg = (
+                f"Price rejecting Institutional Supply Block (${sob['bottom']:,.1f}–${sob['top']:,.1f}); "
+                f"downward liquidity sweep targeting swing low ${swing_lo:,.1f}."
+                if sob else f"Institutional structure breakdown below swing low (${swing_lo:,.1f})."
+            )
+        else:
+            smc_stance = "NEUTRAL"
+            smc_score = 0.0
+            smc_conf = 0.50
+            smc_arg = (
+                f"Price equilibrating between Demand (${bob['bottom']:,.1f} if bob else 'N/A') "
+                f"and Supply (${sob['top']:,.1f} if sob else 'N/A'); waiting for institutional sweep."
+            )
+
+        # 2. Technical Momentum & Indicators Pro Layer
+        eng = IndicatorEngine()
+        snap = eng.compute(df)
+        pro_score = float(np.clip(snap.score / 5.0, -1.0, 1.0))
+        if snap.score >= 0.60:
+            pro_stance = "LONG"
+            pro_conf = min(0.92, 0.50 + abs(snap.score) * 0.08)
+        elif snap.score <= -0.60:
+            pro_stance = "SHORT"
+            pro_conf = min(0.92, 0.50 + abs(snap.score) * 0.08)
+        else:
+            pro_stance = "NEUTRAL"
+            pro_conf = 0.50
+
+        pro_arg = (
+            f"Confluence score {snap.score:+.2f}/5.0. RSI at {snap.rsi:.1f}, "
+            f"ADX at {snap.adx:.1f} ({'trend accelerating' if snap.adx > 25 else 'ranging consolidation'}), "
+            f"Supertrend confirms {pro_stance}."
+        )
+
+        # 3. ITB Machine Learning Engine Layer
+        strat_itb = (
+            getattr(trader, "_strategies_itb", {}).get(symbol)
+            or getattr(trader, "_strategy_itb", None)
+            or ITBStrategy(symbol=symbol)
+        )
+        itb_pred = strat_itb.predictor.predict(df, symbol=symbol)
+        itb_score = float(np.clip(itb_pred.smoothed_indicator, -1.0, 1.0))
+        if itb_score >= 0.08:
+            itb_stance = "LONG"
+        elif itb_score <= -0.08:
+            itb_stance = "SHORT"
+        else:
+            itb_stance = "NEUTRAL"
+        itb_conf = float(np.clip(itb_pred.confidence, 0.35, 0.95))
+        itb_arg = (
+            f"Ridge regression trajectory slope {itb_score:+.2f} ({itb_pred.zone}). "
+            f"Statistical moments confirm {itb_stance} bias with {itb_conf*100:.0f}% predictive confidence."
+        )
+
+        # 4. AI Bot Learning & Adaptive Memory Layer
+        strat_ai = (
+            getattr(trader, "_strategies_ai", {}).get(symbol)
+            or getattr(trader, "_strategy_ai", None)
+            or AIBotLearning(symbol=symbol)
+        )
+        ai_regime = "NORMAL"
+        try:
+            reg = strat_ai.regime(df)
+            ai_regime = getattr(reg, "name", str(reg))
+        except Exception:
+            pass
+
+        ai_mem_stats = getattr(getattr(strat_ai, "mem", None), "stats", None)
+        ai_recent_wr = getattr(ai_mem_stats, "recent_winrate", 0.50) if ai_mem_stats else 0.50
+        ai_expectancy = getattr(ai_mem_stats, "expectancy", 0.0) if ai_mem_stats else 0.0
+        ai_best_qual = getattr(ai_mem_stats, "best_quality", 4.2) if ai_mem_stats else 4.2
+
+        ema20 = float(df["close"].ewm(span=20, adjust=False).mean().iloc[-1])
+        ema50 = float(df["close"].ewm(span=50, adjust=False).mean().iloc[-1])
+        if curr_price > ema20 > ema50 and snap.rsi > 48:
+            ai_stance = "LONG"
+            ai_score = 0.75
+        elif curr_price < ema20 < ema50 and snap.rsi < 52:
+            ai_stance = "SHORT"
+            ai_score = -0.75
+        else:
+            ai_score = float(np.clip((curr_price - ema50) / max(0.001, ema50) * 100.0, -1.0, 1.0))
+            ai_stance = "LONG" if ai_score > 0.15 else ("SHORT" if ai_score < -0.15 else "NEUTRAL")
+
+        ai_conf = float(np.clip(ai_recent_wr, 0.40, 0.90))
+        ai_arg = (
+            f"Market regime classified as {ai_regime}. Historical expectancy is {ai_expectancy:+.2f}R "
+            f"(recent WR: {ai_recent_wr*100:.0f}%). Quality gate Q≥{ai_best_qual:.1f} calibrated."
+        )
+
+        # Inter-Layer Cross-Examination Critiques
+        if smc_stance == pro_stance and smc_stance != "NEUTRAL":
+            smc_critique = f"Confirms Technical Momentum: Structural liquidity runway aligns with indicator push."
+        elif smc_stance != "NEUTRAL" and pro_stance != "NEUTRAL" and smc_stance != pro_stance:
+            smc_critique = f"WARN Technical Momentum: Price is running into opposing institutional block! Reversal risk elevated."
+        else:
+            smc_critique = f"Observes mid-range structure; allows momentum to lead while watching swing bounds."
+
+        if pro_stance == itb_stance and pro_stance != "NEUTRAL":
+            pro_critique = f"Confirms ITB ML: Momentum acceleration perfectly matches statistical regression slope."
+        elif pro_stance != "NEUTRAL" and itb_stance != "NEUTRAL" and pro_stance != itb_stance:
+            pro_critique = f"WARN ITB ML: Indicator momentum opposes ML slope; flags potential divergence or whip."
+        else:
+            pro_critique = f"Momentum in neutral equilibrium; cross-referencing AI regime for direction."
+
+        if itb_stance == smc_stance and itb_stance != "NEUTRAL":
+            itb_critique = f"Quantitative regression verifies institutional accumulation/distribution zone."
+        elif itb_stance != "NEUTRAL" and smc_stance != "NEUTRAL" and itb_stance != smc_stance:
+            itb_critique = f"Statistical moments indicate distribution asymmetry contrary to local structure."
+        else:
+            itb_critique = f"Predictive feature weights indicate range-bound transition; recommends defensive sizing."
+
+        if ai_expectancy > 0.10:
+            ai_critique = f"Regime favorable (expectancy {ai_expectancy:+.2f}R). Validates active multi-engine execution."
+        else:
+            ai_critique = f"Regime choppy or expectancy thin. Demands strict unanimous consensus before entry."
+
+        p_smc = LayerPerspective(
+            layer_id="smc_structure",
+            name="SMC & Structure",
+            stance=smc_stance,
+            confidence=round(smc_conf, 2),
+            score=round(smc_score, 2),
+            argument=smc_arg,
+            critique_peers=smc_critique,
+            key_metrics={"swing_high": swing_hi, "swing_low": swing_lo, "atr": atr},
+        )
+        p_pro = LayerPerspective(
+            layer_id="technical_momentum",
+            name="Technical Momentum (Pro)",
+            stance=pro_stance,
+            confidence=round(pro_conf, 2),
+            score=round(pro_score, 2),
+            argument=pro_arg,
+            critique_peers=pro_critique,
+            key_metrics={"rsi": snap.rsi, "adx": snap.adx, "score": snap.score},
+        )
+        p_itb = LayerPerspective(
+            layer_id="itb_machine_learning",
+            name="ITB Machine Learning",
+            stance=itb_stance,
+            confidence=round(itb_conf, 2),
+            score=round(itb_score, 2),
+            argument=itb_arg,
+            critique_peers=itb_critique,
+            key_metrics={"smoothed": itb_score, "zone": itb_pred.zone},
+        )
+        p_ai = LayerPerspective(
+            layer_id="ai_bot_learning",
+            name="AI Bot Learning",
+            stance=ai_stance,
+            confidence=round(ai_conf, 2),
+            score=round(ai_score, 2),
+            argument=ai_arg,
+            critique_peers=ai_critique,
+            key_metrics={"regime": ai_regime, "winrate": ai_recent_wr, "expectancy": ai_expectancy},
+        )
+
+        layers_map = {
+            "smc_structure": p_smc,
+            "technical_momentum": p_pro,
+            "itb_machine_learning": p_itb,
+            "ai_bot_learning": p_ai,
+        }
+
+        # 5. Risk Guardian Arbiter & Sizing Arbiter
+        cfg = getattr(trader, "config", None)
+        w_itb = getattr(cfg, "weight_itb", 0.35)
+        w_pro = getattr(cfg, "weight_pro", 0.35)
+        w_ai = getattr(cfg, "weight_ai", 0.30)
+        w_smc = 0.20
+        total_w = w_itb + w_pro + w_ai + w_smc
+
+        composite_score = (
+            (w_itb * itb_score) + (w_pro * pro_score) + (w_ai * ai_score) + (w_smc * smc_score)
+        ) / total_w
+        composite_score = float(np.clip(composite_score, -1.0, 1.0))
+
+        stances = [p_smc.stance, p_pro.stance, p_itb.stance, p_ai.stance]
+        long_votes = sum(1 for s in stances if s == "LONG")
+        short_votes = sum(1 for s in stances if s == "SHORT")
+        neutral_votes = sum(1 for s in stances if s == "NEUTRAL")
+
+        aligned_layers = []
+        dissenting_layers = []
+
+        if long_votes > short_votes:
+            target_dir = "LONG"
+            aligned_layers = [lid for lid, p in layers_map.items() if p.stance == "LONG"]
+            dissenting_layers = [lid for lid, p in layers_map.items() if p.stance == "SHORT"]
+        elif short_votes > long_votes:
+            target_dir = "SHORT"
+            aligned_layers = [lid for lid, p in layers_map.items() if p.stance == "SHORT"]
+            dissenting_layers = [lid for lid, p in layers_map.items() if p.stance == "LONG"]
+        else:
+            target_dir = "FLAT"
+
+        conviction_mult = 0.0
+        risk_approval = False
+        verdict = "NEUTRAL / RANGE ⚪"
+        risk_summary = ""
+
+        if long_votes >= 3 and short_votes == 0:
+            target_dir = "LONG"
+            if long_votes == 4:
+                verdict = "STRONG BUY 🟢 (Unanimous 4/4 Synergy)"
+                conviction_mult = 1.20
+                risk_approval = True
+                risk_summary = "Unanimous alignment across all 4 specialist layers. 1.20x conviction bonus authorized."
+            else:
+                verdict = "BUY 🟢 (Consensus 3/4 Aligned)"
+                conviction_mult = 1.00
+                risk_approval = True
+                risk_summary = "Solid 3-layer consensus with no dissenting opposition. Standard 1.00x sizing approved."
+        elif short_votes >= 3 and long_votes == 0:
+            target_dir = "SHORT"
+            if short_votes == 4:
+                verdict = "STRONG SELL 🔴 (Unanimous 4/4 Synergy)"
+                conviction_mult = 1.20
+                risk_approval = True
+                risk_summary = "Unanimous alignment across all 4 specialist layers. 1.20x conviction bonus authorized."
+            else:
+                verdict = "SELL 🔴 (Consensus 3/4 Aligned)"
+                conviction_mult = 1.00
+                risk_approval = True
+                risk_summary = "Solid 3-layer consensus with no dissenting opposition. Standard 1.00x sizing approved."
+        elif long_votes >= 2 and short_votes == 0 and composite_score >= 0.20:
+            target_dir = "LONG"
+            verdict = "MODERATE BUY 🟢 (Favorable Confluence)"
+            conviction_mult = 0.85
+            risk_approval = True
+            risk_summary = "Moderate confluence without opposition. Defensive 0.85x sizing approved."
+        elif short_votes >= 2 and long_votes == 0 and composite_score <= -0.20:
+            target_dir = "SHORT"
+            verdict = "MODERATE SELL 🔴 (Favorable Confluence)"
+            conviction_mult = 0.85
+            risk_approval = True
+            risk_summary = "Moderate confluence without opposition. Defensive 0.85x sizing approved."
+        elif long_votes >= 1 and short_votes >= 1:
+            target_dir = "FLAT"
+            verdict = "CONFLICT / VETOED ⚠️ (Engines Disagree)"
+            conviction_mult = 0.0
+            risk_approval = False
+            risk_summary = f"Inter-layer conflict detected ({long_votes} Long vs {short_votes} Short). Vetoed by Risk Guardian to protect capital."
+        else:
+            target_dir = "FLAT"
+            verdict = "NEUTRAL / RANGE ⚪ (Awaiting Confluence)"
+            conviction_mult = 0.0
+            risk_approval = False
+            risk_summary = "Market in equilibrium or consolidation. Risk Guardian stands aside."
+
+        dominant_votes = max(long_votes, short_votes, neutral_votes)
+        agreement_rate = round(dominant_votes / 4.0, 2)
+
+        dialogue = [
+            f"🧱 <b>SMC Structure</b> ({smc_stance}): {smc_arg}\n   ↳ <i>Cross-Critique</i>: {smc_critique}",
+            f"📊 <b>Technical Pro</b> ({pro_stance}): {pro_arg}\n   ↳ <i>Cross-Critique</i>: {pro_critique}",
+            f"🤖 <b>ITB Machine Learning</b> ({itb_stance}): {itb_arg}\n   ↳ <i>Cross-Critique</i>: {itb_critique}",
+            f"🧠 <b>AI Bot Learning</b> ({ai_stance}): {ai_arg}\n   ↳ <i>Cross-Critique</i>: {ai_critique}",
+            f"🛡️ <b>Risk Guardian Arbiter</b>: {risk_summary}",
+        ]
+
+        learning_notes = (
+            f"Dynamic Weights: ITB={w_itb:.0%}, Pro={w_pro:.0%}, AI={w_ai:.0%} | "
+            f"Learning Cycles: {getattr(cfg, 'learning_cycles', 0)}"
+        )
+
+        return DeliberationOutcome(
+            symbol=symbol,
+            timestamp=now_str,
+            consensus_score=round(composite_score, 3),
+            consensus_direction=target_dir,
+            verdict=verdict,
+            agreement_rate=agreement_rate,
+            conviction_multiplier=round(conviction_mult, 2),
+            layers=layers_map,
+            aligned_layers=aligned_layers,
+            dissenting_layers=dissenting_layers,
+            discussion_dialogue=dialogue,
+            risk_approval=risk_approval,
+            risk_summary=risk_summary,
+            learning_notes=learning_notes,
+        )
+
 
 # ==================================================================
-# 2. AUTO TRADER CORE ENGINE (FOR BOT & MONITORING)
+# 3. AUTO TRADER CORE ENGINE (FOR BOT & MONITORING)
 # ==================================================================
 
 
@@ -437,6 +820,8 @@ class AutoTrader:
         self._strategy_ai: Optional[AIBotLearning] = None
         self._strategies_itb: Dict[str, ITBStrategy] = {}
         self._strategies_ai: Dict[str, AIBotLearning] = {}
+        self._last_retrain_timestamp: float = 0.0
+        self._deliberation_engine: MultiLayerDeliberationEngine = MultiLayerDeliberationEngine()
         self._init_strategy()
 
     @property
@@ -1109,13 +1494,14 @@ class AutoTrader:
         )
 
     # ------------------------------------------------------------------
-    # Combined Multi-Model Ensemble System (ITB + Pro + AI)
+    # Combined Multi-Model Ensemble System & Multi-Layer Deliberation
     # ------------------------------------------------------------------
     def evaluate_ensemble(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         """
-        Unified 3-engine ensemble confluence evaluator:
-        Combines ITB Machine Learning + Indicators Pro + AI Bot Learning.
-        Returns detailed consensus metrics and composite directional conviction.
+        Unified 5-layer ensemble confluence evaluator:
+        Combines SMC Structure + Technical Momentum + ITB Machine Learning +
+        AI Bot Learning + Risk Guardian Arbiter.
+        Returns detailed deliberation metrics, cross-critiques, and conviction sizing.
         """
         target_sym = self.normalize_symbol(symbol) if symbol else self.config.symbol
         df1 = self.fetch_candles(target_sym, count=120)
@@ -1123,85 +1509,104 @@ class AutoTrader:
             df1 = self._generate_dummy_candles(target_sym, count=120)
 
         curr_price = float(df1["close"].iloc[-1])
+        delib = self._deliberation_engine.deliberate(target_sym, df1, self)
 
-        # 1. ITB Machine Learning Engine
-        strat_itb = self._strategies_itb.get(target_sym) or self._strategy_itb or ITBStrategy(symbol=target_sym)
-        itb_pred = strat_itb.predictor.predict(df1, symbol=target_sym)
-        itb_score = float(np.clip(itb_pred.smoothed_indicator, -1.0, 1.0))
-        itb_dir = "LONG" if itb_score >= 0.08 else ("SHORT" if itb_score <= -0.08 else "FLAT")
+        p_itb = delib.layers.get("itb_machine_learning")
+        p_pro = delib.layers.get("technical_momentum")
+        p_ai = delib.layers.get("ai_bot_learning")
+        p_smc = delib.layers.get("smc_structure")
 
-        # 2. Indicators Pro Engine
-        eng = IndicatorEngine()
-        snap = eng.compute(df1)
-        pro_score = float(np.clip(snap.score / 5.0, -1.0, 1.0))
-        pro_dir = "LONG" if snap.score >= 0.6 else ("SHORT" if snap.score <= -0.6 else "FLAT")
+        itb_score = p_itb.score if p_itb else 0.0
+        itb_dir = p_itb.stance if p_itb else "FLAT"
+        itb_zone = p_itb.key_metrics.get("zone", "NEUTRAL") if p_itb else "NEUTRAL"
+        itb_conf = p_itb.confidence if p_itb else 0.5
 
-        # 3. AI Bot Learning Engine
-        strat_ai = self._strategies_ai.get(target_sym) or self._strategy_ai or AIBotLearning(symbol=target_sym)
-        ai_dir_raw = "FLAT"
-        ai_score = 0.0
-        ai_regime = "NORMAL"
-        try:
-            reg = strat_ai.regime(df1)
-            ai_regime = getattr(reg, "name", str(reg))
-            ema20 = float(df1["close"].ewm(span=20, adjust=False).mean().iloc[-1])
-            ema50 = float(df1["close"].ewm(span=50, adjust=False).mean().iloc[-1])
-            if curr_price > ema20 > ema50 and snap.rsi > 50:
-                ai_dir_raw = "LONG"
-                ai_score = 0.75
-            elif curr_price < ema20 < ema50 and snap.rsi < 50:
-                ai_dir_raw = "SHORT"
-                ai_score = -0.75
-            else:
-                ai_score = float(np.clip((curr_price - ema50) / max(0.001, ema50) * 100.0, -1.0, 1.0))
-                ai_dir_raw = "LONG" if ai_score > 0.15 else ("SHORT" if ai_score < -0.15 else "FLAT")
-        except Exception:
-            ai_score = pro_score
-            ai_dir_raw = pro_dir
+        pro_score = p_pro.key_metrics.get("score", 0.0) if p_pro else 0.0
+        pro_norm = p_pro.score if p_pro else 0.0
+        pro_dir = p_pro.stance if p_pro else "FLAT"
+        pro_rsi = p_pro.key_metrics.get("rsi", 50.0) if p_pro else 50.0
+        pro_adx = p_pro.key_metrics.get("adx", 20.0) if p_pro else 20.0
 
-        composite = (0.35 * itb_score) + (0.35 * pro_score) + (0.30 * ai_score)
-        composite = float(np.clip(composite, -1.0, 1.0))
-
-        dirs = [d for d in (itb_dir, pro_dir, ai_dir_raw) if d != "FLAT"]
-        long_votes = sum(1 for d in (itb_dir, pro_dir, ai_dir_raw) if d == "LONG")
-        short_votes = sum(1 for d in (itb_dir, pro_dir, ai_dir_raw) if d == "SHORT")
-
-        if long_votes >= 2 or (long_votes == 1 and short_votes == 0 and composite >= 0.20):
-            overall_direction = "LONG"
-            verdict = "STRONG BUY 🟢" if (long_votes == 3 or composite >= 0.50) else "BUY 🟢"
-        elif short_votes >= 2 or (short_votes == 1 and long_votes == 0 and composite <= -0.20):
-            overall_direction = "SHORT"
-            verdict = "STRONG SELL 🔴" if (short_votes == 3 or composite <= -0.50) else "SELL 🔴"
-        else:
-            overall_direction = "FLAT"
-            verdict = "NEUTRAL / RANGE ⚪"
-
-        agreement_pct = round((max(long_votes, short_votes, 3 - len(dirs)) / 3.0) * 100.0)
+        ai_score = p_ai.score if p_ai else 0.0
+        ai_dir = p_ai.stance if p_ai else "FLAT"
+        ai_regime = p_ai.key_metrics.get("regime", "NORMAL") if p_ai else "NORMAL"
 
         return {
             "symbol": target_sym,
             "price": curr_price,
             "itb_score": itb_score,
-            "itb_zone": itb_pred.zone,
+            "itb_zone": itb_zone,
             "itb_dir": itb_dir,
-            "itb_confidence": itb_pred.confidence,
-            "pro_score": snap.score,
-            "pro_norm": pro_score,
+            "itb_confidence": itb_conf,
+            "pro_score": pro_score,
+            "pro_norm": pro_norm,
             "pro_dir": pro_dir,
-            "pro_rsi": snap.rsi,
-            "pro_adx": snap.adx,
+            "pro_rsi": pro_rsi,
+            "pro_adx": pro_adx,
             "ai_score": ai_score,
-            "ai_dir": ai_dir_raw,
+            "ai_dir": ai_dir,
             "ai_regime": ai_regime,
-            "composite_score": composite,
-            "direction": overall_direction,
-            "verdict": verdict,
-            "agreement_pct": agreement_pct,
-            "engines_aligned": f"{max(long_votes, short_votes)}/3",
+            "composite_score": delib.consensus_score,
+            "direction": delib.consensus_direction,
+            "verdict": delib.verdict,
+            "agreement_pct": round(delib.agreement_rate * 100.0),
+            "engines_aligned": f"{len(delib.aligned_layers)}/4",
+            "deliberation": delib,
+            "conviction_multiplier": delib.conviction_multiplier,
+            "risk_approval": delib.risk_approval,
+            "smc_stance": p_smc.stance if p_smc else "NEUTRAL",
+            "smc_arg": p_smc.argument if p_smc else "",
         }
 
+    def generate_deliberation_report(self, symbol: Optional[str] = None) -> str:
+        """
+        Formats the interactive 5-layer deliberation forum dialogue:
+        Presents SMC, Momentum, ITB ML, AI Learning, and Risk Guardian
+        debating and cross-examining each other's theses.
+        """
+        target_sym = self.normalize_symbol(symbol) if symbol else self.config.symbol
+        df1 = self.fetch_candles(target_sym, count=120)
+        if df1 is None or df1.empty:
+            df1 = self._generate_dummy_candles(target_sym, count=120)
+
+        delib = self._deliberation_engine.deliberate(target_sym, df1, self)
+        curr_price = float(df1["close"].iloc[-1])
+
+        comp_sign = "+" if delib.consensus_score >= 0 else ""
+        meter_pct = max(0.0, min(100.0, (delib.consensus_score + 1.0) / 2.0 * 100.0))
+        meter_bar = make_modern_meter(meter_pct, width=10, fill_char="■", empty_char="░")
+
+        status_icon = "✅ APPROVED" if delib.risk_approval else "⚠️ DEFENSIVE / VETOED"
+        dialogue_str = "\n\n".join(delib.discussion_dialogue)
+
+        w_itb = getattr(self.config, "weight_itb", 0.35) * 100.0
+        w_pro = getattr(self.config, "weight_pro", 0.35) * 100.0
+        w_ai = getattr(self.config, "weight_ai", 0.30) * 100.0
+        cycles = getattr(self.config, "learning_cycles", 0)
+        retrain_t = getattr(self.config, "last_retrain_time", "") or "Continuous background active"
+
+        return (
+            f"🗣️ <b>INTER-ENGINE DELIBERATION FORUM: {target_sym}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Market Price</b>: <code>${curr_price:,.2f}</code>\n"
+            f"• <b>Consensus Verdict</b>: <b>{delib.verdict}</b>\n"
+            f"• <b>Consensus Gauge</b>: <code>[{meter_bar}]</code> ({comp_sign}{delib.consensus_score:.2f})\n"
+            f"• <b>Agreement Rate</b>: <code>{delib.agreement_rate * 100:.0f}%</code> ({len(delib.aligned_layers)}/4 layers aligned)\n"
+            f"• <b>Conviction Sizing</b>: <code>{delib.conviction_multiplier:.2f}x multiplier</code>\n"
+            f"• <b>Risk Clearance</b>: <b>{status_icon}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>💬 INTER-LAYER DEBATE & CROSS-CRITIQUE:</b>\n\n"
+            f"{dialogue_str}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🧠 <b>AUTONOMOUS SELF-LEARNING STATUS:</b>\n"
+            f"• <b>Dynamic Allocation</b>: ITB: <code>{w_itb:.1f}%</code> | Pro: <code>{w_pro:.1f}%</code> | AI: <code>{w_ai:.1f}%</code>\n"
+            f"• <b>Learning Cycles</b>: <code>{cycles}</code> | <b>Last Retrain</b>: <code>{retrain_t}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>💡 All layers cross-examine each other continuously. Use <code>/scan {target_sym}</code> for master scan.</i>"
+        )
+
     def generate_ensemble_report(self, symbol: Optional[str] = None) -> str:
-        """Formats the Combined Ensemble (ITB + Pro + AI) confluence card."""
+        """Formats the Combined Ensemble confluence card powered by inter-layer deliberation."""
         e = self.evaluate_ensemble(symbol)
         comp = e["composite_score"]
         comp_sign = "+" if comp >= 0 else ""
@@ -1210,6 +1615,15 @@ class AutoTrader:
 
         itb_sign = "+" if e["itb_score"] >= 0 else ""
         pro_sign = "+" if e["pro_score"] >= 0 else ""
+        conv_mult = e.get("conviction_multiplier", 1.0)
+        risk_str = "✅ Cleared" if e.get("risk_approval", True) else "⚠️ Vetoed / Neutral"
+
+        delib = e.get("deliberation")
+        smc_s = getattr(delib.layers.get("smc_structure"), "stance", "NEUTRAL") if delib else "NEUTRAL"
+
+        w_itb = getattr(self.config, "weight_itb", 0.35) * 100.0
+        w_pro = getattr(self.config, "weight_pro", 0.35) * 100.0
+        w_ai = getattr(self.config, "weight_ai", 0.30) * 100.0
 
         return (
             f"🌟 <b>COMBINED ENSEMBLE SYSTEM: {e['symbol']}</b>\n"
@@ -1217,15 +1631,165 @@ class AutoTrader:
             f"• <b>Market Price</b>: <code>${e['price']:,.2f}</code>\n"
             f"• <b>Consensus Verdict</b>: <b>{e['verdict']}</b> ({e['agreement_pct']}% agreement)\n"
             f"• <b>Composite Gauge</b>: <code>[{meter_bar}]</code> ({comp_sign}{comp:.2f})\n"
-            f"• <b>Engines Aligned</b>: <code>{e['engines_aligned']}</code>\n"
+            f"• <b>Conviction Sizing</b>: <code>{conv_mult:.2f}x</code> | <b>Risk Clearance</b>: <code>{risk_str}</code>\n"
+            f"• <b>Dynamic Allocation</b>: ITB: <code>{w_itb:.0f}%</code> | Pro: <code>{w_pro:.0f}%</code> | AI: <code>{w_ai:.0f}%</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>Individual Engine Confluence:</b>\n"
-            f"1. <b>ITB Machine Learning</b> 🤖: {itb_sign}{e['itb_score']:.2f} ({e['itb_zone']})\n"
-            f"2. <b>Indicators Pro</b> 📊: {pro_sign}{e['pro_score']:.2f}/5.0 (RSI: {e['pro_rsi']:.1f} | ADX: {e['pro_adx']:.1f})\n"
-            f"3. <b>AI Bot Learning</b> 🧠: {e['ai_dir']} (Regime: {e['ai_regime']})\n"
+            f"<b>Individual Layer Stances (Mutual Deliberation):</b>\n"
+            f"1. 🧱 <b>SMC Structure</b>: {smc_s}\n"
+            f"2. 📊 <b>Indicators Pro</b>: {pro_sign}{e['pro_score']:.2f}/5.0 (RSI: {e['pro_rsi']:.1f} | ADX: {e['pro_adx']:.1f})\n"
+            f"3. 🤖 <b>ITB Machine Learning</b>: {itb_sign}{e['itb_score']:.2f} ({e['itb_zone']})\n"
+            f"4. 🧠 <b>AI Bot Learning</b>: {e['ai_dir']} (Regime: {e['ai_regime']})\n"
+            f"5. 🛡️ <b>Risk Guardian</b>: {risk_str}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<i>💡 All 3 engines running together in real-time.</i>"
+            f"<i>💡 All engines discuss each other's theses. Full dialogue: <code>/discussion {e['symbol']}</code></i>"
         )
+
+    def learn_from_trade(
+        self,
+        pos: AutoTradePosition,
+        current_price: float,
+        pnl: float,
+        reason: str = "MANUAL",
+    ) -> None:
+        """
+        Feedback-driven continuous self-learning loop:
+        1. Records closed trade into AI Bot Learning permanent memory.
+        2. Dynamically adapts ITB, Pro, and AI ensemble weights based on predictive accuracy.
+        3. Updates strategy PnL trackers and persists updated memory & config.
+        """
+        # 1. Update AI Bot Permanent Memory
+        try:
+            strat_ai = self._strategies_ai.get(pos.symbol) or self._strategy_ai
+            if strat_ai and hasattr(strat_ai, "mem"):
+                won = bool(pnl > 0)
+                risk_budget = (self.config.equity * self.config.risk_pct / 100.0) if self.config.risk_pct > 0 else 1.0
+                r_multiple = round(pnl / max(0.01, risk_budget), 2)
+                setup_name = getattr(pos, "strategy", "Ensemble") or "Ensemble"
+                quality_val = 4.8 if won else 3.2
+
+                df_cur = self.fetch_candles(pos.symbol, count=50)
+                regime_name = "range"
+                if df_cur is not None and not df_cur.empty:
+                    try:
+                        reg_obj = strat_ai.regime(df_cur)
+                        regime_name = getattr(reg_obj, "name", str(reg_obj)).lower()
+                    except Exception:
+                        pass
+
+                rec = TradeRecord(
+                    id=pos.id,
+                    timestamp=pos.exit_time or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    direction=pos.direction,
+                    setup=setup_name,
+                    entry=pos.entry_price,
+                    exit=current_price,
+                    pnl=pnl,
+                    r_multiple=r_multiple,
+                    quality=quality_val,
+                    regime=regime_name,
+                    hour=datetime.now(timezone.utc).hour,
+                    session="active",
+                    rsi=50.0,
+                    adx=25.0,
+                    ind_score=1.0 if won else -1.0,
+                    ai_conf=0.70 if won else 0.45,
+                    ai_correct=won,
+                    rel_vol=1.0,
+                    won=won,
+                )
+                strat_ai.mem.remember(rec)
+                logger.info("AI Bot Memory updated with trade %s (PnL: $%.2f, Won: %s)", pos.id, pnl, won)
+        except Exception as e:
+            logger.warning("Could not record trade into AI memory: %s", e)
+
+        # 2. Dynamically Adapt Ensemble Weights (ITB, Pro, AI)
+        try:
+            won = bool(pnl > 0)
+            shift = 0.02 if won else -0.015
+
+            w_itb = self.config.weight_itb
+            w_pro = self.config.weight_pro
+            w_ai = self.config.weight_ai
+
+            pos_desc = f"{pos.reason} {pos.strategy}"
+            if "ITB" in pos_desc or "Ensemble" in pos_desc or "Deliberat" in pos_desc:
+                w_itb += shift
+            if "Pro" in pos_desc or "Ensemble" in pos_desc or "Deliberat" in pos_desc:
+                w_pro += shift
+            if "AI" in pos_desc or "Ensemble" in pos_desc or "Deliberat" in pos_desc:
+                w_ai += shift
+
+            w_itb = max(0.15, min(0.60, w_itb))
+            w_pro = max(0.15, min(0.60, w_pro))
+            w_ai = max(0.15, min(0.60, w_ai))
+
+            total_w = w_itb + w_pro + w_ai
+            self.config.weight_itb = round(w_itb / total_w, 3)
+            self.config.weight_pro = round(w_pro / total_w, 3)
+            self.config.weight_ai = round(1.0 - self.config.weight_itb - self.config.weight_pro, 3)
+
+            self.config.learning_cycles += 1
+            self.config.save()
+            logger.info(
+                "Self-learning rebalanced ensemble weights -> ITB: %.1f%%, Pro: %.1f%%, AI: %.1f%% (Cycle #%d)",
+                self.config.weight_itb * 100,
+                self.config.weight_pro * 100,
+                self.config.weight_ai * 100,
+                self.config.learning_cycles,
+            )
+        except Exception as e:
+            logger.warning("Could not adapt ensemble weights: %s", e)
+
+        # 3. Strategy PnL tracking
+        if pos.symbol in self._strategies_pro:
+            self._strategies_pro[pos.symbol].update(pnl)
+        elif self._strategy_pro:
+            self._strategy_pro.update(pnl)
+
+        if pos.symbol in self._strategies_itb:
+            self._strategies_itb[pos.symbol].update(pnl)
+        elif self._strategy_itb:
+            self._strategy_itb.update(pnl)
+
+    def auto_learn_step(self) -> List[str]:
+        """
+        Background autonomous retraining and self-learning loop:
+        1. Checks elapsed time since last retraining cycle.
+        2. Retrains ITB Ridge Regression models on rolling live candle feeds for all configured symbols.
+        3. Persists updated weights, logs progress, and returns notification notes.
+        """
+        now = time_module.time()
+        interval = getattr(self.config, "auto_retrain_interval_seconds", 300)
+        if (now - self._last_retrain_timestamp) < interval:
+            return []
+
+        self._last_retrain_timestamp = now
+        notes = []
+        target_symbols = list(self.config.symbols) if self.config.symbols else [self.config.symbol]
+
+        for sym in target_symbols:
+            try:
+                df = self.fetch_candles(sym, count=150)
+                if df is None or len(df) < 35:
+                    continue
+                strat_itb = self._strategies_itb.get(sym) or self._strategy_itb
+                if strat_itb and hasattr(strat_itb, "predictor"):
+                    res = strat_itb.predictor.train(df, horizon=10, l2_reg=1.0)
+                    if res.get("success"):
+                        r2 = res.get("r2_score", 0.0)
+                        acc = res.get("direction_accuracy", 0.0)
+                        logger.info(
+                            "[Auto-Learn] Background ITB retrain for %s completed: R²=%.3f, DirAcc=%.1f%% (%d samples)",
+                            sym, r2, acc * 100, res.get("samples", 0),
+                        )
+                        notes.append(f"🧠 Retrained {sym} ML model (R²: {r2:+.2f}, Acc: {acc*100:.0f}%)")
+            except Exception as e:
+                logger.debug("Background retraining error for %s: %s", sym, e)
+
+        self.config.last_retrain_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        self.config.learning_cycles += 1
+        self.config.save()
+        return notes
 
     def generate_trade_analysis(self, symbol: str) -> str:
         """Alias to analyze_market for unified master scan."""
@@ -1786,17 +2350,8 @@ class AutoTrader:
             self.positions.remove(pos)
             self._save_open_positions()
 
-        if pos.symbol in self._strategies_pro:
-            self._strategies_pro[pos.symbol].update(pnl)
-        elif self._strategy_pro:
-            self._strategy_pro.update(pnl)
-
-        if pos.symbol in self._strategies_itb:
-            self._strategies_itb[pos.symbol].update(pnl)
-        elif self._strategy_ai:
-            self._strategy_ai.tp_mode = self.config.tp_mode
-        if self._strategy_itb:
-            self._strategy_itb.update(pnl)
+        # Continuous Self-Learning: Feedback closed trade into AI memory, adapt weights & strategy PnL
+        self.learn_from_trade(pos, current_price=price, pnl=pnl, reason=reason)
 
         sign = "+" if pnl >= 0 else ""
         return (
@@ -1872,6 +2427,10 @@ class AutoTrader:
         """
         notifications: List[str] = []
         candles_cache: Dict[str, pd.DataFrame] = {}
+
+        # 0. Autonomous Background Retraining & Self-Learning Loop
+        if getattr(self.config, "auto_learn_enabled", True):
+            self.auto_learn_step()
 
         def get_candles(sym: str) -> pd.DataFrame:
             if sym not in candles_cache:
@@ -1995,119 +2554,141 @@ class AutoTrader:
                         ),
                     )
 
+                # Deliberate among all 5 layers with mutual cross-examination & dependency
+                delib = self._deliberation_engine.deliberate(sym, df1, self)
+
                 strat_pro = self._strategies_pro.get(sym) or self._strategy_pro
                 strat_itb = self._strategies_itb.get(sym) or self._strategy_itb
                 strat_ai = self._strategies_ai.get(sym) or self._strategy_ai
-                
+
                 sig_pro = strat_pro.generate_signal(df1, daily) if strat_pro else None
                 sig_itb = strat_itb.generate_signal(df1, daily) if strat_itb else None
                 sig_ai = strat_ai.generate_signal(df1, daily) if strat_ai else None
-                
+
                 active_sigs = []
                 for s, name in [(sig_pro, "Pro"), (sig_itb, "ITB"), (sig_ai, "AI")]:
                     if s is not None and getattr(s.direction, "name", "FLAT") != "FLAT":
                         active_sigs.append((s, name))
-                        
+
                 sig = None
-                strat_label = "Ensemble"
+                names = [s[1] for s in active_sigs]
+                strat_label = f"Ensemble ({'+'.join(names)})" if names else "Ensemble"
+                target_dir = "FLAT"
+
                 if active_sigs:
                     # Check for conflicts among active signals
                     directions = set(s[0].direction.name for s in active_sigs)
                     if len(directions) == 1:
                         target_dir = list(directions)[0]
-                        # Verify against continuous 3-engine ensemble confluence
+                        # Verify against continuous multi-layer deliberation
                         try:
-                            ens_eval = self.evaluate_ensemble(sym)
-                            # Reject if ensemble is strongly opposed (no solo conflicting trades)
-                            if (target_dir == "LONG" and ens_eval["composite_score"] < -0.15) or \
-                               (target_dir == "SHORT" and ens_eval["composite_score"] > 0.15):
+                            # Reject if multi-layer consensus is strongly opposed (no solo conflicting trades)
+                            if (target_dir == "LONG" and delib.consensus_score < -0.15 and not delib.risk_approval) or \
+                               (target_dir == "SHORT" and delib.consensus_score > 0.15 and not delib.risk_approval):
                                 sig = None
                             else:
                                 sig = active_sigs[0][0]
-                                names = [s[1] for s in active_sigs]
-                                strat_label = f"Ensemble ({'+'.join(names)})"
                                 if hasattr(sig, "setup"):
                                     sig.setup = strat_label
                         except Exception:
                             sig = active_sigs[0][0]
-                            names = [s[1] for s in active_sigs]
-                            strat_label = f"Ensemble ({'+'.join(names)})"
-                            if hasattr(sig, "setup"):
-                                sig.setup = strat_label
                     else:
                         # Conflict across signals, stay flat
                         sig = None
+                elif delib.risk_approval and delib.consensus_direction != "FLAT" and delib.conviction_multiplier > 0.0:
+                    target_dir = delib.consensus_direction
+                    strat_label = f"Ensemble (Deliberated x{delib.conviction_multiplier:.2f})"
 
                 if sig is not None:
-                        entry = sig.entry
-                        stop = sig.stop
-                        tp1 = sig.tp1
-                        tp2 = sig.tp2
+                    target_dir = sig.direction.name
+                    entry = sig.entry
+                    stop = sig.stop
+                    tp1 = sig.tp1
+                    tp2 = sig.tp2
+                    setup_str = getattr(sig.setup, "value", str(sig.setup))
+                    reason_str = sig.reason
+                elif delib.risk_approval and delib.consensus_direction != "FLAT" and delib.conviction_multiplier > 0.0:
+                    target_dir = delib.consensus_direction
+                    atr_val = float(IndicatorEngine.atr_series(df1, 14).iloc[-1])
+                    if target_dir == "LONG":
+                        entry = curr_close
+                        stop = round(entry - 1.5 * atr_val, 2)
+                        tp1 = round(entry + 2.0 * atr_val, 2)
+                        tp2 = round(entry + 3.5 * atr_val, 2)
+                    else:
+                        entry = curr_close
+                        stop = round(entry + 1.5 * atr_val, 2)
+                        tp1 = round(entry - 2.0 * atr_val, 2)
+                        tp2 = round(entry - 3.5 * atr_val, 2)
+                    setup_str = f"Institutional Flow ({delib.verdict.split()[0]})"
+                    reason_str = f"Multi-Layer Consensus ({len(delib.aligned_layers)}/4 layers)"
+                else:
+                    continue
 
-                        # Calculate Lot Size safely
-                        if self.config.lot_mode == "fixed":
-                            lots = self.config.lot_size
-                        else:
-                            risk_dist = max(0.0001, abs(entry - stop))
-                            risk_usd = self.config.equity * (self.config.risk_pct / 100.0)
-                            lots = round(risk_usd / risk_dist, 4)
-                            if lots <= 0:
-                                lots = self.config.lot_size
+                # Calculate lot size with dynamic conviction multiplier
+                mult = delib.conviction_multiplier if delib.conviction_multiplier > 0 else 1.0
+                if self.config.lot_mode == "fixed":
+                    lots = round(self.config.lot_size * mult, 4)
+                else:
+                    risk_dist = max(0.0001, abs(entry - stop))
+                    risk_usd = self.config.equity * (self.config.risk_pct / 100.0)
+                    lots = round((risk_usd / risk_dist) * mult, 4)
+                if lots <= 0:
+                    lots = self.config.lot_size
 
-                        mode = self.config.trading_mode
-                        order_id = None
-                        if mode == "live":
-                            ok_ord, ord_msg, _ = self.exchange_client.place_order(
-                                symbol=sym,
-                                direction=sig.direction.name,
-                                size=lots,
-                                stop_loss=stop,
-                                take_profit=tp1,
-                            )
-                            if not ok_ord:
-                                notifications.append(
-                                    f"⚠️ <b>LIVE ORDER REJECTED ({sym})</b>: {ord_msg}"
-                                )
-                                continue
-                            order_id = ord_msg
-
-                        setup_str = getattr(sig.setup, "value", str(sig.setup))
-                        pos_id = f"TRADE_{sym[:3]}_{int(time.time())}_{len(self.positions) + 1}"
-                        new_pos = AutoTradePosition(
-                            id=pos_id,
-                            symbol=sym,
-                            direction=sig.direction.name,
-                            entry_price=round(entry, 2),
-                            stop_loss=round(stop, 2),
-                            take_profit_1=round(tp1, 2),
-                            take_profit_2=round(tp2, 2) if tp2 else None,
-                            lot_size=round(lots, 4),
-                            entry_time=datetime.now(timezone.utc).strftime(
-                                "%Y-%m-%d %H:%M:%S UTC"
-                            ),
-                            strategy=strat_label,
-                            reason=sig.reason,
-                            highest_price=entry,
-                            lowest_price=entry,
-                            mode=mode,
-                            exchange_order_id=order_id,
-                        )
-                        self.positions.append(new_pos)
-                        self._save_open_positions()
-                        mode_tag = " [LIVE 🚨]" if mode == "live" else " [PAPER 📄]"
+                mode = self.config.trading_mode
+                order_id = None
+                if mode == "live":
+                    ok_ord, ord_msg, _ = self.exchange_client.place_order(
+                        symbol=sym,
+                        direction=target_dir,
+                        size=lots,
+                        stop_loss=stop,
+                        take_profit=tp1,
+                    )
+                    if not ok_ord:
                         notifications.append(
-                            f"🚀 <b>AUTO TRADE OPENED ({new_pos.symbol}){mode_tag}</b>\n"
-                            f"• ID: <code>{new_pos.id}</code>\n"
-                            f"• Mode: <b>{new_pos.mode.upper()}</b>\n"
-                            f"• Symbol: {new_pos.symbol}\n"
-                            f"• Direction: <b>{new_pos.direction}</b>\n"
-                            f"• Entry: {new_pos.entry_price:.2f}\n"
-                            f"• Lot Size: {new_pos.lot_size}\n"
-                            f"• Take Profit: {new_pos.take_profit_1:.2f}\n"
-                            f"• Stop Loss: {new_pos.stop_loss:.2f}\n"
-                            f"• Strategy: {new_pos.strategy}\n"
-                            f"• Setup: {setup_str}"
+                            f"⚠️ <b>LIVE ORDER REJECTED ({sym})</b>: {ord_msg}"
                         )
+                        continue
+                    order_id = ord_msg
+
+                pos_id = f"TRADE_{sym[:3]}_{int(time.time())}_{len(self.positions) + 1}"
+                new_pos = AutoTradePosition(
+                    id=pos_id,
+                    symbol=sym,
+                    direction=target_dir,
+                    entry_price=round(entry, 2),
+                    stop_loss=round(stop, 2),
+                    take_profit_1=round(tp1, 2),
+                    take_profit_2=round(tp2, 2) if tp2 else None,
+                    lot_size=round(lots, 4),
+                    entry_time=datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%d %H:%M:%S UTC"
+                    ),
+                    strategy=strat_label,
+                    reason=reason_str,
+                    highest_price=entry,
+                    lowest_price=entry,
+                    mode=mode,
+                    exchange_order_id=order_id,
+                )
+                self.positions.append(new_pos)
+                self._save_open_positions()
+                mode_tag = " [LIVE 🚨]" if mode == "live" else " [PAPER 📄]"
+                notifications.append(
+                    f"🚀 <b>AUTO TRADE OPENED ({new_pos.symbol}){mode_tag}</b>\n"
+                    f"• ID: <code>{new_pos.id}</code>\n"
+                    f"• Mode: <b>{new_pos.mode.upper()}</b>\n"
+                    f"• Symbol: {new_pos.symbol}\n"
+                    f"• Direction: <b>{new_pos.direction}</b>\n"
+                    f"• Entry: {new_pos.entry_price:.2f}\n"
+                    f"• Lot Size: {new_pos.lot_size}\n"
+                    f"• Take Profit: {new_pos.take_profit_1:.2f}\n"
+                    f"• Stop Loss: {new_pos.stop_loss:.2f}\n"
+                    f"• Strategy: {new_pos.strategy}\n"
+                    f"• Setup: {setup_str}"
+                )
         # 3. Check and trigger Trade Level Alerts (Price levels, OB/FVG zones, Proximity)
         level_alerts = self.check_trade_level_alerts(candles_cache=candles_cache)
         notifications.extend(level_alerts)

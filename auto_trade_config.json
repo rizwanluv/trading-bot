@@ -16,7 +16,7 @@
   "sl_mode": "pts",
   "trailing_sl": true,
   "max_daily_loss_pct": 4.0,
-  "strategy_type": "itb_ml",
+  "strategy_type": "combined_ensemble",
   "poll_seconds": 15,
   "trading_mode": "paper",
   "paper_capital": 100.0,
@@ -28,5 +28,12 @@
   "exchange_api_key": "",
   "exchange_api_secret": "",
   "notify_chat_id": 777,
-  "alerts_file": "/workspace/bright-darwin/trade_alerts.json"
+  "alerts_file": "/workspace/bright-darwin/trade_alerts.json",
+  "weight_itb": 0.35,
+  "weight_pro": 0.35,
+  "weight_ai": 0.3,
+  "auto_learn_enabled": true,
+  "auto_retrain_interval_seconds": 300,
+  "last_retrain_time": "",
+  "learning_cycles": 0
 }

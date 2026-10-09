@@ -2028,6 +2028,118 @@ class TestMultiLayerBugFixesAndResilience(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Auto-trading active symbols updated: BTCUSD, XAUTUSD", sent)
 
 
+class TestMultiLayerDeliberationAndSelfLearning(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.tmp_cfg = "/workspace/bright-darwin/.test_delib_cfg.json"
+        self.tmp_pos = "/workspace/bright-darwin/.test_delib_pos.json"
+        self.tmp_hist = "/workspace/bright-darwin/.test_delib_hist.json"
+        for p in (self.tmp_cfg, self.tmp_hist, self.tmp_pos):
+            if os.path.exists(p):
+                os.remove(p)
+        self.config = auto_trade.AutoTradeConfig(
+            config_file=self.tmp_cfg,
+            trades_history_file=self.tmp_hist,
+            open_positions_file=self.tmp_pos,
+            paper_capital=100.0,
+            equity=100.0,
+            trading_mode="paper",
+            weight_itb=0.35,
+            weight_pro=0.35,
+            weight_ai=0.30,
+            auto_learn_enabled=True,
+            auto_retrain_interval_seconds=300,
+        )
+        self.trader = auto_trade.AutoTrader(config=self.config)
+
+    def tearDown(self):
+        for p in (self.tmp_cfg, self.tmp_hist, self.tmp_pos):
+            if os.path.exists(p):
+                os.remove(p)
+
+    def test_multi_layer_deliberation_structure_and_outcome(self):
+        engine = auto_trade.MultiLayerDeliberationEngine()
+        df = self.trader._generate_dummy_candles("BTCUSD", count=120)
+        outcome = engine.deliberate("BTCUSD", df, self.trader)
+        self.assertIsInstance(outcome, auto_trade.DeliberationOutcome)
+        self.assertEqual(outcome.symbol, "BTCUSD")
+        self.assertIn("smc_structure", outcome.layers)
+        self.assertIn("technical_momentum", outcome.layers)
+        self.assertIn("itb_machine_learning", outcome.layers)
+        self.assertIn("ai_bot_learning", outcome.layers)
+        self.assertTrue(len(outcome.discussion_dialogue) >= 5)
+        self.assertTrue(0.0 <= outcome.agreement_rate <= 1.0)
+        self.assertTrue(0.0 <= outcome.conviction_multiplier <= 1.5)
+
+    def test_evaluate_ensemble_deliberated_keys(self):
+        ens = self.trader.evaluate_ensemble("BTCUSD")
+        self.assertIn("deliberation", ens)
+        self.assertIn("conviction_multiplier", ens)
+        self.assertIn("risk_approval", ens)
+        self.assertIn("engines_aligned", ens)
+        self.assertIn("verdict", ens)
+        self.assertIn("composite_score", ens)
+        self.assertIn("itb_score", ens)
+        self.assertIn("pro_score", ens)
+        self.assertIn("ai_score", ens)
+
+    def test_learn_from_trade_feedback_and_weight_adaptation(self):
+        pos = auto_trade.AutoTradePosition(
+            id="TRADE_TEST_1",
+            symbol="BTCUSD",
+            direction="LONG",
+            entry_price=80000.0,
+            stop_loss=79000.0,
+            take_profit_1=82000.0,
+            take_profit_2=None,
+            lot_size=0.01,
+            entry_time="2026-10-09 12:00:00 UTC",
+            strategy="Deliberated Ensemble",
+            reason="Deliberated Multi-Layer (Conviction x1.20)",
+            highest_price=82000.0,
+            lowest_price=80000.0,
+        )
+        initial_cycles = self.trader.config.learning_cycles
+        self.trader.learn_from_trade(pos, current_price=82000.0, pnl=20.0, reason="TP1")
+        self.assertEqual(self.trader.config.learning_cycles, initial_cycles + 1)
+        w_sum = self.trader.config.weight_itb + self.trader.config.weight_pro + self.trader.config.weight_ai
+        self.assertAlmostEqual(w_sum, 1.0, places=2)
+
+    def test_auto_learn_step_background_retrain(self):
+        self.trader._last_retrain_timestamp = 0.0
+        notes = self.trader.auto_learn_step()
+        self.assertTrue(len(notes) >= 1)
+        self.assertTrue(bool(self.trader.config.last_retrain_time))
+        self.assertTrue(self.trader.config.learning_cycles >= 1)
+
+    async def test_discussion_command(self):
+        mock_update = unittest.mock.AsyncMock()
+        mock_ctx = unittest.mock.MagicMock()
+        mock_ctx.args = ["BTCUSD"]
+
+        with patch("main.get_auto_trader", return_value=self.trader):
+            await main.discussion_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("INTER-ENGINE DELIBERATION FORUM", sent)
+        self.assertIn("Consensus Verdict", sent)
+        self.assertIn("SMC Structure", sent)
+        self.assertIn("Technical Pro", sent)
+        self.assertIn("ITB Machine Learning", sent)
+        self.assertIn("AI Bot Learning", sent)
+
+    async def test_strategy_command_displays_deliberation_and_weights(self):
+        mock_update = unittest.mock.AsyncMock()
+        mock_ctx = unittest.mock.MagicMock()
+        mock_ctx.args = []
+
+        with patch("main.get_auto_trader", return_value=self.trader):
+            await main.strategy_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("TRADING STRATEGY CONFIGURATION", sent)
+        self.assertIn("MULTI-LAYER DELIBERATIVE ENSEMBLE", sent)
+        self.assertIn("Dynamic Self-Learned Allocation", sent)
+        self.assertIn("ITB Machine Learning", sent)
+
+
 def tearDownModule():
     import glob
     for f in glob.glob("/workspace/bright-darwin/.test_*"):
