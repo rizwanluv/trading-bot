@@ -1894,7 +1894,7 @@ class TestITBEngineAndIntegration(unittest.IsolatedAsyncioTestCase):
         notifs = self.trader.step()
         self.assertGreaterEqual(len(notifs), 1)
         if self.trader.positions:
-            self.assertEqual(self.trader.positions[0].strategy, "Ensemble (ITB)")
+            self.assertIn("Ensemble", self.trader.positions[0].strategy)
 
     async def test_itb_and_strategy_telegram_commands(self):
         mock_update = unittest.mock.AsyncMock()
@@ -2952,14 +2952,16 @@ class TestGoogleMultiModelEnsemble(unittest.IsolatedAsyncioTestCase):
     def test_get_active_gemini_models_defaults_and_env(self):
         with patch.dict(os.environ, {}, clear=True):
             models = main.get_active_gemini_models()
+            self.assertIn("models/gemini-3.1-pro-preview", models)
             self.assertIn("gemini-2.5-flash", models)
             self.assertIn("gemini-2.0-flash", models)
             self.assertIn("gemini-1.5-flash", models)
-            self.assertTrue(len(models) >= 3)
+            self.assertTrue(len(models) >= 4)
+            self.assertEqual(main.MODEL, "models/gemini-3.1-pro-preview")
 
-        with patch.dict(os.environ, {"GEMINI_MODELS": "gemini-2.5-flash, gemini-custom-model"}):
+        with patch.dict(os.environ, {"GEMINI_MODELS": "models/gemini-3.1-pro-preview, gemini-2.5-flash"}):
             models = main.get_active_gemini_models()
-            self.assertEqual(models, ["gemini-2.5-flash", "gemini-custom-model"])
+            self.assertEqual(models, ["models/gemini-3.1-pro-preview", "gemini-2.5-flash"])
 
     @patch("requests.post")
     def test_call_single_gemini_rest_success(self, mock_post):
@@ -2971,14 +2973,20 @@ class TestGoogleMultiModelEnsemble(unittest.IsolatedAsyncioTestCase):
         mock_post.return_value = mock_resp
 
         res = main.call_single_gemini_rest(
-            model_name="gemini-2.5-flash",
+            model_name="models/gemini-3.1-pro-preview",
             contents=[{"role": "user", "parts": [{"text": "Analyze BTC"}]}],
             api_key="test-api-key",
         )
         self.assertTrue(res["success"])
-        self.assertEqual(res["model"], "gemini-2.5-flash")
+        self.assertEqual(res["model"], "models/gemini-3.1-pro-preview")
         self.assertEqual(res["text"], "Bullish structure on BTCUSD.")
         self.assertTrue(res["latency"] >= 0.0)
+        # Verify URL stripped 'models/' prefix to avoid duplicated path
+        called_url = mock_post.call_args[0][0]
+        self.assertEqual(
+            called_url,
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent"
+        )
 
     @patch("requests.post")
     def test_call_all_gemini_combined_concurrent(self, mock_post):

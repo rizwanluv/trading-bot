@@ -84,6 +84,7 @@ BINANCE_API = os.getenv("BINANCE_API", "https://api.binance.com/api/v3")
 
 # Active Google Gemini Model Fleet (All models active concurrently)
 DEFAULT_ACTIVE_GOOGLE_MODELS = [
+    "models/gemini-3.1-pro-preview",
     "gemini-2.5-flash",
     "gemini-2.0-flash",
     "gemini-1.5-flash",
@@ -97,7 +98,7 @@ def get_active_gemini_models() -> List[str]:
     if env_m:
         raw_list = [m.strip() for m in env_m.split(",") if m.strip()]
     else:
-        primary = os.getenv("GEMINI_MODEL") or os.getenv("MODEL") or "gemini-2.5-flash"
+        primary = os.getenv("GEMINI_MODEL") or os.getenv("MODEL") or "models/gemini-3.1-pro-preview"
         raw_list = [primary] + [m for m in DEFAULT_ACTIVE_GOOGLE_MODELS if m != primary]
 
     seen: set[str] = set()
@@ -110,7 +111,7 @@ def get_active_gemini_models() -> List[str]:
 
 
 ACTIVE_GEMINI_MODELS = get_active_gemini_models()
-MODEL = ACTIVE_GEMINI_MODELS[0] if ACTIVE_GEMINI_MODELS else "gemini-2.5-flash"
+MODEL = ACTIVE_GEMINI_MODELS[0] if ACTIVE_GEMINI_MODELS else "models/gemini-3.1-pro-preview"
 CANDIDATE_MODELS = ACTIVE_GEMINI_MODELS
 
 SYSTEM = """You are a trading assistant on Telegram. Focus on technical analysis,
@@ -410,7 +411,8 @@ def call_single_gemini_rest(
             "parts": [{"text": system_instruction}]
         }
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+    clean_model = model_name[7:] if model_name.startswith("models/") else model_name
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent"
     t0 = time.time()
     try:
         resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
@@ -604,7 +606,8 @@ def call_gemini_rest(
 
     last_error = "Unknown error"
     for model_name in CANDIDATE_MODELS:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+        clean_model = model_name[7:] if model_name.startswith("models/") else model_name
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent"
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=30)
             data = resp.json()
