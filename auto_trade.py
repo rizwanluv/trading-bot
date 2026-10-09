@@ -64,6 +64,13 @@ from itb_engine import (
     format_itb_card,
     format_backtest_report,
 )
+try:
+    from risk_manager import RiskManager, RiskConfig, INSTRUMENTS, TradeRiskResult
+except ImportError:
+    RiskManager = None
+    RiskConfig = None
+    INSTRUMENTS = {}
+    TradeRiskResult = None
 
 logger = logging.getLogger("trading_bot.auto_trade")
 
@@ -74,6 +81,7 @@ CONFIG_FILE_PATH = os.path.join(BASE, "auto_trade_config.json")
 TRADES_HISTORY_PATH = os.path.join(BASE, "trades_history.json")
 OPEN_POSITIONS_PATH = os.path.join(BASE, "open_positions.json")
 ALERTS_FILE_PATH = os.path.join(BASE, "trade_alerts.json")
+RISK_STATE_PATH = os.path.join(BASE, "risk_state.json")
 DELTA_CHART_API = os.getenv(
     "DELTA_CHART_API", "https://api.india.delta.exchange/v2/chart/history"
 )
@@ -134,6 +142,9 @@ class AutoTradeConfig:
     trades_history_file: str = TRADES_HISTORY_PATH
     open_positions_file: str = OPEN_POSITIONS_PATH
     alerts_file: str = ALERTS_FILE_PATH
+    risk_state_file: str = RISK_STATE_PATH
+    auto_breakeven: bool = True
+    risk_factor: float = 1.0
     # Dynamic Multi-Layer Ensemble & Background Self-Learning
     weight_itb: float = 0.35
     weight_pro: float = 0.35
@@ -150,6 +161,8 @@ class AutoTradeConfig:
                 self.open_positions_file = f"{base}_open_positions{ext}"
             if self.alerts_file == ALERTS_FILE_PATH:
                 self.alerts_file = f"{base}_alerts{ext}"
+            if self.risk_state_file == RISK_STATE_PATH:
+                self.risk_state_file = f"{base}_risk_state{ext}"
         if not self.symbols:
             self.symbols = [self.symbol, "XAUTUSD"] if "XAU" not in self.symbol else ["BTCUSD", self.symbol]
         elif self.symbol not in self.symbols:
@@ -191,6 +204,8 @@ class AutoTradeConfig:
             "auto_retrain_interval_seconds": self.auto_retrain_interval_seconds,
             "last_retrain_time": self.last_retrain_time,
             "learning_cycles": self.learning_cycles,
+            "auto_breakeven": self.auto_breakeven,
+            "risk_factor": self.risk_factor,
         }
 
     def save(self) -> None:
@@ -1165,6 +1180,24 @@ class AutoTrader:
                 lot_mode=self.config.lot_mode,
             )
         )
+        if RiskManager:
+            risk_cfg = RiskConfig(
+                base_risk_pct=self.config.risk_pct,
+                min_risk_pct=0.05,
+                max_risk_pct=5.0,
+                max_daily_loss_pct=self.config.max_daily_loss_pct,
+                auto_be=getattr(self.config, "auto_breakeven", True),
+                rf=getattr(self.config, "risk_factor", 1.0),
+            )
+            state_p = getattr(self.config, "risk_state_file", RISK_STATE_PATH)
+            self.risk_manager = RiskManager(
+                equity=self.config.equity,
+                symbol=self.config.symbol,
+                config=risk_cfg,
+                state_file=state_p,
+            )
+        else:
+            self.risk_manager = None
 
     def enable(self, chat_id: Optional[int] = None) -> str:
         self.config.enabled = True
@@ -1294,6 +1327,18 @@ class AutoTrader:
             return max(min_lot, round(self.config.lot_size * mult, 4))
 
         # Auto dynamic risk-based sizing
+        if self.risk_manager:
+            self.risk_manager.state.equity = self.config.equity
+            self.risk_manager.config.base_risk_pct = self.config.risk_pct
+            res = self.risk_manager.position_size(
+                entry=entry_price,
+                stop=stop_loss,
+                equity=self.config.equity,
+                symbol=symbol_upper,
+            )
+            if res.lots > 0:
+                return max(min_lot, round(res.lots * mult, decimals))
+
         price_risk = max(0.0001, abs(entry_price - stop_loss))
         risk_budget = self.config.equity * (self.config.risk_pct / 100.0)
         raw_lots = (risk_budget / price_risk) * mult
@@ -1420,6 +1465,8 @@ class AutoTrader:
         self.config.symbol = target
         if target not in self.config.symbols:
             self.config.symbols.insert(0, target)
+        if getattr(self, "risk_manager", None):
+            self.risk_manager.set_symbol(target)
         self._init_strategy()
         self.config.save()
         return f"Auto trade symbol set to: {self.config.symbol} (Active: {', '.join(self.config.symbols)})"
@@ -2072,6 +2119,17 @@ class AutoTrader:
             self._strategies_itb[pos.symbol].update(pnl)
         elif self._strategy_itb:
             self._strategy_itb.update(pnl)
+
+        # 4. Update Practical Risk Manager state
+        if getattr(self, "risk_manager", None):
+            try:
+                initial_sl = pos.initial_stop_loss if pos.initial_stop_loss is not None else pos.stop_loss
+                initial_risk = abs(pos.entry_price - initial_sl)
+                risk_usd = initial_risk * pos.lot_size if (initial_risk > 0 and pos.lot_size > 0) else 1.0
+                r_mult = round(pnl / max(0.01, risk_usd), 2)
+                self.risk_manager.update_after_trade(pnl=pnl, r_multiple=r_mult)
+            except Exception as re_err:
+                logger.warning("Could not update RiskManager: %s", re_err)
 
     def auto_learn_step(self) -> List[str]:
         """
@@ -2876,6 +2934,33 @@ class AutoTrader:
                             f"🛡️ <b>Trailing Stop Moved Down ({pos.symbol}):</b> SL updated from {old_sl:.2f} ➔ <b>{pos.stop_loss:.2f}</b>"
                         )
 
+            # Progressive Auto Break-Even (Practical RiskManager)
+            if not closed_event and pos in self.positions and getattr(self, "risk_manager", None) and getattr(self.risk_manager.config, "auto_be", True):
+                initial_sl = pos.initial_stop_loss if pos.initial_stop_loss is not None else pos.stop_loss
+                initial_risk = abs(pos.entry_price - initial_sl)
+                if initial_risk > 0:
+                    new_be_stop, be_reason = self.risk_manager.auto_breakeven_stop(
+                        direction=pos.direction,
+                        entry=pos.entry_price,
+                        current_stop=pos.stop_loss,
+                        highest=pos.highest_price,
+                        lowest=pos.lowest_price,
+                        initial_risk=initial_risk,
+                    )
+                    if be_reason:
+                        should_update = False
+                        if pos.direction == "LONG" and new_be_stop > pos.stop_loss:
+                            should_update = True
+                        elif pos.direction == "SHORT" and new_be_stop < pos.stop_loss:
+                            should_update = True
+                        if should_update:
+                            old_sl = pos.stop_loss
+                            pos.stop_loss = round(new_be_stop, 2)
+                            self._save_open_positions()
+                            notifications.append(
+                                f"🛡️ <b>Auto Break-Even ({pos.symbol}):</b> SL moved from {old_sl:.2f} ➔ <b>{pos.stop_loss:.2f}</b> [{be_reason}]"
+                            )
+
         # Risk Management: check max daily loss limit
         today_losses = sum(
             t.pnl for t in self.closed_trades
@@ -2892,7 +2977,15 @@ class AutoTrader:
 
         # 2. Check for New Entries across configured symbols if auto-trade is ON
         if self.config.enabled and len(self.positions) < self.config.max_positions:
-            target_symbols = list(self.config.symbols) if self.config.symbols else [self.config.symbol]
+            if getattr(self, "risk_manager", None):
+                can_tr, cant_reason = self.risk_manager.can_trade()
+                if not can_tr:
+                    logger.info("RiskManager paused entry: %s", cant_reason)
+                    target_symbols = []
+                else:
+                    target_symbols = list(self.config.symbols) if self.config.symbols else [self.config.symbol]
+            else:
+                target_symbols = list(self.config.symbols) if self.config.symbols else [self.config.symbol]
             for sym in target_symbols:
                 if len(self.positions) >= self.config.max_positions:
                     break

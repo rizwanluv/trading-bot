@@ -1133,10 +1133,14 @@ async def trailing_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def risk_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Configure maximum daily loss drawdown protection limit."""
+    """Configure maximum daily loss drawdown protection limit and Practical Risk Manager."""
     trader = get_auto_trader()
     args = ctx.args or []
     if not args:
+        if getattr(trader, "risk_manager", None):
+            dash = trader.risk_manager.get_risk_dashboard()
+            await reply_safely(update, dash, parse_mode="HTML")
+            return
         await reply_safely(
             update,
             f"🛡️ <b>Capital Risk Protection</b>\n"
@@ -1151,16 +1155,54 @@ async def risk_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
+    sub = args[0].lower().strip()
+    if sub in ("rf", "factor") and len(args) > 1:
+        try:
+            rf_val = float(args[1])
+            if getattr(trader, "risk_manager", None):
+                trader.risk_manager.state.rf = rf_val
+                trader.risk_manager.config.rf = rf_val
+                trader.risk_manager._save_state()
+            trader.config.risk_factor = rf_val
+            trader.config.save()
+            await reply_safely(update, f"✅ Risk Factor (RF) multiplier set to <b>{rf_val:.2f}x</b>", parse_mode="HTML")
+        except ValueError:
+            await reply_safely(update, "Error: Invalid RF value. Example: /risk rf 1.1")
+        return
+
+    if sub in ("be", "breakeven"):
+        if len(args) > 1:
+            state = args[1].lower() in ("on", "true", "enable", "1")
+        else:
+            state = not getattr(trader.config, "auto_breakeven", True)
+        trader.config.auto_breakeven = state
+        if getattr(trader, "risk_manager", None):
+            trader.risk_manager.config.auto_be = state
+        trader.config.save()
+        state_str = "ENABLED (ON)" if state else "DISABLED (OFF)"
+        await reply_safely(update, f"🛡️ Progressive Auto Break-Even is now <b>{state_str}</b>", parse_mode="HTML")
+        return
+
+    if sub in ("status", "info", "dashboard"):
+        if getattr(trader, "risk_manager", None):
+            dash = trader.risk_manager.get_risk_dashboard()
+            await reply_safely(update, dash, parse_mode="HTML")
+        else:
+            await reply_safely(update, f"Daily Loss Limit: {trader.config.max_daily_loss_pct}%")
+        return
+
     raw = args[0].replace("%", "").strip()
     try:
         val = float(raw)
         ok, msg = trader.set_max_daily_loss(val)
+        if ok and getattr(trader, "risk_manager", None):
+            trader.risk_manager.config.max_daily_loss_pct = val
         if ok:
             await reply_safely(update, f"✅ <b>{msg}</b>", parse_mode="HTML")
         else:
             await reply_safely(update, f"❌ {msg}")
     except ValueError:
-        await reply_safely(update, "Error: Invalid number. Example: /risk 3.0")
+        await reply_safely(update, "Error: Invalid number. Example: /risk 3.0 or /risk rf 1.1")
 
 
 async def itb_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:

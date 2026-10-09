@@ -1,0 +1,16 @@
+{
+  "equity": 100.0,
+  "peak_equity": 100.0,
+  "daily_pnl": 0.0,
+  "weekly_pnl": 0.0,
+  "consecutive_losses": 0,
+  "win_streak": 0,
+  "last_day": null,
+  "last_week": null,
+  "expectancy": 0.0,
+  "recent_winrate": 0.5,
+  "total_trades": 0,
+  "total_wins": 0,
+  "mode": "normal",
+  "rf": 1.0
+}

@@ -7,9 +7,9 @@
   ],
   "max_positions": 5,
   "max_positions_per_symbol": 1,
-  "lot_size": 2.0,
-  "lot_mode": "risk_pct",
-  "risk_pct": 2.0,
+  "lot_size": 0.04,
+  "lot_mode": "fixed",
+  "risk_pct": 2.5,
   "tp_value": 60.0,
   "sl_value": 30.0,
   "tp_mode": "pts",
@@ -35,5 +35,7 @@
   "auto_learn_enabled": true,
   "auto_retrain_interval_seconds": 300,
   "last_retrain_time": "",
-  "learning_cycles": 0
+  "learning_cycles": 0,
+  "auto_breakeven": true,
+  "risk_factor": 1.0
 }

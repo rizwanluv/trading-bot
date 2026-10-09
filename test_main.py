@@ -2170,9 +2170,14 @@ class TestAuditedBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
         self.pos_file = "/workspace/bright-darwin/.test_audit_pos.json"
         self.hist_file = "/workspace/bright-darwin/.test_audit_hist.json"
         self.alt_file = "/workspace/bright-darwin/.test_audit_alt.json"
-        for f in (self.cfg_file, self.pos_file, self.hist_file, self.alt_file):
+        self.risk_file = "/workspace/bright-darwin/.test_audit_cfg_risk_state.json"
+        self.risk_file2 = "/workspace/bright-darwin/.test_audit_risk_state.json"
+        for f in (self.cfg_file, self.pos_file, self.hist_file, self.alt_file, self.risk_file, self.risk_file2):
             if os.path.exists(f):
-                os.remove(f)
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
         cfg = auto_trade.AutoTradeConfig(
             config_file=self.cfg_file,
             open_positions_file=self.pos_file,
@@ -2186,7 +2191,7 @@ class TestAuditedBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
         self.trader = auto_trade.AutoTrader(config=cfg)
 
     def tearDown(self):
-        for f in (self.cfg_file, self.pos_file, self.hist_file, self.alt_file):
+        for f in (self.cfg_file, self.pos_file, self.hist_file, self.alt_file, self.risk_file, self.risk_file2):
             if os.path.exists(f):
                 try:
                     os.remove(f)
@@ -2595,6 +2600,172 @@ class TestAuditedBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
         sent = update.message.reply_text.call_args[0][0]
         self.assertIn("Manual Lot Sizing Activated", sent)
         self.assertIn("0.03", sent)
+
+    def test_risk_manager_profile_and_position_size(self):
+        rm = self.trader.risk_manager
+        self.assertIsNotNone(rm)
+        rm.set_symbol("BTCUSD")
+        self.assertEqual(rm.profile["pip_size"], 0.1)
+        self.assertEqual(rm.profile["min_lot"], 0.001)
+
+        # XAUTUSD profile
+        rm.set_symbol("XAUTUSD")
+        self.assertEqual(rm.profile["pip_size"], 0.01)
+        self.assertEqual(rm.profile["min_lot"], 0.01)
+
+        # Position sizing: $10,000 equity, base_risk_pct=1.0% -> $100 risk.
+        # Entry 4000, stop 3950 (stop_distance=50, stop_pips = 5000, pip_value=1.0)
+        # lots = 100 / (5000 * 1.0) = 0.02 lots
+        rm.state.rf = 1.0
+        rm.state.consecutive_losses = 0
+        rm.state.win_streak = 0
+        rm.config.base_risk_pct = 1.0
+        res = rm.position_size(entry=4000.0, stop=3950.0, equity=10000.0, symbol="XAUTUSD")
+        self.assertEqual(res.lots, 0.02)
+        self.assertEqual(res.risk_amount, 100.0)
+
+    def test_risk_manager_progressive_auto_breakeven(self):
+        rm = self.trader.risk_manager
+        rm.state.rf = 1.0
+        # Long position: Entry=80,000, Stop=79,000 (1R = 1,000)
+        # 1. At 80,200 (+0.2R), not yet reaching threshold (+0.5R)
+        new_stop, reason = rm.auto_breakeven_stop("long", entry=80000.0, current_stop=79000.0, highest=80200.0, lowest=80000.0, initial_risk=1000.0)
+        self.assertEqual(new_stop, 79000.0)
+        self.assertEqual(reason, "")
+
+        # 2. At 80,500 (+0.5R), triggers lock +0.1R -> 80,100
+        new_stop, reason = rm.auto_breakeven_stop("long", entry=80000.0, current_stop=79000.0, highest=80500.0, lowest=80000.0, initial_risk=1000.0)
+        self.assertEqual(new_stop, 80100.0)
+        self.assertIn("Auto BE lock", reason)
+
+        # 3. At 81,000 (+1.0R), triggers full BE lock +0.05R buffer -> 80,050
+        new_stop, reason = rm.auto_breakeven_stop("long", entry=80000.0, current_stop=79000.0, highest=81000.0, lowest=80000.0, initial_risk=1000.0)
+        self.assertEqual(new_stop, 80050.0)
+        self.assertIn("Auto BE", reason)
+
+        # Short position: Entry=80,000, Stop=81,000 (1R = 1,000)
+        # At 79,500 (+0.5R), triggers lock +0.1R -> 79,900
+        new_stop_short, reason_short = rm.auto_breakeven_stop("short", entry=80000.0, current_stop=81000.0, highest=80000.0, lowest=79500.0, initial_risk=1000.0)
+        self.assertEqual(new_stop_short, 79900.0)
+        self.assertIn("Auto BE lock", reason_short)
+
+    def test_risk_manager_can_trade_and_circuit_breakers(self):
+        rm = self.trader.risk_manager
+        rm.state.consecutive_losses = 0
+        rm.state.daily_pnl = 0.0
+        rm.state.equity = 10000.0
+
+        can, why = rm.can_trade()
+        self.assertTrue(can)
+        self.assertEqual(why, "ok")
+
+        # Exceed max consecutive losses
+        rm.state.consecutive_losses = 3
+        can, why = rm.can_trade()
+        self.assertFalse(can)
+        self.assertIn("consecutive losses", why)
+
+        # Reset losses, test max daily loss
+        rm.state.consecutive_losses = 0
+        rm.state.daily_pnl = -600.0
+        can, why = rm.can_trade()
+        self.assertFalse(can)
+        self.assertIn("daily loss limit", why)
+
+    def test_autotrader_step_auto_breakeven_execution(self):
+        pos = auto_trade.AutoTradePosition(
+            id="POS_BE_TEST",
+            symbol="BTCUSD",
+            direction="LONG",
+            entry_price=80000.0,
+            stop_loss=79000.0,
+            take_profit_1=82000.0,
+            take_profit_2=84000.0,
+            lot_size=0.01,
+            entry_time="2026-10-09T12:00:00Z",
+            strategy="Ensemble",
+            reason="test",
+            highest_price=80000.0,
+            lowest_price=80000.0,
+            initial_stop_loss=79000.0,
+        )
+        self.trader.positions = [pos]
+        self.trader.config.auto_breakeven = True
+
+        # Mock market candles to high 80,600 (+0.6R, > 0.5R threshold)
+        dummy_df = pd.DataFrame([{
+            "open": 80500.0,
+            "high": 80600.0,
+            "low": 80400.0,
+            "close": 80550.0,
+            "volume": 10.0,
+        }])
+        with patch.object(self.trader, "fetch_candles", return_value=dummy_df):
+            self.trader.step()
+
+        # Stop loss should have moved from 79,000 to 80,100 (+0.1R lock)
+        self.assertEqual(pos.stop_loss, 80100.0)
+
+    def test_autotrader_learn_from_trade_updates_risk_manager(self):
+        rm = self.trader.risk_manager
+        initial_trades = rm.state.total_trades
+        pos = auto_trade.AutoTradePosition(
+            id="HIST_TEST_1",
+            symbol="BTCUSD",
+            direction="LONG",
+            entry_price=80000.0,
+            stop_loss=79000.0,
+            take_profit_1=81000.0,
+            take_profit_2=82000.0,
+            lot_size=0.01,
+            entry_time="2026-10-09T12:00:00Z",
+            strategy="Ensemble",
+            reason="test",
+            highest_price=81000.0,
+            lowest_price=80000.0,
+            initial_stop_loss=79000.0,
+        )
+        self.trader.learn_from_trade(pos, current_price=81000.0, pnl=25.0, reason="TP1")
+        self.assertEqual(rm.state.total_trades, initial_trades + 1)
+        self.assertEqual(rm.state.total_wins, 1)
+        self.assertEqual(rm.state.win_streak, 1)
+
+    async def test_risk_subcommands_and_dashboard(self):
+        update = MagicMock()
+        update.message = MagicMock()
+        update.message.reply_text = AsyncMock()
+        update.effective_message = update.message
+        ctx = MagicMock()
+
+        with patch("main.get_auto_trader", return_value=self.trader):
+            # 1. View dashboard
+            ctx.args = []
+            await main.risk_command(update, ctx)
+            sent = update.message.reply_text.call_args[0][0]
+            self.assertIn("PRACTICAL RISK MANAGER DASHBOARD", sent)
+
+            # 2. Adjust RF multiplier
+            ctx.args = ["rf", "1.25"]
+            await main.risk_command(update, ctx)
+            sent_rf = update.message.reply_text.call_args[0][0]
+            self.assertIn("1.25x", sent_rf)
+
+            # 3. Toggle auto breakeven
+            ctx.args = ["be", "off"]
+            await main.risk_command(update, ctx)
+            sent_be = update.message.reply_text.call_args[0][0]
+            self.assertIn("OFF", sent_be)
+
+            ctx.args = ["be", "on"]
+            await main.risk_command(update, ctx)
+            sent_be_on = update.message.reply_text.call_args[0][0]
+            self.assertIn("ON", sent_be_on)
+
+            # 4. Set numeric daily loss limit (backward compatible)
+            ctx.args = ["3.5"]
+            await main.risk_command(update, ctx)
+            sent_risk = update.message.reply_text.call_args[0][0]
+            self.assertIn("3.5%", sent_risk)
 
 
 def tearDownModule():
