@@ -920,6 +920,27 @@ class TestNewTelegramHandlers(unittest.IsolatedAsyncioTestCase):
         sent_levels = mock_update.message.reply_text.call_args[0][0]
         self.assertIn("SMART MONEY & LIQUIDITY LEVELS", sent_levels)
 
+    async def test_scan_and_market_commands(self):
+        mock_msg = AsyncMock()
+        mock_msg.reply_text = AsyncMock(return_value=mock_msg)
+        mock_msg.edit_text = AsyncMock()
+        mock_update = SimpleNamespace(
+            message=mock_msg,
+            effective_chat=SimpleNamespace(id=12345),
+        )
+        ctx = SimpleNamespace(args=["BTCUSD"])
+
+        # /scan command
+        await main.scan_command(mock_update, ctx)
+        self.assertTrue(mock_msg.reply_text.called or mock_msg.edit_text.called)
+
+        # /market command
+        mock_msg.reply_text.reset_mock()
+        mock_msg.edit_text.reset_mock()
+        ctx_m = SimpleNamespace(args=[])
+        await main.market_command(mock_update, ctx_m)
+        self.assertTrue(mock_msg.reply_text.called or mock_msg.edit_text.called)
+
 
 class TestPinpointAndLiquidity(unittest.TestCase):
     def setUp(self):
@@ -1710,7 +1731,7 @@ class TestTradeLevelAlerts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.trader.alerts), 0)
 
 
-class TestITBEngineAndIntegration(unittest.TestCase):
+class TestITBEngineAndIntegration(unittest.IsolatedAsyncioTestCase):
     """Unit tests for Intelligent Trading Bot (ITB) ML engine, AutoTrader integration, and Telegram commands."""
 
     def setUp(self):

@@ -735,5 +735,5 @@ def format_backtest_report(results: Dict[str, Any], symbol: str = "BTCUSD") -> s
         f"📈 <b>Long Trades</b>: {long_res.get('transactions', 0)} trades | Win: {long_res.get('win_rate', 0)}% | PnL: ${long_res.get('profit', 0):,.2f}\n"
         f"📉 <b>Short Trades</b>: {short_res.get('transactions', 0)} trades | Win: {short_res.get('win_rate', 0)}% | PnL: ${short_res.get('profit', 0):,.2f}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<i>💡 Run live automated strategy: <code>/strategy itb</code></i>"
+        f"<i>💡 Run live automated ensemble: <code>/autotrade on</code></i>"
     )

@@ -805,7 +805,31 @@ class AutoTrader:
         return [p for p in self.positions if p.symbol == target]
 
     def set_strategy_type(self, strategy_type: str) -> Tuple[bool, str]:
-        return True, "Strategy switched to: <b>Combined Ensemble</b>"
+        st = strategy_type.strip().lower()
+        alias_map = {
+            "itb": "itb_ml",
+            "intelligent": "itb_ml",
+            "itb_ml": "itb_ml",
+            "ml": "itb_ml",
+            "indicators": "indicators_pro",
+            "pro": "indicators_pro",
+            "indicators_pro": "indicators_pro",
+            "ai": "ai_learning",
+            "ai_learning": "ai_learning",
+            "combined": "combined_ensemble",
+            "ensemble": "combined_ensemble",
+        }
+        resolved = alias_map.get(st, "combined_ensemble")
+        self.config.strategy_type = resolved
+        self.config.save()
+        names = {
+            "indicators_pro": "Indicators Pro (Technical Indicators)",
+            "itb_ml": "Intelligent Trading Bot (ITB Machine Learning)",
+            "ai_learning": "AI Bot Learning (Adaptive Reinforcement)",
+            "combined_ensemble": "Combined Ensemble System (All Engines)",
+        }
+        name = names.get(resolved, resolved)
+        return True, f"Strategy switched to: <b>{name}</b> (Combined Ensemble active)"
 
     def set_trailing_sl(self, enabled: bool) -> str:
         self.config.trailing_sl = bool(enabled)
@@ -1080,6 +1104,138 @@ class AutoTrader:
             f"• Query live status: <code>/itb {target_sym}</code>\n"
             f"• Run backtest: <code>/itb backtest {target_sym}</code>"
         )
+
+    # ------------------------------------------------------------------
+    # Combined Multi-Model Ensemble System (ITB + Pro + AI)
+    # ------------------------------------------------------------------
+    def evaluate_ensemble(self, symbol: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Unified 3-engine ensemble confluence evaluator:
+        Combines ITB Machine Learning + Indicators Pro + AI Bot Learning.
+        Returns detailed consensus metrics and composite directional conviction.
+        """
+        target_sym = self.normalize_symbol(symbol) if symbol else self.config.symbol
+        df1 = self.fetch_candles(target_sym, count=120)
+        if df1 is None or df1.empty:
+            df1 = self._generate_dummy_candles(target_sym, count=120)
+
+        curr_price = float(df1["close"].iloc[-1])
+
+        # 1. ITB Machine Learning Engine
+        strat_itb = self._strategies_itb.get(target_sym) or self._strategy_itb or ITBStrategy(symbol=target_sym)
+        itb_pred = strat_itb.predictor.predict(df1, symbol=target_sym)
+        itb_score = float(np.clip(itb_pred.smoothed_indicator, -1.0, 1.0))
+        itb_dir = "LONG" if itb_score >= 0.08 else ("SHORT" if itb_score <= -0.08 else "FLAT")
+
+        # 2. Indicators Pro Engine
+        eng = IndicatorEngine()
+        snap = eng.compute(df1)
+        pro_score = float(np.clip(snap.score / 5.0, -1.0, 1.0))
+        pro_dir = "LONG" if snap.score >= 0.6 else ("SHORT" if snap.score <= -0.6 else "FLAT")
+
+        # 3. AI Bot Learning Engine
+        strat_ai = self._strategies_ai.get(target_sym) or self._strategy_ai or AIBotLearning(symbol=target_sym)
+        ai_dir_raw = "FLAT"
+        ai_score = 0.0
+        ai_regime = "NORMAL"
+        try:
+            reg = strat_ai.regime(df1)
+            ai_regime = getattr(reg, "name", str(reg))
+            ema20 = float(df1["close"].ewm(span=20, adjust=False).mean().iloc[-1])
+            ema50 = float(df1["close"].ewm(span=50, adjust=False).mean().iloc[-1])
+            if curr_price > ema20 > ema50 and snap.rsi > 50:
+                ai_dir_raw = "LONG"
+                ai_score = 0.75
+            elif curr_price < ema20 < ema50 and snap.rsi < 50:
+                ai_dir_raw = "SHORT"
+                ai_score = -0.75
+            else:
+                ai_score = float(np.clip((curr_price - ema50) / max(0.001, ema50) * 100.0, -1.0, 1.0))
+                ai_dir_raw = "LONG" if ai_score > 0.15 else ("SHORT" if ai_score < -0.15 else "FLAT")
+        except Exception:
+            ai_score = pro_score
+            ai_dir_raw = pro_dir
+
+        composite = (0.35 * itb_score) + (0.35 * pro_score) + (0.30 * ai_score)
+        composite = float(np.clip(composite, -1.0, 1.0))
+
+        dirs = [d for d in (itb_dir, pro_dir, ai_dir_raw) if d != "FLAT"]
+        long_votes = sum(1 for d in (itb_dir, pro_dir, ai_dir_raw) if d == "LONG")
+        short_votes = sum(1 for d in (itb_dir, pro_dir, ai_dir_raw) if d == "SHORT")
+
+        if long_votes >= 2 or (long_votes == 1 and short_votes == 0 and composite >= 0.20):
+            overall_direction = "LONG"
+            verdict = "STRONG BUY 🟢" if (long_votes == 3 or composite >= 0.50) else "BUY 🟢"
+        elif short_votes >= 2 or (short_votes == 1 and long_votes == 0 and composite <= -0.20):
+            overall_direction = "SHORT"
+            verdict = "STRONG SELL 🔴" if (short_votes == 3 or composite <= -0.50) else "SELL 🔴"
+        else:
+            overall_direction = "FLAT"
+            verdict = "NEUTRAL / RANGE ⚪"
+
+        agreement_pct = round((max(long_votes, short_votes, 3 - len(dirs)) / 3.0) * 100.0)
+
+        return {
+            "symbol": target_sym,
+            "price": curr_price,
+            "itb_score": itb_score,
+            "itb_zone": itb_pred.zone,
+            "itb_dir": itb_dir,
+            "itb_confidence": itb_pred.confidence,
+            "pro_score": snap.score,
+            "pro_norm": pro_score,
+            "pro_dir": pro_dir,
+            "pro_rsi": snap.rsi,
+            "pro_adx": snap.adx,
+            "ai_score": ai_score,
+            "ai_dir": ai_dir_raw,
+            "ai_regime": ai_regime,
+            "composite_score": composite,
+            "direction": overall_direction,
+            "verdict": verdict,
+            "agreement_pct": agreement_pct,
+            "engines_aligned": f"{max(long_votes, short_votes)}/3",
+        }
+
+    def generate_ensemble_report(self, symbol: Optional[str] = None) -> str:
+        """Formats the Combined Ensemble (ITB + Pro + AI) confluence card."""
+        e = self.evaluate_ensemble(symbol)
+        comp = e["composite_score"]
+        comp_sign = "+" if comp >= 0 else ""
+        meter_pct = max(0.0, min(100.0, (comp + 1.0) / 2.0 * 100.0))
+        meter_bar = make_modern_meter(meter_pct, width=10, fill_char="■", empty_char="░")
+
+        itb_sign = "+" if e["itb_score"] >= 0 else ""
+        pro_sign = "+" if e["pro_score"] >= 0 else ""
+
+        return (
+            f"🌟 <b>COMBINED ENSEMBLE SYSTEM: {e['symbol']}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Market Price</b>: <code>${e['price']:,.2f}</code>\n"
+            f"• <b>Consensus Verdict</b>: <b>{e['verdict']}</b> ({e['agreement_pct']}% agreement)\n"
+            f"• <b>Composite Gauge</b>: <code>[{meter_bar}]</code> ({comp_sign}{comp:.2f})\n"
+            f"• <b>Engines Aligned</b>: <code>{e['engines_aligned']}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Individual Engine Confluence:</b>\n"
+            f"1. <b>ITB Machine Learning</b> 🤖: {itb_sign}{e['itb_score']:.2f} ({e['itb_zone']})\n"
+            f"2. <b>Indicators Pro</b> 📊: {pro_sign}{e['pro_score']:.2f}/5.0 (RSI: {e['pro_rsi']:.1f} | ADX: {e['pro_adx']:.1f})\n"
+            f"3. <b>AI Bot Learning</b> 🧠: {e['ai_dir']} (Regime: {e['ai_regime']})\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>💡 All 3 engines running together in real-time.</i>"
+        )
+
+    def generate_trade_analysis(self, symbol: str) -> str:
+        """Alias to analyze_market for unified master scan."""
+        return self.analyze_market(symbol)
+
+    def generate_order_blocks(self, symbol: str) -> str:
+        """Generate Smart Money order blocks and fair value gaps report."""
+        return get_levels_report(symbol, trader=self)
+
+    def generate_pinpoint_entry(self, symbol: str) -> str:
+        """Generate precision pinpoint entry and targets report."""
+        plan = generate_pinpoint_plan(symbol, trader=self)
+        return format_pinpoint_report(plan)
 
     # ------------------------------------------------------------------
     # Trade Level Alerts System
@@ -1841,18 +1997,31 @@ class AutoTrader:
                 sig = None
                 strat_label = "Ensemble"
                 if active_sigs:
-                    # Check for conflicts
+                    # Check for conflicts among active signals
                     directions = set(s[0].direction.name for s in active_sigs)
                     if len(directions) == 1:
-                        # Agreement! Take the first one but update label
-                        sig = active_sigs[0][0]
-                        names = [s[1] for s in active_sigs]
-                        strat_label = f"Ensemble ({'+'.join(names)})"
-                        # optional: override setup string
-                        if hasattr(sig, "setup"):
-                            sig.setup = strat_label
+                        target_dir = list(directions)[0]
+                        # Verify against continuous 3-engine ensemble confluence
+                        try:
+                            ens_eval = self.evaluate_ensemble(sym)
+                            # Reject if ensemble is strongly opposed (no solo conflicting trades)
+                            if (target_dir == "LONG" and ens_eval["composite_score"] < -0.15) or \
+                               (target_dir == "SHORT" and ens_eval["composite_score"] > 0.15):
+                                sig = None
+                            else:
+                                sig = active_sigs[0][0]
+                                names = [s[1] for s in active_sigs]
+                                strat_label = f"Ensemble ({'+'.join(names)})"
+                                if hasattr(sig, "setup"):
+                                    sig.setup = strat_label
+                        except Exception:
+                            sig = active_sigs[0][0]
+                            names = [s[1] for s in active_sigs]
+                            strat_label = f"Ensemble ({'+'.join(names)})"
+                            if hasattr(sig, "setup"):
+                                sig.setup = strat_label
                     else:
-                        # Conflict, stay flat
+                        # Conflict across signals, stay flat
                         sig = None
 
                 if sig is not None:
@@ -1861,11 +2030,15 @@ class AutoTrader:
                         tp1 = sig.tp1
                         tp2 = sig.tp2
 
-                        # Calculate Lot Size
+                        # Calculate Lot Size safely
                         if self.config.lot_mode == "fixed":
                             lots = self.config.lot_size
                         else:
-                            lots = strat.size(self.config.equity, entry, stop, getattr(sig, "atr", 0.0))
+                            risk_dist = max(0.0001, abs(entry - stop))
+                            risk_usd = self.config.equity * (self.config.risk_pct / 100.0)
+                            lots = round(risk_usd / risk_dist, 4)
+                            if lots <= 0:
+                                lots = self.config.lot_size
 
                         mode = self.config.trading_mode
                         order_id = None
@@ -2202,11 +2375,18 @@ class AutoTrader:
         macd_txt = "Bullish Cross 🟢" if snap.macd_hist > 0 else "Bearish Cross 🔴"
         adx_txt = f"{snap.adx:.1f} ({'Strong Trend' if snap.adx > 25 else 'Ranging'})"
 
+        try:
+            ens = self.evaluate_ensemble(target)
+            ens_txt = f"• <b>3-Engine Ensemble</b>: <b>{ens['verdict']}</b> ({ens['engines_aligned']} aligned)\n"
+        except Exception:
+            ens_txt = ""
+
         return (
             f"📊 <b>TECHNICAL ANALYSIS: {target}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>Signal</b>: <b>{rec}</b>\n"
             f"• <b>Confluence Score</b>: <code>{score:+.2f} / 5.0</code>\n"
+            f"{ens_txt}"
             f"• <b>Current Price</b>: <code>${curr_price:,.2f}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>Indicator Readings:</b>\n"
@@ -2225,7 +2405,7 @@ class AutoTrader:
             f"• <b>Take Profit 2</b>: <code>${tp2:,.2f}</code>\n"
             f"• <b>Risk:Reward Ratio</b>: <code>2.0 : 1</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<i>💡 Quick switch: /symbol {target} | Auto trade: /autotrade on</i>"
+            f"<i>💡 Auto trade: /autotrade on | Pinpoint entry: /entry {target} | Master scan: /scan {target}</i>"
         )
 
     def open_position_manually(
@@ -2528,12 +2708,23 @@ def generate_pinpoint_plan(
         else:
             direction = "LONG" if snap.score >= 0 else "SHORT"
     else:
-        if snap.score >= 0.5:
-            direction = "LONG"
-        elif snap.score <= -0.5:
-            direction = "SHORT"
-        else:
-            direction = "LONG" if snap.supertrend_dir == 1 else "SHORT"
+        try:
+            ens = trader.evaluate_ensemble(target)
+            if ens["direction"] in ("LONG", "SHORT"):
+                direction = ens["direction"]
+            elif snap.score >= 0.5:
+                direction = "LONG"
+            elif snap.score <= -0.5:
+                direction = "SHORT"
+            else:
+                direction = "LONG" if snap.supertrend_dir == 1 else "SHORT"
+        except Exception:
+            if snap.score >= 0.5:
+                direction = "LONG"
+            elif snap.score <= -0.5:
+                direction = "SHORT"
+            else:
+                direction = "LONG" if snap.supertrend_dir == 1 else "SHORT"
 
     market_entry = curr_price
 

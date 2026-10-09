@@ -691,56 +691,77 @@ async def price(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def scan_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Ultimate Master Scan combining Trend, Analyze, Levels, and Entry."""
+    """Ultimate Master Scan combining 3-Engine Ensemble, MTF Trend, Levels, and Pinpoint Entry."""
     args = ctx.args or []
     symbol = args[0] if args else "BTCUSD"
     trader = get_auto_trader()
     
-    msg = await reply_safely(update, f"🔄 <b>Scanning {symbol.upper()}...</b>\nGathering Multi-Timeframe data, Confluence, and Smart Money levels...", parse_mode="HTML")
+    msg = await reply_safely(
+        update,
+        f"🔄 <b>Scanning {symbol.upper()}...</b>\nGathering 3-Engine Ensemble Confluence, MTF Trend, and Smart Money levels...",
+        parse_mode="HTML"
+    )
     
     try:
+        ensemble = trader.generate_ensemble_report(symbol)
         trend = trader.generate_mtf_trend_report(symbol)
-        analyze = trader.generate_trade_analysis(symbol)
         levels = trader.generate_order_blocks(symbol)
         entry = trader.generate_pinpoint_entry(symbol)
         
-        # Combine them cleanly
-        combined = f"🌐 <b>ULTIMATE MASTER SCAN: {symbol.upper()}</b>\n\n"
-        combined += trend + "\n\n"
-        combined += analyze + "\n\n"
-        combined += levels + "\n\n"
-        combined += entry
+        part1 = f"🌐 <b>ULTIMATE MASTER SCAN: {symbol.upper()}</b>\n\n{ensemble}\n\n{trend}"
+        part2 = f"{levels}\n\n{entry}"
         
-        if len(combined) > 4000:
-            await msg.edit_text(trend + "\n\n" + analyze, parse_mode="HTML")
-            await reply_safely(update, levels + "\n\n" + entry, parse_mode="HTML")
+        if len(part1 + "\n\n" + part2) <= 3900:
+            if hasattr(msg, "edit_text"):
+                await msg.edit_text(part1 + "\n\n" + part2, parse_mode="HTML")
+            else:
+                await reply_safely(update, part1 + "\n\n" + part2, parse_mode="HTML")
         else:
-            await msg.edit_text(combined, parse_mode="HTML")
+            if hasattr(msg, "edit_text"):
+                await msg.edit_text(part1, parse_mode="HTML")
+            else:
+                await reply_safely(update, part1, parse_mode="HTML")
+            await reply_safely(update, part2, parse_mode="HTML")
     except Exception as e:
-        await msg.edit_text(f"⚠️ Scan failed: {e}")
+        logger.error("Scan failed for %s: %s", symbol, e, exc_info=True)
+        if hasattr(msg, "edit_text"):
+            await msg.edit_text(f"⚠️ Scan failed: {e}")
+        else:
+            await reply_safely(update, f"⚠️ Scan failed: {e}")
 
 async def market_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Combined Market Overview."""
+    """Combined Market Overview with Real-Time 3-Engine Ensemble Signals."""
     trader = get_auto_trader()
     symbols = ["BTCUSD", "ETHUSD", "SOLUSD", "XAUTUSD"]
-    msg = await reply_safely(update, "🔄 <b>Fetching Global Market Overview...</b>", parse_mode="HTML")
+    msg = await reply_safely(update, "🔄 <b>Fetching Global Market Overview & Ensemble Confluence...</b>", parse_mode="HTML")
     
-    lines = ["🌍 <b>GLOBAL MARKET OVERVIEW</b>", "━━━━━━━━━━━━━━━━━━━━━━"]
+    lines = [
+        "🌍 <b>GLOBAL MARKET OVERVIEW</b>",
+        "<i>Real-time quotes & Combined 3-Engine Ensemble consensus</i>",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
     for sym in symbols:
         try:
             df = trader.fetch_candles(sym, count=120)
             if df is not None and not df.empty:
-                current = df['close'].iloc[-1]
-                open_p = df['open'].iloc[0]
-                pct = ((current - open_p) / open_p) * 100
+                current = float(df['close'].iloc[-1])
+                open_p = float(df['open'].iloc[0])
+                pct = ((current - open_p) / open_p) * 100.0
                 icon = "🟢" if pct >= 0 else "🔴"
-                lines.append(f"• <b>{sym.replace('USD','')}</b>: <code>${current:,.2f}</code> {icon} {pct:+.2f}%")
-        except:
-            pass
+                ens = trader.evaluate_ensemble(sym)
+                v_word = ens["verdict"].split()[0]
+                v_badge = ("🟢 " + v_word) if "BUY" in ens["verdict"] else (("🔴 " + v_word) if "SELL" in ens["verdict"] else "⚪ NEUTRAL")
+                lines.append(f"• <b>{sym.replace('USD','')}</b>: <code>${current:,.2f}</code> {icon} {pct:+.2f}% | <b>{v_badge}</b>")
+        except Exception as e:
+            logger.debug("Market overview error for %s: %s", sym, e)
             
     lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("<i>Use /scan [SYM] for deep analysis.</i>")
-    await msg.edit_text("\n".join(lines), parse_mode="HTML")
+    lines.append("<i>💡 Use /scan [SYM] for master scan or /entry [SYM] for pinpoint plan.</i>")
+    report = "\n".join(lines)
+    if hasattr(msg, "edit_text"):
+        await msg.edit_text(report, parse_mode="HTML")
+    else:
+        await reply_safely(update, report, parse_mode="HTML")
 
 async def btc_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Show live Bitcoin market ticker and stats card."""
@@ -937,7 +958,14 @@ async def itb_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def strategy_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """View active automated trading strategy."""
+    """View or configure active automated trading strategy."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+    if args:
+        ok, msg = trader.set_strategy_type(args[0])
+        await reply_safely(update, msg, parse_mode="HTML")
+        return
+
     await reply_safely(
         update,
         f"🎯 <b>TRADING STRATEGY CONFIGURATION</b>\n"
@@ -1481,7 +1509,7 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     pos_count = len(trader.positions)
     pos_str = f"{pos_count} active position(s)" if pos_count > 0 else "0 open"
     symbols_str = ", ".join(trader.config.symbols) if trader.config.symbols else trader.config.symbol
-    strat_str = trader.config.strategy_type.replace("_", " ").title()
+    strat_str = "Combined Ensemble (ITB + Pro + AI)"
     await reply_safely(
         update,
         f"🎛️ <b>TRADING BOT COMMAND MENU</b>\n"
@@ -1506,7 +1534,7 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"• /itb [SYM] — Live Intelligent Indicator & feature moments\n"
         f"• /itb backtest [SYM] [N] — ITB simulated backtest\n"
         f"• /itb train [SYM] — Fit ML ridge regression weights\n"
-        f"• /strategy [indicators|itb|ai] — Switch strategy\n"
+        f"• /strategy — View Combined Ensemble status\n"
         f"• /autotrade on|off — Toggle automated trading\n"
         f"• /execute — One-tap execute pinpoint trade plan\n"
         f"• /buy | /sell — Instant market execution\n"
@@ -1526,7 +1554,7 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"• /api test — Test auth & query wallet balance\n"
         f"• /api clear — Clear API & return to paper mode\n\n"
         f"<b>🛡️ 6. Risk & Strategy:</b>\n"
-        f"• /strategy — Inspect or switch strategy\n"
+        f"• /strategy — Inspect Combined Ensemble\n"
         f"• /symbols — View or configure active pairs\n"
         f"• /symbol [SYM] — Switch primary symbol\n"
         f"• /lotsize [SIZE|risk %] — Configure lot sizing\n"
