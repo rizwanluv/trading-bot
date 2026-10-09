@@ -44,6 +44,8 @@ from auto_trade import (
     execute_pinpoint_plan,
     get_levels_report,
     calculate_risk_reward,
+    make_modern_meter,
+    TradeLevelAlert,
 )
 
 # Optional import for google-genai SDK (Python >= 3.9/3.10)
@@ -193,23 +195,35 @@ def get_ticker_card(symbol: str) -> str:
         else:
             change_pct = 0.0
 
+        spread = abs(mark_price - close_price) if (mark_price > 0 and close_price > 0) else 0.0
+        range_span = high_price - low_price
+        range_pct = ((close_price - low_price) / range_span * 100.0) if range_span > 0 else 50.0
+        range_meter = make_modern_meter(range_pct, width=10, fill_char="■", empty_char="░")
+
         arrow = "🟢 +" if change_pct >= 0 else "🔴 "
         display_name = "Bitcoin (BTC)" if "BTC" in target else ("Gold (XAU)" if "XAU" in target else target)
         icon = "⚡" if "BTC" in target else ("🥇" if "XAU" in target else "📊")
 
+        if change_pct >= 0.5:
+            trend_badge = "🟢 <b>BULLISH</b>"
+        elif change_pct <= -0.5:
+            trend_badge = "🔴 <b>BEARISH</b>"
+        else:
+            trend_badge = "⚪ <b>RANGE</b>"
+
         return (
-            f"{icon} <b>{display_name} Market Ticker</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"{icon} <b>{display_name} Market Ticker</b> [{trend_badge}]\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>Symbol</b>: <code>{target}</code>\n"
-            f"• <b>Mark Price</b>: <code>${mark_price:,.2f}</code>\n"
             f"• <b>Last Price</b>: <code>${close_price:,.2f}</code>\n"
+            f"• <b>Mark Price</b>: <code>${mark_price:,.2f}</code> (Spread: ${spread:,.2f})\n"
             f"• <b>24h Change</b>: {arrow}{change_pct:.2f}%\n"
-            f"• <b>24h High</b>: <code>${high_price:,.2f}</code>\n"
-            f"• <b>24h Low</b>: <code>${low_price:,.2f}</code>\n"
+            f"• <b>24h Range</b>: <code>[{range_meter}]</code>\n"
+            f"  Low: <code>${low_price:,.2f}</code> ➔ High: <code>${high_price:,.2f}</code>\n"
             f"• <b>24h Volume</b>: <code>{volume:,.2f}</code>\n"
-            f"• <b>Exchange</b>: Delta Exchange\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"<i>💡 Use /autotrade symbol {target} to trade this pair</i>"
+            f"• <b>Exchange</b>: Delta Exchange API\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>💡 Actions: /entry {target} | /levels {target} | /alert {target} {close_price:,.0f}</i>"
         )
     except Exception as e:
         return f"⚠️ Price unavailable for {symbol.upper()} ({e})"
@@ -339,50 +353,55 @@ async def reply_safely(update: Update, text: str, parse_mode: Optional[str] = No
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await reply_safely(
         update,
-        "Trading assistant ready. Real-time analysis and automated trading for Bitcoin (BTC) & Gold (XAU).\n\n"
-        "📊 1. Market & Live Quotes:\n"
-        "• /btc - Live Bitcoin (BTC) ticker, 24h stats & range\n"
-        "• /gold (/xau) - Live Gold (XAU) ticker, 24h stats & range\n"
-        "• /eth - Live Ethereum (ETH) ticker & stats\n"
-        "• /sol - Live Solana (SOL) ticker & stats\n"
-        "• /price [SYM] - Price check on any Delta Exchange pair\n"
-        "• /analyze [SYMBOL] - Full 10-indicator technical analysis & confluence\n\n"
-        "🎯 2. Pinpoint Trade Planning & Smart Money:\n"
-        "• /entry [SYM] - Pinpoint Entry, Precision SL & Multi-tier TP Targets\n"
-        "• /levels [SYM] (/ob) - Smart Money Order Blocks (OB) & Fair Value Gaps (FVG)\n"
-        "• /calc [ENTRY] [SL] [TP] - Position Sizing & Risk:Reward Calculator\n\n"
-        "⚡ 3. Auto-Trading & Execution Controls:\n"
-        "• /autotrade [on|off|status|close|symbols|max] - Control automated trading\n"
-        "• /execute [LOTS|limit] - One-Tap Execution of Pinpoint Trade Plan\n"
-        "• /buy - Quick Instant Long Market Order\n"
-        "• /sell - Quick Instant Short Market Order\n"
-        "• /position (/positions) - Live active positions dashboard & unrealized PnL\n"
-        "• /close [ID|SYM|all] - Close specific position, symbol, or all open trades\n"
-        "• /pnl - Performance report & closed trades history\n\n"
-        "💼 4. Paper & Live Trading / Capital Management:\n"
-        "• /mode [paper|live] - Switch between Paper ($0 risk) and Live trading\n"
-        "• /capital (/funds) - View trading capital and funds dashboard\n"
-        "• /capital set [AMT] - Set base paper capital (default: $100.00)\n"
-        "• /deposit [AMT] (/capital add) - Add / deposit funds\n"
-        "• /withdraw [AMT] (/capital reduce) - Withdraw / reduce funds\n"
-        "• /capital reset - Reset paper capital back to default $100\n\n"
-        "🔌 5. Live Exchange API System:\n"
-        "• /api (/api status) - Exchange API connection & credentials status\n"
-        "• /api set [delta|binance] [KEY] [SECRET] - Configure live API keys\n"
-        "• /api test - Test API authentication & query live wallet balance\n"
-        "• /api clear - Wipe credentials & revert safely to paper mode\n\n"
-        "🛡️ 6. Risk & Strategy Configuration:\n"
-        "• /symbols [both|btc|gold|add|rm] - Configure active auto-trade pairs\n"
-        "• /symbol [SYMBOL] - View or switch primary trading symbol\n"
-        "• /lotsize [SIZE|risk %] - View or update order lot sizing\n"
-        "• /tpsl [TP] [SL] [MODE] - Set strategy Take Profit and Stop Loss\n"
-        "• /trailing [on|off] - Dynamic trailing stop loss protection\n"
-        "• /risk [PCT] - Max daily loss risk limit protection\n\n"
-        "⚙️ 7. Assistant & Diagnostics:\n"
-        "• /menu - Categorized command directory & live engine status\n"
-        "• /help - Show this guide\n"
-        "• /reset - Clear conversation history\n\n"
-        "Send any message to chat with market context.",
+        "⚡ <b>PRECISION TRADING ASSISTANT & AUTO-TRADER</b>\n"
+        "Trading assistant ready. Real-time institutional analysis and multi-asset automation for Bitcoin (BTC) & Gold (XAU).\n\n"
+        "📊 <b>1. Market & Live Quotes:</b>\n"
+        "• /btc — Live Bitcoin ticker, range bar & 24h stats\n"
+        "• /gold (/xau) — Live Gold ticker, range bar & 24h stats\n"
+        "• /eth | /sol — Ethereum & Solana live tickers\n"
+        "• /price [SYM] — Price check on any Delta pair\n"
+        "• /analyze [SYM] — 10-indicator confluence report\n\n"
+        "🎯 <b>2. Pinpoint Trade Planning:</b>\n"
+        "• /entry [SYM] — Pinpoint entry, precision SL & multi-tier TPs\n"
+        "• /levels [SYM] (/ob) — Smart Money Order Blocks & Fair Value Gaps\n"
+        "• /calc [ENTRY] [SL] [TP] — Position sizing & Risk:Reward calc\n\n"
+        "⚡ <b>3. Auto-Trading & Execution:</b>\n"
+        "• /autotrade [on|off|status|close|symbols] — Auto-trade controls\n"
+        "• /execute [LOTS] — One-tap execute pinpoint trade plan\n"
+        "• /buy | /sell — Instant long/short market orders\n"
+        "• /position (/positions) — Live open trades & unrealized PnL\n"
+        "• /close [ID|SYM|all] — Close specific or all open positions\n"
+        "• /pnl — Performance dashboard & closed trades history\n\n"
+        "💼 <b>4. Paper & Live Trading / Capital Management:</b>\n"
+        "• /mode [paper|live] — Switch between Paper ($0 risk) & Live mode\n"
+        "• /capital (/funds) — Capital, funds & ROI dashboard\n"
+        "• /capital set 100 — Set base paper capital ($100 default)\n"
+        "• /deposit [AMT] — Add/deposit trading funds\n"
+        "• /withdraw [AMT] — Withdraw/reduce trading funds\n"
+        "• /capital reset — Reset paper funds to $100\n\n"
+        "🔌 <b>5. Live Exchange API System:</b>\n"
+        "• /api (/api status) — Exchange API connection status\n"
+        "• /api set [delta|binance] [KEY] [SECRET] — Configure live keys\n"
+        "• /api test — Test authentication & query wallet balance\n"
+        "• /api clear — Wipe credentials & return to paper mode\n\n"
+        "🛡️ <b>6. Risk & Strategy Configuration:</b>\n"
+        "• /symbols [both|btc|gold|add|rm] — Active auto-trade pairs\n"
+        "• /symbol [SYM] — View or switch primary symbol\n"
+        "• /lotsize [SIZE|risk %] — Configure order lot sizing\n"
+        "• /tpsl [TP] [SL] — Strategy Take Profit & Stop Loss\n"
+        "• /trailing [on|off] — Dynamic trailing stop protection\n"
+        "• /risk [PCT] — Daily drawdown maximum risk guard\n\n"
+        "🔔 <b>7. Trade Level Alerts & Notifications:</b>\n"
+        "• /alert [SYM] [PRICE] [above|below] — Set price target alert\n"
+        "• /alert list (/alerts) — View all active trade alerts\n"
+        "• /alert del [ID] — Delete specific price alert\n"
+        "• /alert clear [SYM] — Clear all active alerts\n\n"
+        "⚙️ <b>8. Assistant & Diagnostics:</b>\n"
+        "• /menu — Interactive command directory & quick dashboard\n"
+        "• /help — Show this command directory\n"
+        "• /reset — Clear AI conversation history\n\n"
+        "<i>💬 Send any message to converse with the AI market analyst.</i>",
+        parse_mode="HTML",
     )
 
 
@@ -1023,8 +1042,8 @@ async def api_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ok, msg, data = trader.exchange_client.test_connection()
         if ok:
             bal_str = ""
-            bal_val = trader.exchange_client.get_balance()
-            if bal_val is not None:
+            ok_bal, bal_val, _ = trader.exchange_client.get_balance()
+            if ok_bal:
                 bal_str = f"\n• <b>Live Wallet Balance</b>: <code>${bal_val:,.2f} USDT</code>"
             await reply_safely(
                 update,
@@ -1208,6 +1227,139 @@ async def levels_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     await reply_safely(update, report, parse_mode="HTML")
 
 
+async def alert_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Trade level alert manager: set price alerts, list active alerts, or remove alerts."""
+    trader = get_auto_trader()
+    args = ctx.args or []
+
+    if not args or args[0].lower() in ("list", "view", "status"):
+        report = trader.get_alerts_report()
+        await reply_safely(update, report, parse_mode="HTML")
+        return
+
+    sub = args[0].lower()
+    if sub in ("del", "delete", "rm", "remove"):
+        if len(args) < 2:
+            await reply_safely(
+                update,
+                "⚠️ Usage: <code>/alert del &lt;ALERT_ID&gt;</code>\nExample: <code>/alert del ALT_BTC_123456</code>",
+                parse_mode="HTML",
+            )
+            return
+        alert_id = args[1].strip()
+        ok, _ = trader.remove_alert(alert_id)
+        if ok:
+            await reply_safely(
+                update,
+                f"✅ Alert <code>{alert_id}</code> removed successfully.",
+                parse_mode="HTML",
+            )
+        else:
+            await reply_safely(
+                update,
+                f"❌ Alert <code>{alert_id}</code> not found.\nUse <code>/alert list</code> to inspect active alerts.",
+                parse_mode="HTML",
+            )
+        return
+
+    if sub in ("clear", "reset", "wipe"):
+        sym_filter = args[1].strip() if len(args) > 1 else None
+        cleared_cnt = trader.clear_alerts(symbol=sym_filter)
+        scope = f"for {sym_filter.upper()}" if sym_filter else "across all symbols"
+        await reply_safely(
+            update,
+            f"🧹 Cleared <b>{cleared_cnt}</b> trade level alert(s) {scope}.",
+            parse_mode="HTML",
+        )
+        return
+
+    # Flexible syntax:
+    # 1. /alert BTC 85000 [above|below] [note...]
+    # 2. /alert 85000 [above|below] [note...] (uses active trader symbol)
+    symbol = trader.config.symbol
+    target_price: Optional[float] = None
+    cond_arg: Optional[str] = None
+    note_words: List[str] = []
+
+    try:
+        val = float(args[0].replace("$", "").replace(",", ""))
+        target_price = val
+        if len(args) > 1:
+            cond_arg = args[1].lower()
+            note_words = args[2:]
+    except ValueError:
+        symbol = trader.normalize_symbol(args[0])
+        if len(args) > 1:
+            try:
+                target_price = float(args[1].replace("$", "").replace(",", ""))
+            except ValueError:
+                target_price = None
+            if len(args) > 2:
+                cond_arg = args[2].lower()
+                note_words = args[3:]
+        else:
+            target_price = None
+
+    if target_price is None or target_price <= 0:
+        await reply_safely(
+            update,
+            "⚠️ <b>Trade Alert Usage Guide:</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "• <code>/alert BTC 85000 above</code> — Alert when BTC rises above $85,000\n"
+            "• <code>/alert GOLD 4200 below</code> — Alert when Gold drops below $4,200\n"
+            "• <code>/alert 82500</code> — Alert at $82,500 (auto-detect condition)\n"
+            "• <code>/alert list</code> (or <code>/alerts</code>) — View active alerts\n"
+            "• <code>/alert del &lt;ID&gt;</code> — Delete alert by ID\n"
+            "• <code>/alert clear</code> — Wipe all active alerts\n"
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            parse_mode="HTML",
+        )
+        return
+
+    condition = "AUTO"
+    if cond_arg in ("above", "cross_above", ">", ">="):
+        condition = "CROSS_ABOVE"
+    elif cond_arg in ("below", "cross_below", "<", "<="):
+        condition = "CROSS_BELOW"
+    elif cond_arg in ("touch", "at", "=="):
+        condition = "TOUCH"
+    elif cond_arg:
+        note_words = [cond_arg] + note_words
+        condition = "AUTO"
+
+    note = " ".join(note_words).strip()
+    chat_id = update.effective_chat.id if (update and update.effective_chat) else None
+
+    ok, msg, alt = trader.add_alert(
+        symbol=symbol,
+        target_price=target_price,
+        condition=condition,
+        note=note,
+        chat_id=chat_id,
+        one_shot=True,
+    )
+    if not ok or not alt:
+        await reply_safely(update, f"❌ Failed to create alert: {msg}")
+        return
+
+    cond_badge = "🟢 CROSS ABOVE" if alt.condition == "CROSS_ABOVE" else ("🔴 CROSS BELOW" if alt.condition == "CROSS_BELOW" else alt.condition)
+    note_str = f"• <b>Note</b>: <i>{alt.note}</i>\n" if alt.note else ""
+
+    await reply_safely(
+        update,
+        f"🔔 <b>Trade Level Alert Set</b> [🟢 ACTIVE]\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Alert ID</b>: <code>{alt.id}</code>\n"
+        f"• <b>Symbol</b>: <code>{alt.symbol}</code>\n"
+        f"• <b>Target Level</b>: <code>${alt.target_price:,.2f}</code>\n"
+        f"• <b>Trigger Rule</b>: {cond_badge}\n"
+        f"{note_str}"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<i>💡 You will receive an instant notification when {alt.symbol} reaches this level.</i>",
+        parse_mode="HTML",
+    )
+
+
 async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Interactive command directory and quick dashboard."""
     trader = get_auto_trader()
@@ -1261,7 +1413,12 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"• /tpsl [TP] [SL] — Set strategy TP & SL\n"
         f"• /trailing on|off — Trailing stop loss guard\n"
         f"• /risk [PCT] — Daily drawdown safety limit\n\n"
-        f"<b>⚙️ 7. General:</b>\n"
+        f"<b>🔔 7. Trade Level Alerts:</b>\n"
+        f"• /alert [SYM] [PRICE] [above|below] — Set price target alert\n"
+        f"• /alert list (/alerts) — View active trade alerts\n"
+        f"• /alert del &lt;ID&gt; — Remove alert by ID\n"
+        f"• /alert clear [SYM] — Clear all active alerts\n\n"
+        f"<b>⚙️ 8. Assistant & Settings:</b>\n"
         f"• /help — Full command guide\n"
         f"• /reset — Clear AI conversation",
         parse_mode="HTML",
@@ -1462,6 +1619,8 @@ def main() -> None:
     app.add_handler(CommandHandler("deposit", deposit_command))
     app.add_handler(CommandHandler("withdraw", withdraw_command))
     app.add_handler(CommandHandler("api", api_command))
+    app.add_handler(CommandHandler("alert", alert_command))
+    app.add_handler(CommandHandler("alerts", alert_command))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 

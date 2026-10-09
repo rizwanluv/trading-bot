@@ -61,12 +61,26 @@ PRO_FILE = os.path.join(BASE, "trading_strategy_indicators_pro.py")
 CONFIG_FILE_PATH = os.path.join(BASE, "auto_trade_config.json")
 TRADES_HISTORY_PATH = os.path.join(BASE, "trades_history.json")
 OPEN_POSITIONS_PATH = os.path.join(BASE, "open_positions.json")
+ALERTS_FILE_PATH = os.path.join(BASE, "trade_alerts.json")
 DELTA_CHART_API = os.getenv(
     "DELTA_CHART_API", "https://api.india.delta.exchange/v2/chart/history"
 )
 DELTA_TICKER_API = os.getenv(
     "DELTA_TICKER_API", "https://api.india.delta.exchange/v2/tickers"
 )
+
+
+def make_modern_meter(
+    pct: float, width: int = 10, fill_char: str = "■", empty_char: str = "░"
+) -> str:
+    """Build a modern unicode progress/meter bar."""
+    try:
+        clamped = max(0.0, min(100.0, float(pct)))
+    except (ValueError, TypeError):
+        clamped = 0.0
+    filled_len = int(round((clamped / 100.0) * width))
+    empty_len = width - filled_len
+    return f"{fill_char * filled_len}{empty_char * empty_len}"
 
 
 # ==================================================================
@@ -107,11 +121,15 @@ class AutoTradeConfig:
     config_file: str = CONFIG_FILE_PATH
     trades_history_file: str = TRADES_HISTORY_PATH
     open_positions_file: str = OPEN_POSITIONS_PATH
+    alerts_file: str = ALERTS_FILE_PATH
 
     def __post_init__(self):
-        if self.config_file != CONFIG_FILE_PATH and self.open_positions_file == OPEN_POSITIONS_PATH:
+        if self.config_file != CONFIG_FILE_PATH:
             base, ext = os.path.splitext(self.config_file)
-            self.open_positions_file = f"{base}_open_positions{ext}"
+            if self.open_positions_file == OPEN_POSITIONS_PATH:
+                self.open_positions_file = f"{base}_open_positions{ext}"
+            if self.alerts_file == ALERTS_FILE_PATH:
+                self.alerts_file = f"{base}_alerts{ext}"
         if not self.symbols:
             self.symbols = [self.symbol, "XAUTUSD"] if "XAU" not in self.symbol else ["BTCUSD", self.symbol]
         elif self.symbol not in self.symbols:
@@ -145,6 +163,7 @@ class AutoTradeConfig:
             "exchange_api_key": self.exchange_api_key,
             "exchange_api_secret": self.exchange_api_secret,
             "notify_chat_id": self.notify_chat_id,
+            "alerts_file": self.alerts_file,
         }
 
     def save(self) -> None:
@@ -202,6 +221,21 @@ class AutoTradePosition:
         else:
             diff = self.entry_price - current_price
         return round(diff * self.lot_size, 2)
+
+
+@dataclass
+class TradeLevelAlert:
+    id: str
+    symbol: str
+    target_price: float
+    condition: str = "AUTO"  # "CROSS_ABOVE", "CROSS_BELOW", "TOUCH", "AUTO"
+    alert_type: str = "CUSTOM"  # "CUSTOM", "TP_PROXIMITY", "SL_WARNING", "BREAKEVEN", "ORDER_BLOCK", "FVG", "PINPOINT_ENTRY"
+    note: str = ""
+    created_at: str = ""
+    triggered: bool = False
+    triggered_at: Optional[str] = None
+    chat_id: Optional[int] = None
+    one_shot: bool = True
 
 
 class ExchangeApiClient:
@@ -384,6 +418,8 @@ class AutoTrader:
         )
         self.positions: List[AutoTradePosition] = self._load_open_positions()
         self.closed_trades: List[AutoTradePosition] = self._load_trades_history()
+        self.alerts: List[TradeLevelAlert] = self._load_alerts()
+        self._recent_level_alerts: Dict[str, float] = {}
         self.is_running: bool = False
         self._strategy_pro: Optional[IndicatorsProStrategy] = None
         self._strategies_pro: Dict[str, IndicatorsProStrategy] = {}
@@ -465,6 +501,36 @@ class AutoTrader:
             logger.info("Saved %d trades to history %s", len(self.closed_trades), history_path)
         except Exception as exc:
             logger.warning("Could not save trades history %s: %s", history_path, exc)
+
+    def _load_alerts(self) -> List[TradeLevelAlert]:
+        alerts_path = getattr(self.config, "alerts_file", ALERTS_FILE_PATH)
+        if os.path.exists(alerts_path):
+            try:
+                with open(alerts_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                alerts = []
+                for item in data:
+                    if isinstance(item, dict):
+                        filtered = {
+                            k: v
+                            for k, v in item.items()
+                            if k in TradeLevelAlert.__dataclass_fields__
+                        }
+                        alerts.append(TradeLevelAlert(**filtered))
+                logger.info("Loaded %d alerts from %s", len(alerts), alerts_path)
+                return alerts
+            except Exception as exc:
+                logger.warning("Could not read alerts %s: %s", alerts_path, exc)
+        return []
+
+    def _save_alerts(self) -> None:
+        alerts_path = getattr(self.config, "alerts_file", ALERTS_FILE_PATH)
+        try:
+            with open(alerts_path, "w", encoding="utf-8") as f:
+                json.dump([asdict(a) for a in self.alerts], f, indent=2)
+            logger.info("Saved %d alerts to %s", len(self.alerts), alerts_path)
+        except Exception as exc:
+            logger.warning("Could not save alerts %s: %s", alerts_path, exc)
 
     def _init_strategy(self) -> None:
         self._strategies_pro = {}
@@ -822,6 +888,8 @@ class AutoTrader:
             else 0.0
         )
         gain_sign = "+" if gain_pct >= 0 else ""
+        load_pct = (len(self.positions) / max(1, self.config.max_positions)) * 100.0
+        load_bar = make_modern_meter(load_pct, width=8, fill_char="■", empty_char="░")
 
         return (
             f"💼 <b>TRADING CAPITAL & FUNDS DASHBOARD</b>\n"
@@ -834,7 +902,7 @@ class AutoTrader:
             f"• <b>Net PnL (Closed)</b>: <code>{'+' if realized >= 0 else ''}${realized:,.2f}</code>\n"
             f"• <b>Unrealized PnL</b>: <code>{'+' if unrealized >= 0 else ''}${unrealized:,.2f}</code>\n"
             f"• <b>Total Return (ROI)</b>: {pnl_emoji} <b>{gain_sign}{gain_pct:.2f}%</b> ({sign}${net_pnl:,.2f})\n"
-            f"• <b>Open Positions</b>: <code>{len(self.positions)} / {self.config.max_positions}</code>\n"
+            f"• <b>Open Capacity</b>: <code>[{load_bar}]</code> <code>{len(self.positions)}/{self.config.max_positions}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>Manage Funds:</b>\n"
             f"• <code>/capital set 100</code> — Set capital to $100\n"
@@ -903,6 +971,385 @@ class AutoTrader:
             f"• <code>/api clear</code> — Clear credentials & return to paper mode\n"
             f"• <code>/mode live</code> — Switch to live real-order trading"
         )
+
+    # ------------------------------------------------------------------
+    # Trade Level Alerts System
+    # ------------------------------------------------------------------
+    def add_alert(
+        self,
+        symbol: str,
+        target_price: float,
+        condition: str = "AUTO",
+        note: str = "",
+        alert_type: str = "CUSTOM",
+        chat_id: Optional[int] = None,
+        one_shot: bool = True,
+    ) -> Tuple[bool, str, Optional[TradeLevelAlert]]:
+        """Register a new trade price level trigger alert."""
+        if target_price <= 0:
+            return False, "Error: Target price must be greater than 0.", None
+
+        target_sym = self.normalize_symbol(symbol)
+        df = self.fetch_candles(target_sym, count=1)
+        curr_price = float(df["close"].iloc[-1]) if not df.empty else target_price
+
+        cond = condition.strip().upper()
+        if cond in ("AUTO", ""):
+            cond = "CROSS_ABOVE" if target_price >= curr_price else "CROSS_BELOW"
+        elif cond not in ("CROSS_ABOVE", "CROSS_BELOW", "TOUCH"):
+            cond = "CROSS_ABOVE" if target_price >= curr_price else "CROSS_BELOW"
+
+        alert_id = f"ALT_{target_sym[:3]}_{int(time.time() * 1000) % 1000000}"
+        alert = TradeLevelAlert(
+            id=alert_id,
+            symbol=target_sym,
+            target_price=round(float(target_price), 2),
+            condition=cond,
+            alert_type=alert_type,
+            note=note or f"Target ${target_price:,.2f}",
+            created_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            chat_id=chat_id,
+            one_shot=one_shot,
+        )
+        self.alerts.append(alert)
+        self._save_alerts()
+
+        cond_desc = (
+            "Crosses Above 🟢"
+            if cond == "CROSS_ABOVE"
+            else ("Crosses Below 🔴" if cond == "CROSS_BELOW" else "Touches 🎯")
+        )
+        return (
+            True,
+            f"🔔 <b>Trade Level Alert Created</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>ID</b>: <code>{alert.id}</code>\n"
+            f"• <b>Symbol</b>: <code>{alert.symbol}</code>\n"
+            f"• <b>Target Price</b>: <code>${alert.target_price:,.2f}</code>\n"
+            f"• <b>Trigger Condition</b>: {cond_desc}\n"
+            f"• <b>Current Market</b>: <code>${curr_price:,.2f}</code>\n"
+            f"• <b>Note</b>: <i>{alert.note}</i>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>You will receive an instant priority alert when price hits this level.</i>",
+            alert,
+        )
+
+    def remove_alert(self, alert_id: str) -> Tuple[bool, str]:
+        """Remove an alert by ID."""
+        target = alert_id.strip().upper()
+        for a in list(self.alerts):
+            if a.id.upper() == target:
+                self.alerts.remove(a)
+                self._save_alerts()
+                return True, f"Alert <code>{a.id}</code> ({a.symbol} @ ${a.target_price:,.2f}) removed."
+        return False, f"Alert <code>{target}</code> not found."
+
+    def clear_alerts(self, symbol: Optional[str] = None) -> int:
+        """Clear active alerts, optionally filtered by symbol."""
+        if symbol:
+            sym_norm = self.normalize_symbol(symbol)
+            before = len(self.alerts)
+            self.alerts = [a for a in self.alerts if a.symbol != sym_norm]
+            cleared = before - len(self.alerts)
+        else:
+            cleared = len(self.alerts)
+            self.alerts = []
+        self._save_alerts()
+        return cleared
+
+    def get_alerts(self, symbol: Optional[str] = None) -> List[TradeLevelAlert]:
+        """Return active untriggered alerts, optionally filtered by symbol."""
+        if symbol:
+            sym_norm = self.normalize_symbol(symbol)
+            return [a for a in self.alerts if a.symbol == sym_norm and not a.triggered]
+        return [a for a in self.alerts if not a.triggered]
+
+    def get_alerts_report(self) -> str:
+        """Modern dashboard of active trade level triggers."""
+        active = [a for a in self.alerts if not a.triggered]
+        if not active:
+            return (
+                "🔔 <b>TRADE LEVEL ALERTS DASHBOARD</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "• <b>Status</b>: No active price triggers set.\n\n"
+                "<b>How to set price alerts:</b>\n"
+                "• <code>/alert BTC 85000</code> — Alert when BTC hits $85,000\n"
+                "• <code>/alert GOLD 4200</code> — Alert when Gold hits $4,200\n"
+                "• <code>/alert 82000 below</code> — Alert if current pair drops to $82k\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "<i>💡 Note: The bot also monitors Order Blocks, FVGs, and Position TP/SL targets automatically.</i>"
+            )
+
+        lines = [
+            f"🔔 <b>ACTIVE TRADE LEVEL ALERTS ({len(active)})</b>",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+        ]
+        for a in active:
+            df = self.fetch_candles(a.symbol, count=1)
+            curr = float(df["close"].iloc[-1]) if not df.empty else a.target_price
+            dist = a.target_price - curr
+            dist_pct = (dist / curr) * 100.0 if curr > 0 else 0.0
+            dir_icon = "🟢" if a.condition == "CROSS_ABOVE" else "🔴"
+            lines.append(
+                f"• <b>[{a.id}]</b> <code>{a.symbol}</code> @ <b>${a.target_price:,.2f}</b> {dir_icon}\n"
+                f"  Trigger: {a.condition} | Current: <code>${curr:,.2f}</code> ({dist_pct:+.2f}% away)\n"
+                f"  Note: <i>{a.note}</i>"
+            )
+        lines.extend(
+            [
+                "━━━━━━━━━━━━━━━━━━━━━━",
+                "<b>Manage Alerts:</b>\n"
+                "• <code>/alert del &lt;ID&gt;</code> — Remove specific alert\n"
+                "• <code>/alert clear</code> — Wipe all active alerts",
+            ]
+        )
+        return "\n".join(lines)
+
+    def check_trade_level_alerts(
+        self, candles_cache: Optional[Dict[str, pd.DataFrame]] = None
+    ) -> List[str]:
+        """
+        Evaluates real-time price action against:
+        1. Custom user price targets (CROSS_ABOVE, CROSS_BELOW, TOUCH).
+        2. Active open positions for TP/SL proximity and breakeven milestones.
+        3. Institutional Order Block (OB) demand & supply zone entries.
+        4. Fair Value Gap (FVG) imbalance fill levels.
+        Returns list of modern Telegram HTML notification strings.
+        """
+        notifications: List[str] = []
+        now_ts = time.time()
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        cache = candles_cache if candles_cache is not None else {}
+
+        def get_sym_candles(sym: str) -> pd.DataFrame:
+            if sym not in cache:
+                cache[sym] = self.fetch_candles(sym, count=60)
+            return cache[sym]
+
+        # 1. Custom User Price Level Alerts
+        alerts_changed = False
+        for alert in list(self.alerts):
+            if alert.triggered:
+                continue
+            df = get_sym_candles(alert.symbol)
+            if df.empty:
+                continue
+            candle = df.iloc[-1]
+            c_high = float(candle["high"])
+            c_low = float(candle["low"])
+            c_close = float(candle["close"])
+
+            triggered = False
+            trig_note = ""
+            if alert.condition == "CROSS_ABOVE" and c_high >= alert.target_price:
+                triggered = True
+                trig_note = f"Price crossed above target (High: ${c_high:,.2f}) 🟢"
+            elif alert.condition == "CROSS_BELOW" and c_low <= alert.target_price:
+                triggered = True
+                trig_note = f"Price dropped below target (Low: ${c_low:,.2f}) 🔴"
+            elif alert.condition in ("TOUCH", "AUTO"):
+                if c_low <= alert.target_price <= c_high:
+                    triggered = True
+                    trig_note = f"Price touched target level (${c_close:,.2f}) 🎯"
+                elif alert.condition == "AUTO":
+                    if c_high >= alert.target_price:
+                        triggered = True
+                        trig_note = f"Price crossed above target (${c_high:,.2f}) 🟢"
+                    elif c_low <= alert.target_price:
+                        triggered = True
+                        trig_note = f"Price dropped below target (${c_low:,.2f}) 🔴"
+
+            if triggered:
+                alert.triggered = True
+                alert.triggered_at = now_str
+                alerts_changed = True
+                msg = (
+                    f"🔔 <b>TRADE LEVEL ALERT TRIGGERED!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"• <b>Asset</b>: <code>{alert.symbol}</code>\n"
+                    f"• <b>Target Level</b>: <code>${alert.target_price:,.2f}</code>\n"
+                    f"• <b>Current Market</b>: <code>${c_close:,.2f}</code>\n"
+                    f"• <b>Event</b>: {trig_note}\n"
+                    f"• <b>Note</b>: <i>{alert.note}</i>\n"
+                    f"• <b>Time</b>: <code>{now_str}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<i>💡 Quick check: /entry {alert.symbol} | Instant order: /buy or /sell</i>"
+                )
+                notifications.append(msg)
+
+        if alerts_changed:
+            self._save_alerts()
+
+        # 2. Open Position Proximity & Milestone Alerts
+        for pos in self.positions:
+            df = get_sym_candles(pos.symbol)
+            if df.empty:
+                continue
+            curr = float(df.iloc[-1]["close"])
+            risk_dist = abs(pos.entry_price - pos.stop_loss)
+            tp_dist = abs(pos.take_profit_1 - pos.entry_price)
+            if risk_dist <= 0 or tp_dist <= 0:
+                continue
+
+            # a) Take Profit Proximity Warning (Within 15% distance to TP1)
+            tp_prox_key = f"tp_prox_{pos.id}"
+            if pos.direction == "LONG" and curr >= (pos.take_profit_1 - (tp_dist * 0.15)) and curr < pos.take_profit_1:
+                if now_ts - self._recent_level_alerts.get(tp_prox_key, 0) > 1800:
+                    self._recent_level_alerts[tp_prox_key] = now_ts
+                    pnl = pos.current_pnl(curr)
+                    pnl_sign = "+" if pnl >= 0 else ""
+                    notifications.append(
+                        f"🎯 <b>TARGET REACH WARNING: TP1 NEARBY ({pos.symbol})</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"• <b>Position ID</b>: <code>{pos.id}</code> ({pos.direction})\n"
+                        f"• <b>Entry Price</b>: <code>${pos.entry_price:,.2f}</code>\n"
+                        f"• <b>Current Market</b>: <code>${curr:,.2f}</code>\n"
+                        f"• <b>Take Profit 1</b>: <code>${pos.take_profit_1:,.2f}</code> (Only ${abs(pos.take_profit_1 - curr):,.2f} away!)\n"
+                        f"• <b>Current Unrealized Gain</b>: 🟢 <b>{pnl_sign}${pnl:,.2f}</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"<i>💡 Consider locking in profit with /trailing on or exit with /close {pos.id}</i>"
+                    )
+            elif pos.direction == "SHORT" and curr <= (pos.take_profit_1 + (tp_dist * 0.15)) and curr > pos.take_profit_1:
+                if now_ts - self._recent_level_alerts.get(tp_prox_key, 0) > 1800:
+                    self._recent_level_alerts[tp_prox_key] = now_ts
+                    pnl = pos.current_pnl(curr)
+                    pnl_sign = "+" if pnl >= 0 else ""
+                    notifications.append(
+                        f"🎯 <b>TARGET REACH WARNING: TP1 NEARBY ({pos.symbol})</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"• <b>Position ID</b>: <code>{pos.id}</code> ({pos.direction})\n"
+                        f"• <b>Entry Price</b>: <code>${pos.entry_price:,.2f}</code>\n"
+                        f"• <b>Current Market</b>: <code>${curr:,.2f}</code>\n"
+                        f"• <b>Take Profit 1</b>: <code>${pos.take_profit_1:,.2f}</code> (Only ${abs(curr - pos.take_profit_1):,.2f} away!)\n"
+                        f"• <b>Current Unrealized Gain</b>: 🟢 <b>{pnl_sign}${pnl:,.2f}</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"<i>💡 Consider locking in profit with /trailing on or exit with /close {pos.id}</i>"
+                    )
+
+            # b) Stop Loss Danger Warning (Within 20% distance to SL)
+            sl_prox_key = f"sl_danger_{pos.id}"
+            if pos.direction == "LONG" and curr <= (pos.stop_loss + (risk_dist * 0.20)) and curr > pos.stop_loss:
+                if now_ts - self._recent_level_alerts.get(sl_prox_key, 0) > 1800:
+                    self._recent_level_alerts[sl_prox_key] = now_ts
+                    pnl = pos.current_pnl(curr)
+                    notifications.append(
+                        f"⚠️ <b>RISK ALERT: STOP LOSS PROXIMITY ({pos.symbol})</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"• <b>Position ID</b>: <code>{pos.id}</code> ({pos.direction})\n"
+                        f"• <b>Entry Price</b>: <code>${pos.entry_price:,.2f}</code>\n"
+                        f"• <b>Current Market</b>: <code>${curr:,.2f}</code> (Danger Zone 🔴)\n"
+                        f"• <b>Invalidation SL</b>: <code>${pos.stop_loss:,.2f}</code> (${abs(curr - pos.stop_loss):,.2f} buffer)\n"
+                        f"• <b>Current Drawdown</b>: 🔴 <b>${pnl:,.2f}</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"<i>💡 Review position with /position or close manually with /close {pos.id}</i>"
+                    )
+            elif pos.direction == "SHORT" and curr >= (pos.stop_loss - (risk_dist * 0.20)) and curr < pos.stop_loss:
+                if now_ts - self._recent_level_alerts.get(sl_prox_key, 0) > 1800:
+                    self._recent_level_alerts[sl_prox_key] = now_ts
+                    pnl = pos.current_pnl(curr)
+                    notifications.append(
+                        f"⚠️ <b>RISK ALERT: STOP LOSS PROXIMITY ({pos.symbol})</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"• <b>Position ID</b>: <code>{pos.id}</code> ({pos.direction})\n"
+                        f"• <b>Entry Price</b>: <code>${pos.entry_price:,.2f}</code>\n"
+                        f"• <b>Current Market</b>: <code>${curr:,.2f}</code> (Danger Zone 🔴)\n"
+                        f"• <b>Invalidation SL</b>: <code>${pos.stop_loss:,.2f}</code> (${abs(pos.stop_loss - curr):,.2f} buffer)\n"
+                        f"• <b>Current Drawdown</b>: 🔴 <b>${pnl:,.2f}</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"<i>💡 Review position with /position or close manually with /close {pos.id}</i>"
+                    )
+
+            # c) Breakeven Milestone (+1.0R Reached)
+            be_key = f"breakeven_milestone_{pos.id}"
+            if pos.direction == "LONG" and curr >= (pos.entry_price + risk_dist) and pos.stop_loss < pos.entry_price:
+                if now_ts - self._recent_level_alerts.get(be_key, 0) > 3600:
+                    self._recent_level_alerts[be_key] = now_ts
+                    notifications.append(
+                        f"🛡️ <b>BREAKEVEN MILESTONE (+1.0R ACHIEVED): {pos.symbol}</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"• <b>Position ID</b>: <code>{pos.id}</code>\n"
+                        f"• <b>Current Gain</b>: 🟢 <b>+${pos.current_pnl(curr):,.2f}</b>\n"
+                        f"• <b>Status</b>: Profit is >= 1x initial risk! Risk-free territory.\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"<i>💡 Recommendation: Enable /trailing on to lock in Breakeven stop!</i>"
+                    )
+            elif pos.direction == "SHORT" and curr <= (pos.entry_price - risk_dist) and pos.stop_loss > pos.entry_price:
+                if now_ts - self._recent_level_alerts.get(be_key, 0) > 3600:
+                    self._recent_level_alerts[be_key] = now_ts
+                    notifications.append(
+                        f"🛡️ <b>BREAKEVEN MILESTONE (+1.0R ACHIEVED): {pos.symbol}</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"• <b>Position ID</b>: <code>{pos.id}</code>\n"
+                        f"• <b>Current Gain</b>: 🟢 <b>+${pos.current_pnl(curr):,.2f}</b>\n"
+                        f"• <b>Status</b>: Profit is >= 1x initial risk! Risk-free territory.\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"<i>💡 Recommendation: Enable /trailing on to lock in Breakeven stop!</i>"
+                    )
+
+        # 3. Institutional Order Block (OB) & Fair Value Gap (FVG) Level Alerts
+        scan_syms = list(self.config.symbols) if self.config.symbols else [self.config.symbol]
+        for sym in scan_syms:
+            df = get_sym_candles(sym)
+            if len(df) < 15:
+                continue
+            curr = float(df.iloc[-1]["close"])
+            levels = detect_order_blocks_and_fvg(df)
+
+            bob = levels.get("bullish_ob")
+            if bob and bob.get("bottom") and bob.get("top"):
+                b_lo, b_hi = float(bob["bottom"]), float(bob["top"])
+                if b_lo <= curr <= b_hi:
+                    ob_key = f"ob_bull_{sym}_{int(b_lo // 10)}"
+                    if now_ts - self._recent_level_alerts.get(ob_key, 0) > 1800:
+                        self._recent_level_alerts[ob_key] = now_ts
+                        notifications.append(
+                            f"🧱 <b>INSTITUTIONAL LEVEL REACHED ({sym})</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"• <b>Zone</b>: Bullish Demand Order Block (OB) 🟢\n"
+                            f"• <b>Price Range</b>: <code>${b_lo:,.2f} – ${b_hi:,.2f}</code>\n"
+                            f"• <b>Current Market</b>: <code>${curr:,.2f}</code>\n"
+                            f"• <b>Confluence</b>: Smart Money Accumulation Support Area\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"<i>💡 Generate pinpoint setup: /entry {sym} | Order: /buy</i>"
+                        )
+
+            sob = levels.get("bearish_ob")
+            if sob and sob.get("bottom") and sob.get("top"):
+                s_lo, s_hi = float(sob["bottom"]), float(sob["top"])
+                if s_lo <= curr <= s_hi:
+                    ob_key = f"ob_bear_{sym}_{int(s_lo // 10)}"
+                    if now_ts - self._recent_level_alerts.get(ob_key, 0) > 1800:
+                        self._recent_level_alerts[ob_key] = now_ts
+                        notifications.append(
+                            f"🧱 <b>INSTITUTIONAL LEVEL REACHED ({sym})</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"• <b>Zone</b>: Bearish Supply Order Block (OB) 🔴\n"
+                            f"• <b>Price Range</b>: <code>${s_lo:,.2f} – ${s_hi:,.2f}</code>\n"
+                            f"• <b>Current Market</b>: <code>${curr:,.2f}</code>\n"
+                            f"• <b>Confluence</b>: Smart Money Distribution Resistance Area\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"<i>💡 Generate pinpoint setup: /entry {sym} | Order: /sell</i>"
+                        )
+
+            bfvg = levels.get("bullish_fvg")
+            if bfvg and bfvg.get("bottom") and bfvg.get("top"):
+                f_lo, f_hi = float(bfvg["bottom"]), float(bfvg["top"])
+                if f_lo <= curr <= f_hi:
+                    fvg_key = f"fvg_bull_{sym}_{int(f_lo // 10)}"
+                    if now_ts - self._recent_level_alerts.get(fvg_key, 0) > 1800:
+                        self._recent_level_alerts[fvg_key] = now_ts
+                        notifications.append(
+                            f"⚡ <b>FAIR VALUE GAP (FVG) REACHED ({sym})</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"• <b>Imbalance</b>: Bullish Imbalance Zone 🟢\n"
+                            f"• <b>Gap Range</b>: <code>${f_lo:,.2f} – ${f_hi:,.2f}</code>\n"
+                            f"• <b>Current Market</b>: <code>${curr:,.2f}</code>\n"
+                            f"• <b>Status</b>: Liquidity gap is being filled\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"<i>💡 View structural liquidity: /levels {sym}</i>"
+                        )
+
+        return notifications
 
     def fetch_candles(self, symbol: str, count: int = 120) -> pd.DataFrame:
         """Fetch 1m candle series from Delta Exchange API with fallback to synthetic data."""
@@ -1257,6 +1704,9 @@ class AutoTrader:
                             f"• Strategy: {new_pos.strategy}\n"
                             f"• Setup: {sig.setup.value}"
                         )
+        # 3. Check and trigger Trade Level Alerts (Price levels, OB/FVG zones, Proximity)
+        level_alerts = self.check_trade_level_alerts(candles_cache=candles_cache)
+        notifications.extend(level_alerts)
 
         return notifications
 
@@ -1273,6 +1723,7 @@ class AutoTrader:
         mode_icon = "📄 PAPER TRADING" if self.config.trading_mode == "paper" else "🚨 LIVE TRADING"
         mode_color = "🟢" if self.config.trading_mode == "paper" else "🔴"
 
+        pos_bar = make_modern_meter((len(self.positions) / max(1, self.config.max_positions)) * 100.0, width=8, fill_char="■", empty_char="░")
         text = [
             "⚡ <b>AUTO TRADING DASHBOARD</b>",
             "━━━━━━━━━━━━━━━━━━━━━━",
@@ -1282,7 +1733,7 @@ class AutoTrader:
             f"• <b>Primary Symbol</b>: <code>{self.config.symbol}</code>",
             f"• <b>Strategy</b>: {self.config.strategy_type.replace('_', ' ').title()}",
             f"• <b>Lot Size</b>: {self.config.lot_size} ({lot_mode_str})",
-            f"• <b>Max Positions</b>: {len(self.positions)}/{self.config.max_positions} (Max/pair: {self.config.max_positions_per_symbol})",
+            f"• <b>Max Positions</b>: <code>[{pos_bar}]</code> {len(self.positions)}/{self.config.max_positions} (Max/pair: {self.config.max_positions_per_symbol})",
             f"• <b>Take Profit</b>: {self.config.tp_value} ({self.config.tp_mode.upper()})",
             f"• <b>Stop Loss</b>: {self.config.sl_value} ({self.config.sl_mode.upper()})",
             f"• <b>Trailing Stop</b>: {'🟢 ON' if self.config.trailing_sl else '⚪ OFF'}",
@@ -1314,12 +1765,13 @@ class AutoTrader:
         wins = [t for t in self.closed_trades if t.pnl > 0]
         total_pnl = sum(t.pnl for t in self.closed_trades)
         win_rate = (len(wins) / total_closed * 100) if total_closed > 0 else 0.0
+        win_bar = make_modern_meter(win_rate, width=8, fill_char="█", empty_char="░")
 
         text.extend(
             [
                 "📈 <b>Trade Performance:</b>",
                 f"  • Total Closed: {total_closed}",
-                f"  • Win Rate: {win_rate:.1f}% ({len(wins)}/{total_closed})",
+                f"  • Win Rate: <code>[{win_bar}]</code> <b>{win_rate:.1f}%</b> ({len(wins)}/{total_closed})",
                 f"  • Net PnL: {'+' if total_pnl >= 0 else ''}${total_pnl:.2f}",
             ]
         )
@@ -1353,11 +1805,21 @@ class AutoTrader:
             current_price = float(df["close"].iloc[-1]) if not df.empty else pos.entry_price
             pnl = pos.current_pnl(current_price)
             total_unrealized += pnl
+            denom = pos.entry_price if pos.entry_price > 0 else 1.0
             pnl_pct = (
-                ((current_price - pos.entry_price) / pos.entry_price * 100.0)
+                ((current_price - pos.entry_price) / denom * 100.0)
                 if pos.direction == "LONG"
-                else ((pos.entry_price - current_price) / pos.entry_price * 100.0)
+                else ((pos.entry_price - current_price) / denom * 100.0)
             )
+            tp_span = abs(pos.take_profit_1 - pos.entry_price)
+            if tp_span > 0:
+                if pos.direction == "LONG":
+                    tp_progress = max(0.0, min(100.0, ((current_price - pos.entry_price) / tp_span) * 100.0))
+                else:
+                    tp_progress = max(0.0, min(100.0, ((pos.entry_price - current_price) / tp_span) * 100.0))
+                tp_meter = f" <code>[{make_modern_meter(tp_progress, width=6, fill_char='█', empty_char='░')}]</code>"
+            else:
+                tp_meter = ""
             sign = "+" if pnl >= 0 else ""
             pnl_emoji = "🟢" if pnl >= 0 else "🔴"
             tp2_str = f" | TP2: <code>${pos.take_profit_2:,.2f}</code>" if pos.take_profit_2 else ""
@@ -1367,7 +1829,7 @@ class AutoTrader:
                 f"• Direction: <b>{pos.direction}</b> {'🟢' if pos.direction == 'LONG' else '🔴'}\n"
                 f"• Entry: <code>${pos.entry_price:,.2f}</code> | Current: <code>${current_price:,.2f}</code>\n"
                 f"• PnL: {pnl_emoji} <b>{sign}${pnl:,.2f}</b> ({sign}{pnl_pct:.2f}%)\n"
-                f"• Lot: <code>{pos.lot_size}</code> | SL: <code>${pos.stop_loss:,.2f}</code> | TP1: <code>${pos.take_profit_1:,.2f}</code>{tp2_str}\n"
+                f"• Lot: <code>{pos.lot_size}</code> | SL: <code>${pos.stop_loss:,.2f}</code> | TP1: <code>${pos.take_profit_1:,.2f}</code>{tp_meter}{tp2_str}\n"
                 f"• Opened: <code>{pos.entry_time}</code>"
             )
             if idx < len(self.positions):
@@ -1403,6 +1865,7 @@ class AutoTrader:
         wins = [t for t in self.closed_trades if t.pnl > 0]
         losses = [t for t in self.closed_trades if t.pnl <= 0]
         win_rate = (len(wins) / total) * 100.0 if total > 0 else 0.0
+        win_meter = make_modern_meter(win_rate, width=10, fill_char="█", empty_char="░")
         net_pnl = sum(t.pnl for t in self.closed_trades)
         win_sum = sum(t.pnl for t in wins)
         loss_sum = abs(sum(t.pnl for t in losses))
@@ -1423,7 +1886,7 @@ class AutoTrader:
             f"📈 <b>Trading Performance & PnL Report</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>Total Trades</b>: <code>{total}</code> (Wins: {len(wins)} | Losses: {len(losses)})\n"
-            f"• <b>Win Rate</b>: <b>{win_rate:.1f}%</b>\n"
+            f"• <b>Win Rate</b>: <code>[{win_meter}]</code> <b>{win_rate:.1f}%</b>\n"
             f"• <b>Realized Net PnL</b>: {pnl_emoji} <b>{sign}${net_pnl:,.2f}</b>\n"
             f"• <b>Profit Factor</b>: <code>{profit_factor:.2f}</code>\n"
             f"• <b>Account Equity</b>: <code>${self.config.equity:,.2f}</code>\n"

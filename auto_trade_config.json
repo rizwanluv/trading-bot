@@ -27,5 +27,6 @@
   "live_exchange": "delta",
   "exchange_api_key": "",
   "exchange_api_secret": "",
-  "notify_chat_id": 777
+  "notify_chat_id": 777,
+  "alerts_file": "/workspace/bright-darwin/trade_alerts.json"
 }

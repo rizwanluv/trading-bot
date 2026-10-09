@@ -1494,6 +1494,16 @@ class TestModeCapitalApiTelegramCommands(unittest.IsolatedAsyncioTestCase):
         self.assertIn("cleared", sent_clear)
         self.assertEqual(self.trader.config.exchange_api_key, "")
 
+        # 4. /api test (verifies unpacking fix for tuple get_balance)
+        mock_ctx.args = ["test"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader), \
+             unittest.mock.patch.object(self.trader.exchange_client, "test_connection", return_value=(True, "Connected OK", {"balance": 5000.0})), \
+             unittest.mock.patch.object(self.trader.exchange_client, "get_balance", return_value=(True, 5000.0, "Connected OK")):
+            await main.api_command(mock_update, mock_ctx)
+        sent_test = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Exchange API Connected Successfully", sent_test)
+        self.assertIn("5,000.00", sent_test)
+
     async def test_start_and_menu_command_categories(self):
         mock_update = unittest.mock.AsyncMock()
         mock_ctx = unittest.mock.MagicMock()
@@ -1507,10 +1517,12 @@ class TestModeCapitalApiTelegramCommands(unittest.IsolatedAsyncioTestCase):
         self.assertIn("4. Paper & Live Trading / Capital Management", start_txt)
         self.assertIn("5. Live Exchange API System", start_txt)
         self.assertIn("6. Risk & Strategy Configuration", start_txt)
-        self.assertIn("7. Assistant & Diagnostics", start_txt)
+        self.assertIn("7. Trade Level Alerts & Notifications", start_txt)
+        self.assertIn("8. Assistant & Diagnostics", start_txt)
         self.assertIn("/mode", start_txt)
         self.assertIn("/capital", start_txt)
         self.assertIn("/api", start_txt)
+        self.assertIn("/alert", start_txt)
 
         # Test /menu contains categories
         with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
@@ -1523,6 +1535,183 @@ class TestModeCapitalApiTelegramCommands(unittest.IsolatedAsyncioTestCase):
         self.assertIn("4. Paper/Live Mode & Capital", menu_txt)
         self.assertIn("5. Live Exchange API System", menu_txt)
         self.assertIn("6. Risk & Strategy", menu_txt)
+        self.assertIn("7. Trade Level Alerts", menu_txt)
+        self.assertIn("8. Assistant & Settings", menu_txt)
+
+
+class TestTradeLevelAlerts(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        import pandas as pd
+        self.pd = pd
+        self.temp_cfg = "/workspace/bright-darwin/.test_alerts_cfg.json"
+        self.temp_pos = "/workspace/bright-darwin/.test_alerts_pos.json"
+        self.temp_hist = "/workspace/bright-darwin/.test_alerts_hist.json"
+        self.temp_alerts = "/workspace/bright-darwin/.test_alerts_file.json"
+        for f in (self.temp_cfg, self.temp_pos, self.temp_hist, self.temp_alerts):
+            if os.path.exists(f):
+                os.remove(f)
+
+        self.cfg = auto_trade.AutoTradeConfig(
+            config_file=self.temp_cfg,
+            open_positions_file=self.temp_pos,
+            trades_history_file=self.temp_hist,
+            alerts_file=self.temp_alerts,
+            symbol="BTCUSD",
+            symbols=["BTCUSD", "XAUTUSD"],
+            enabled=False,
+        )
+        self.trader = auto_trade.AutoTrader(config=self.cfg)
+
+    def tearDown(self):
+        for f in (self.temp_cfg, self.temp_pos, self.temp_hist, self.temp_alerts):
+            if os.path.exists(f):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+
+    def test_make_modern_meter(self):
+        m0 = auto_trade.make_modern_meter(0, width=10)
+        self.assertEqual(m0, "░" * 10)
+        m100 = auto_trade.make_modern_meter(100, width=10)
+        self.assertEqual(m100, "■" * 10)
+        m50 = auto_trade.make_modern_meter(50, width=10)
+        self.assertEqual(m50, "■" * 5 + "░" * 5)
+        m_neg = auto_trade.make_modern_meter(-10, width=10)
+        self.assertEqual(m_neg, "░" * 10)
+        m_over = auto_trade.make_modern_meter(150, width=10)
+        self.assertEqual(m_over, "■" * 10)
+
+    def test_add_and_get_alerts(self):
+        ok, msg, alt1 = self.trader.add_alert("BTCUSD", 85000.0, condition="CROSS_ABOVE", note="Resistance level")
+        self.assertTrue(ok)
+        self.assertIsNotNone(alt1)
+        self.assertIsNotNone(alt1.id)
+        self.assertEqual(alt1.symbol, "BTCUSD")
+        self.assertEqual(alt1.target_price, 85000.0)
+        self.assertEqual(alt1.condition, "CROSS_ABOVE")
+        self.assertFalse(alt1.triggered)
+
+        ok2, msg2, alt2 = self.trader.add_alert("XAUTUSD", 4100.0, condition="CROSS_BELOW", note="Support level")
+        self.assertTrue(ok2)
+        self.assertEqual(len(self.trader.alerts), 2)
+
+        btc_alerts = self.trader.get_alerts("BTCUSD")
+        self.assertEqual(len(btc_alerts), 1)
+        self.assertEqual(btc_alerts[0].id, alt1.id)
+
+        rep = self.trader.get_alerts_report()
+        self.assertIn("ACTIVE TRADE LEVEL ALERTS", rep)
+        self.assertIn("BTCUSD", rep)
+        self.assertIn("85,000.00", rep)
+
+    def test_remove_and_clear_alerts(self):
+        ok1, _, alt1 = self.trader.add_alert("BTCUSD", 85000.0, condition="CROSS_ABOVE")
+        ok2, _, alt2 = self.trader.add_alert("XAUTUSD", 4200.0, condition="CROSS_BELOW")
+
+        ok_rem, _ = self.trader.remove_alert(alt1.id)
+        self.assertTrue(ok_rem)
+        ok_bad, _ = self.trader.remove_alert("NON_EXISTENT")
+        self.assertFalse(ok_bad)
+        self.assertEqual(len(self.trader.alerts), 1)
+
+        cleared = self.trader.clear_alerts()
+        self.assertEqual(cleared, 1)
+        self.assertEqual(len(self.trader.alerts), 0)
+
+    def test_check_trade_level_alerts_cross_above(self):
+        self.trader.add_alert("BTCUSD", 83000.0, condition="CROSS_ABOVE", note="Breakout")
+
+        # Fake candles with close below target
+        df_below = self.pd.DataFrame({
+            "open": [82000.0], "high": [82500.0], "low": [81900.0], "close": [82200.0], "volume": [100.0]
+        })
+        notes = self.trader.check_trade_level_alerts(candles_cache={"BTCUSD": df_below, "XAUTUSD": df_below})
+        custom_notes = [n for n in notes if "TRADE LEVEL ALERT TRIGGERED" in n]
+        self.assertEqual(len(custom_notes), 0)
+
+        # Fake candles with close above target
+        df_above = self.pd.DataFrame({
+            "open": [82500.0], "high": [83500.0], "low": [82400.0], "close": [83200.0], "volume": [100.0]
+        })
+        notes_above = self.trader.check_trade_level_alerts(candles_cache={"BTCUSD": df_above, "XAUTUSD": df_below})
+        custom_notes_above = [n for n in notes_above if "TRADE LEVEL ALERT TRIGGERED" in n]
+        self.assertEqual(len(custom_notes_above), 1)
+        self.assertIn("83,000.00", custom_notes_above[0])
+
+        # Second check should not trigger one_shot alert again
+        notes_again = self.trader.check_trade_level_alerts(candles_cache={"BTCUSD": df_above, "XAUTUSD": df_below})
+        custom_notes_again = [n for n in notes_again if "TRADE LEVEL ALERT TRIGGERED" in n]
+        self.assertEqual(len(custom_notes_again), 0)
+
+    def test_check_trade_level_alerts_tp_proximity(self):
+        pos = auto_trade.AutoTradePosition(
+            id="TP_TEST_1",
+            symbol="BTCUSD",
+            direction="LONG",
+            entry_price=80000.0,
+            stop_loss=78000.0,
+            take_profit_1=85000.0,
+            take_profit_2=None,
+            lot_size=0.1,
+            entry_time="2026-10-09 00:00:00 UTC",
+            strategy="Indicators Pro",
+            reason="Signal",
+            highest_price=80000.0,
+            lowest_price=80000.0,
+        )
+        self.trader.positions.append(pos)
+
+        # Price at 84500 is within 15% distance to TP1
+        df = self.pd.DataFrame({
+            "open": [84400.0], "high": [84600.0], "low": [84300.0], "close": [84500.0], "volume": [100.0]
+        })
+        notes = self.trader.check_trade_level_alerts(candles_cache={"BTCUSD": df})
+        tp_notes = [n for n in notes if "TARGET REACH WARNING" in n or "TP1 NEARBY" in n]
+        self.assertEqual(len(tp_notes), 1)
+        self.assertIn("85,000.00", tp_notes[0])
+
+    async def test_alert_telegram_command(self):
+        mock_update = unittest.mock.AsyncMock()
+        mock_update.message.reply_text = unittest.mock.AsyncMock()
+        mock_update.effective_chat.id = 123456
+
+        # 1. /alert with no args -> empty list
+        mock_ctx = unittest.mock.MagicMock()
+        mock_ctx.args = []
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.alert_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("No active price triggers set", sent)
+
+        # 2. /alert BTC 85000 above
+        mock_ctx.args = ["BTC", "85000", "above", "TP", "level"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.alert_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Trade Level Alert Set", sent)
+        self.assertIn("BTCUSD", sent)
+        self.assertIn("85,000.00", sent)
+
+        self.assertEqual(len(self.trader.alerts), 1)
+        alert_id = self.trader.alerts[0].id
+
+        # 3. /alert del <id>
+        mock_ctx.args = ["del", alert_id]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.alert_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("removed successfully", sent)
+        self.assertEqual(len(self.trader.alerts), 0)
+
+        # 4. /alert clear
+        self.trader.add_alert("BTCUSD", 90000.0)
+        mock_ctx.args = ["clear"]
+        with unittest.mock.patch("main.get_auto_trader", return_value=self.trader):
+            await main.alert_command(mock_update, mock_ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Cleared", sent)
+        self.assertEqual(len(self.trader.alerts), 0)
 
 
 def tearDownModule():
