@@ -452,6 +452,29 @@ class TestAutoTradeTelegramHandlers(unittest.IsolatedAsyncioTestCase):
         sent = mock_update.message.reply_text.call_args[0][0]
         self.assertIn("Risk % lot sizing", sent)
 
+        # 4. Activate auto lot mode
+        mock_update.message.reply_text.reset_mock()
+        ctx = SimpleNamespace(args=["auto", "2.5%"])
+        await main.lotsize_command(mock_update, ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Auto Lot Sizing Activated", sent)
+        self.assertIn("2.5%", sent)
+
+        # 5. Activate manual lot mode
+        mock_update.message.reply_text.reset_mock()
+        ctx = SimpleNamespace(args=["manual", "0.08"])
+        await main.lotsize_command(mock_update, ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Manual Lot Sizing Activated", sent)
+        self.assertIn("0.08", sent)
+
+        # 6. Set manual lot via 'set'
+        mock_update.message.reply_text.reset_mock()
+        ctx = SimpleNamespace(args=["set", "0.04"])
+        await main.lotsize_command(mock_update, ctx)
+        sent = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("0.04", sent)
+
     async def test_tpsl_command_flow(self):
         mock_update = SimpleNamespace(
             message=SimpleNamespace(reply_text=AsyncMock()),
@@ -2516,6 +2539,62 @@ class TestAuditedBugFixesAndEdgeCases(unittest.IsolatedAsyncioTestCase):
 
         # Switch back to delta
         main.get_auto_trader().switch_exchange("delta")
+
+    def test_autotrader_auto_and_manual_lot_sizing(self):
+        # 1. Manual lot mode
+        ok, msg = self.trader.set_manual_lot(0.05)
+        self.assertTrue(ok)
+        self.assertEqual(self.trader.config.lot_size, 0.05)
+        self.assertEqual(self.trader.config.lot_mode, "fixed")
+        # calculate_lot_size in manual mode returns configured fixed lot size
+        lot = self.trader.calculate_lot_size("BTCUSD", entry_price=80000.0, stop_loss=79000.0)
+        self.assertEqual(lot, 0.05)
+        # Scaled by conviction multiplier
+        lot_scaled = self.trader.calculate_lot_size("BTCUSD", entry_price=80000.0, stop_loss=79000.0, conviction_multiplier=1.2)
+        self.assertEqual(lot_scaled, 0.06)
+
+        # 2. Auto lot mode
+        self.trader.config.equity = 1000.0
+        ok, msg = self.trader.set_auto_lot(risk_pct=1.0)
+        self.assertTrue(ok)
+        self.assertEqual(self.trader.config.lot_mode, "risk_pct")
+        self.assertEqual(self.trader.config.risk_pct, 1.0)
+        # Risk is 1% of $1000 = $10. Stop distance is $80,000 - $78,000 = $2000.
+        # Raw lot = 10 / 2000 = 0.005
+        lot_auto = self.trader.calculate_lot_size("BTCUSD", entry_price=80000.0, stop_loss=78000.0)
+        self.assertEqual(lot_auto, 0.005)
+
+        # 3. Minimum lot enforcement in auto mode
+        # Distance = $50,000 -> 10 / 50000 = 0.0002 -> clamped to min 0.001 for BTC
+        lot_min = self.trader.calculate_lot_size("BTCUSD", entry_price=80000.0, stop_loss=30000.0)
+        self.assertEqual(lot_min, 0.001)
+
+        # 4. Status report
+        rep = self.trader.get_lot_size_report()
+        self.assertIn("Current Lot Size Configuration", rep)
+        self.assertIn("AUTO", rep)
+        self.assertIn("Auto Risk Sizing", rep)
+        self.assertIn("Manual Lot Size", rep)
+
+        # 5. Invalid values validation
+        ok_bad, msg_bad = self.trader.set_manual_lot(0)
+        self.assertFalse(ok_bad)
+        ok_bad2, msg_bad2 = self.trader.set_auto_lot(-1.0)
+        self.assertFalse(ok_bad2)
+
+    async def test_lot_alias_command(self):
+        update = MagicMock()
+        update.message = MagicMock()
+        update.message.reply_text = AsyncMock()
+        update.effective_message = update.message
+        ctx = MagicMock()
+        ctx.args = ["manual", "0.03"]
+
+        await main.lotsize_command(update, ctx)
+        update.message.reply_text.assert_called_once()
+        sent = update.message.reply_text.call_args[0][0]
+        self.assertIn("Manual Lot Sizing Activated", sent)
+        self.assertIn("0.03", sent)
 
 
 def tearDownModule():

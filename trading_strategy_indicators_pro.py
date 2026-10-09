@@ -669,7 +669,7 @@ class IndicatorsProStrategy:
         return 0.0, False
 
     def size(self, equity, entry, stop, atr=0):
-        if getattr(self, "lot_mode", "fixed") == "fixed":
+        if getattr(self, "lot_mode", "fixed") in ("fixed", "manual"):
             return getattr(self, "lot_size", 0.01)
         risk_pct = self.risk_pct
         if equity < self.peak_eq * 0.95: risk_pct *= 0.6

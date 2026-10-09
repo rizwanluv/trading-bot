@@ -741,22 +741,96 @@ async def lotsize_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     args = ctx.args or []
 
     if not args:
-        lot_mode_desc = "Fixed lot size" if trader.config.lot_mode == "fixed" else f"Risk {trader.config.risk_pct}% sizing"
-        await reply_safely(
-            update,
+        lot_mode_desc = (
+            "Fixed lot size"
+            if trader.config.lot_mode in ("fixed", "manual")
+            else f"Risk {trader.config.risk_pct}% sizing"
+        )
+        report = (
             f"📦 <b>Current Lot Size Configuration</b>\n"
-            f"• <b>Lot Size</b>: <code>{trader.config.lot_size}</code>\n"
-            f"• <b>Mode</b>: {lot_mode_desc}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Active Mode</b>: {'🤖 <b>AUTO</b> (Dynamic Risk)' if trader.config.lot_mode in ('auto', 'risk_pct', 'risk') else '👤 <b>MANUAL</b> (Fixed Lots)'}\n"
+            f"• <b>Mode</b>: {lot_mode_desc}\n"
+            f"• <b>Manual Lot Size</b>: <code>{trader.config.lot_size}</code>\n"
+            f"• <b>Auto Risk Sizing</b>: <code>{trader.config.risk_pct}%</code> equity\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>Change lot size:</b>\n"
+            f"• <code>/lotsize auto</code> (Enable dynamic auto lot sizing)\n"
+            f"• <code>/lotsize auto 2%</code> (Auto sizing with 2% risk)\n"
+            f"• <code>/lotsize manual 0.05</code> (Enable manual fixed lot size)\n"
             f"• <code>/lotsize 0.05</code> (Set fixed lot size to 0.05)\n"
             f"• <code>/lotsize 1.0</code> (Set fixed lot size to 1.0)\n"
-            f"• <code>/lotsize risk 2%</code> (Set risk-based sizing to 2% equity)",
-            parse_mode="HTML",
+            f"• <code>/lotsize risk 2%</code> (Set risk-based sizing to 2% equity)"
         )
+        await reply_safely(update, report, parse_mode="HTML")
         return
 
-    # Check for risk % format
-    if args[0].lower() == "risk" and len(args) > 1:
+    sub = args[0].lower().strip()
+
+    # 1. /lotsize auto [risk%]
+    if sub in ("auto", "dynamic"):
+        risk_pct = None
+        if len(args) > 1:
+            try:
+                risk_pct = float(args[1].replace("%", "").strip())
+            except ValueError:
+                await reply_safely(
+                    update,
+                    "Error: Invalid risk percentage. Example: <code>/lotsize auto 2%</code>",
+                    parse_mode="HTML",
+                )
+                return
+        ok, msg = trader.set_auto_lot(risk_pct=risk_pct)
+        if ok:
+            risk_usd = trader.config.equity * (trader.config.risk_pct / 100.0)
+            await reply_safely(
+                update,
+                f"🤖 <b>Auto Lot Sizing Activated</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Mode</b>: Dynamic Risk-Based\n"
+                f"• <b>Risk per Trade</b>: <code>{trader.config.risk_pct}%</code> equity (${risk_usd:,.2f})\n"
+                f"• <b>Dynamic Formula</b>: <i>Lots = (Equity × Risk%) / SL Distance</i>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<i>💡 To change risk: <code>/lotsize auto 2%</code> or <code>/lotsize risk 2%</code>\n"
+                f"💡 To switch to manual: <code>/lotsize manual 0.05</code></i>",
+                parse_mode="HTML",
+            )
+        else:
+            await reply_safely(update, f"❌ {msg}")
+        return
+
+    # 2. /lotsize manual [size] or /lotsize fixed [size]
+    if sub in ("manual", "fixed"):
+        lot_size = None
+        if len(args) > 1:
+            try:
+                lot_size = float(args[1].strip())
+            except ValueError:
+                await reply_safely(
+                    update,
+                    "Error: Invalid lot size. Example: <code>/lotsize manual 0.05</code>",
+                    parse_mode="HTML",
+                )
+                return
+        ok, msg = trader.set_manual_lot(size=lot_size)
+        if ok:
+            await reply_safely(
+                update,
+                f"👤 <b>Manual Lot Sizing Activated</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Mode</b>: Fixed Volume\n"
+                f"• <b>Lot Size</b>: <code>{trader.config.lot_size} lots</code> per trade\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<i>💡 To change volume: <code>/lotsize manual 0.05</code> or <code>/lotsize 0.05</code>\n"
+                f"💡 To switch to auto: <code>/lotsize auto</code></i>",
+                parse_mode="HTML",
+            )
+        else:
+            await reply_safely(update, f"❌ {msg}")
+        return
+
+    # 3. Check for risk % format: /lotsize risk 2%
+    if sub == "risk" and len(args) > 1:
         try:
             val = float(args[1].replace("%", "").strip())
             trader.config.risk_pct = val
@@ -766,7 +840,20 @@ async def lotsize_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             await reply_safely(update, "Error: Invalid risk percentage. Example: /lotsize risk 1.5")
         return
 
-    # Numeric lot size
+    # 4. /lotsize set <size>
+    if sub == "set" and len(args) > 1:
+        try:
+            val = float(args[1].strip())
+            ok, msg = trader.set_manual_lot(size=val)
+            if ok:
+                await reply_safely(update, f"✅ {msg}")
+            else:
+                await reply_safely(update, f"❌ {msg}")
+        except ValueError:
+            await reply_safely(update, "Error: Invalid lot size. Example: /lotsize set 0.05")
+        return
+
+    # 5. Direct numeric lot size or percentage
     raw = args[0].replace("%", "").strip()
     try:
         val = float(raw)
@@ -782,7 +869,11 @@ async def lotsize_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     except ValueError:
         await reply_safely(
             update,
-            "Error: Invalid lot size format.\nUsage: /lotsize 0.05 or /lotsize risk 2%",
+            "Error: Invalid lot size format.\nUsage:\n"
+            "• <code>/lotsize auto [risk%]</code> (e.g. /lotsize auto 2%)\n"
+            "• <code>/lotsize manual [size]</code> (e.g. /lotsize manual 0.05)\n"
+            "• <code>/lotsize 0.05</code> or <code>/lotsize risk 2%</code>",
+            parse_mode="HTML",
         )
 
 
@@ -2037,6 +2128,7 @@ def main() -> None:
     app.add_handler(CommandHandler("trailing", trailing_command))
     app.add_handler(CommandHandler("risk", risk_command))
     app.add_handler(CommandHandler("lotsize", lotsize_command))
+    app.add_handler(CommandHandler("lot", lotsize_command))
     app.add_handler(CommandHandler("tpsl", tpsl_command))
     app.add_handler(CommandHandler("mode", mode_command))
     app.add_handler(CommandHandler("capital", capital_command))

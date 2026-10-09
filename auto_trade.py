@@ -1197,7 +1197,15 @@ class AutoTrader:
             return False, "Error: Lot size must be greater than 0."
 
         self.config.lot_size = float(size)
-        self.config.lot_mode = mode.lower()
+        m_lower = mode.lower()
+        if m_lower in ("auto", "risk_pct", "risk", "dynamic"):
+            self.config.lot_mode = "risk_pct"
+            self.config.risk_pct = float(size)
+            mode_desc = "Risk % lot sizing"
+        else:
+            self.config.lot_mode = "fixed"
+            mode_desc = "Fixed lot size"
+
         for strat in self._strategies_pro.values():
             strat.set_lot_size(self.config.lot_size, self.config.lot_mode)
         if self._strategy_pro:
@@ -1212,10 +1220,119 @@ class AutoTrader:
             self._strategy_itb.set_lot_size(self.config.lot_size, self.config.lot_mode)
         self.config.save()
 
-        mode_desc = (
-            "Fixed lot size" if self.config.lot_mode == "fixed" else "Risk % lot sizing"
-        )
         return True, f"Lot size updated: {self.config.lot_size} ({mode_desc})"
+
+    def set_auto_lot(self, risk_pct: Optional[float] = None) -> Tuple[bool, str]:
+        """
+        Activate dynamic Auto Lot Sizing.
+        Position size is calculated automatically per trade from account equity, risk %, and stop loss distance.
+        """
+        if risk_pct is not None:
+            if risk_pct <= 0:
+                return False, "Error: Risk percentage must be greater than 0."
+            self.config.risk_pct = float(risk_pct)
+        self.config.lot_mode = "risk_pct"
+        for strat in self._strategies_pro.values():
+            strat.set_lot_size(self.config.lot_size, self.config.lot_mode)
+        if self._strategy_pro:
+            self._strategy_pro.set_lot_size(self.config.lot_size, self.config.lot_mode)
+        for strat_itb in self._strategies_itb.values():
+            strat_itb.set_lot_size(self.config.lot_size, self.config.lot_mode)
+        if self._strategy_itb:
+            self._strategy_itb.set_lot_size(self.config.lot_size, self.config.lot_mode)
+        self.config.save()
+        risk_usd = self.config.equity * (self.config.risk_pct / 100.0)
+        return (
+            True,
+            f"Auto lot sizing activated: Risk {self.config.risk_pct}% per trade "
+            f"(${risk_usd:,.2f} risk on ${self.config.equity:,.2f} equity)",
+        )
+
+    def set_manual_lot(self, size: Optional[float] = None) -> Tuple[bool, str]:
+        """
+        Activate Manual Fixed Lot Sizing.
+        Position size uses user-specified fixed volume per trade.
+        """
+        if size is not None:
+            if size <= 0:
+                return False, "Error: Lot size must be greater than 0."
+            self.config.lot_size = float(size)
+        self.config.lot_mode = "fixed"
+        for strat in self._strategies_pro.values():
+            strat.set_lot_size(self.config.lot_size, self.config.lot_mode)
+        if self._strategy_pro:
+            self._strategy_pro.set_lot_size(self.config.lot_size, self.config.lot_mode)
+        for strat_itb in self._strategies_itb.values():
+            strat_itb.set_lot_size(self.config.lot_size, self.config.lot_mode)
+        if self._strategy_itb:
+            self._strategy_itb.set_lot_size(self.config.lot_size, self.config.lot_mode)
+        self.config.save()
+        return (
+            True,
+            f"Manual lot sizing activated: Fixed {self.config.lot_size} lots per trade",
+        )
+
+    def calculate_lot_size(
+        self,
+        symbol: str,
+        entry_price: float,
+        stop_loss: float,
+        conviction_multiplier: float = 1.0,
+    ) -> float:
+        """
+        Calculate position lot size according to active mode:
+        - Manual/Fixed: returns configured fixed lot size (optionally scaled by conviction)
+        - Auto/Risk %: dynamically sizes lots from equity, risk %, and stop distance
+        """
+        symbol_upper = self.normalize_symbol(symbol)
+        mult = conviction_multiplier if conviction_multiplier > 0 else 1.0
+        is_btc = "BTC" in symbol_upper
+        min_lot = 0.001 if is_btc else 0.01
+        decimals = 3 if is_btc else 2
+
+        if self.config.lot_mode in ("fixed", "manual"):
+            return max(min_lot, round(self.config.lot_size * mult, 4))
+
+        # Auto dynamic risk-based sizing
+        price_risk = max(0.0001, abs(entry_price - stop_loss))
+        risk_budget = self.config.equity * (self.config.risk_pct / 100.0)
+        raw_lots = (risk_budget / price_risk) * mult
+        lots = max(min_lot, round(raw_lots, decimals))
+        return lots
+
+    def get_lot_size_report(self) -> str:
+        """Format a rich status card displaying current Auto and Manual lot sizing configuration."""
+        is_auto = self.config.lot_mode in ("auto", "risk_pct", "risk", "dynamic")
+        mode_badge = "🤖 <b>AUTO</b> (Dynamic Risk)" if is_auto else "👤 <b>MANUAL</b> (Fixed Lots)"
+        mode_desc = f"Risk {self.config.risk_pct}% sizing" if is_auto else "Fixed lot size"
+
+        risk_dollars = self.config.equity * (self.config.risk_pct / 100.0)
+
+        # Sample calculations
+        sample_btc_lot = self.calculate_lot_size("BTCUSD", entry_price=80000.0, stop_loss=79000.0)
+        sample_xau_lot = self.calculate_lot_size("XAUTUSD", entry_price=4100.0, stop_loss=4060.0)
+
+        return (
+            f"📦 <b>Current Lot Size Configuration</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Active Mode</b>: {mode_badge}\n"
+            f"• <b>Mode</b>: {mode_desc}\n"
+            f"• <b>Manual Lot Size</b>: <code>{self.config.lot_size} lots</code>\n"
+            f"• <b>Auto Risk Sizing</b>: <code>{self.config.risk_pct}%</code> equity "
+            f"(${risk_dollars:,.2f} risk on ${self.config.equity:,.2f} equity)\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 <b>Sample Auto Sizing Estimates:</b>\n"
+            f"• <b>BTCUSD</b> ($1,000 SL dist): <code>{sample_btc_lot} lots</code>\n"
+            f"• <b>XAUTUSD</b> ($40 SL dist): <code>{sample_xau_lot} lots</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚙️ <b>Switch & Configure Options:</b>\n"
+            f"• <code>/lotsize auto</code> ➔ Enable dynamic auto sizing\n"
+            f"• <code>/lotsize auto 2%</code> ➔ Auto sizing with 2% risk\n"
+            f"• <code>/lotsize manual 0.05</code> ➔ Enable manual sizing with 0.05 lots\n"
+            f"• <code>/lotsize 0.05</code> ➔ Set fixed lot size to 0.05\n"
+            f"• <code>/lotsize 1.0</code> ➔ Set fixed lot size to 1.0\n"
+            f"• <code>/lotsize risk 2%</code> ➔ Set risk-based sizing to 2% equity"
+        )
 
     def set_tp_sl(
         self,
@@ -2893,15 +3010,12 @@ class AutoTrader:
                     continue
 
                 # Calculate lot size with dynamic conviction multiplier
-                mult = delib.conviction_multiplier if delib.conviction_multiplier > 0 else 1.0
-                if self.config.lot_mode == "fixed":
-                    lots = round(self.config.lot_size * mult, 4)
-                else:
-                    risk_dist = max(0.0001, abs(entry - stop))
-                    risk_usd = self.config.equity * (self.config.risk_pct / 100.0)
-                    lots = round((risk_usd / risk_dist) * mult, 4)
-                if lots <= 0:
-                    lots = self.config.lot_size
+                lots = self.calculate_lot_size(
+                    symbol=sym,
+                    entry_price=entry,
+                    stop_loss=stop,
+                    conviction_multiplier=delib.conviction_multiplier,
+                )
 
                 mode = self.config.trading_mode
                 order_id = None
@@ -2968,9 +3082,9 @@ class AutoTrader:
             "🟢 <b>ACTIVE (ON)</b>" if self.config.enabled else "🔴 <b>DISABLED (OFF)</b>"
         )
         lot_mode_str = (
-            "Fixed"
-            if self.config.lot_mode == "fixed"
-            else f"Risk {self.config.risk_pct}%"
+            "Manual Fixed"
+            if self.config.lot_mode in ("fixed", "manual")
+            else f"Auto Risk {self.config.risk_pct}%"
         )
         symbols_str = ", ".join(self.config.symbols) if self.config.symbols else self.config.symbol
         mode_icon = "📄 PAPER TRADING" if self.config.trading_mode == "paper" else "🚨 LIVE TRADING"
@@ -3292,17 +3406,12 @@ class AutoTrader:
             )
 
         if lot_size is None or lot_size <= 0:
-            if self.config.lot_mode == "fixed":
-                lot_size = self.config.lot_size
-            else:
-                risk_budget = self.config.equity * (self.config.risk_pct / 100.0)
-                price_risk = abs(entry_price - stop_loss)
-                if price_risk > 0:
-                    decimals = 3 if "BTC" in symbol_upper else 2
-                    min_val = 0.001 if "BTC" in symbol_upper else 0.01
-                    lot_size = max(min_val, round(risk_budget / price_risk, decimals))
-                else:
-                    lot_size = self.config.lot_size
+            lot_size = self.calculate_lot_size(
+                symbol=symbol_upper,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                conviction_multiplier=1.0,
+            )
 
         pos_id = f"TRADE_{symbol_upper[:3]}_{int(time.time())}_{len(self.positions) + 1}"
         new_pos = AutoTradePosition(

@@ -571,7 +571,7 @@ class ITBStrategy:
         risk_dist = abs(entry - stop)
         if risk_dist <= 0:
             return self.lot_size
-        if self.lot_mode == "fixed":
+        if self.lot_mode in ("fixed", "manual"):
             return self.lot_size
         budget = equity * (self.risk_pct / 100.0)
         is_btc = "BTC" in self.symbol
