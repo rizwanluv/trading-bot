@@ -1678,8 +1678,7 @@ def run_diagnostics() -> bool:
     print("\n[3] Checking Gemini API Key...")
     api_key = get_gemini_api_key()
     if api_key:
-        masked_k = api_key[:6] + "..." + api_key[-4:] if len(api_key) > 10 else "***"
-        print(f"    API Key       : {masked_k}")
+        print("    API Key       : [REDACTED]")
         print("    Status        : CONFIGURED")
     else:
         print("    Status        : MISSING (set GEMINI_API_KEY in environment or .env)")
