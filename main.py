@@ -717,6 +717,59 @@ async def price(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await reply_safely(update, get_price(symbol))
 
 
+
+async def scan_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Ultimate Master Scan combining Trend, Analyze, Levels, and Entry."""
+    args = ctx.args or []
+    symbol = args[0] if args else "BTCUSD"
+    trader = get_auto_trader()
+    
+    msg = await reply_safely(update, f"🔄 <b>Scanning {symbol.upper()}...</b>\nGathering Multi-Timeframe data, Confluence, and Smart Money levels...", parse_mode="HTML")
+    
+    try:
+        trend = trader.generate_mtf_trend_report(symbol)
+        analyze = trader.generate_trade_analysis(symbol)
+        levels = trader.generate_order_blocks(symbol)
+        entry = trader.generate_pinpoint_entry(symbol)
+        
+        # Combine them cleanly
+        combined = f"🌐 <b>ULTIMATE MASTER SCAN: {symbol.upper()}</b>\n\n"
+        combined += trend + "\n\n"
+        combined += analyze + "\n\n"
+        combined += levels + "\n\n"
+        combined += entry
+        
+        if len(combined) > 4000:
+            await msg.edit_text(trend + "\n\n" + analyze, parse_mode="HTML")
+            await reply_safely(update, levels + "\n\n" + entry, parse_mode="HTML")
+        else:
+            await msg.edit_text(combined, parse_mode="HTML")
+    except Exception as e:
+        await msg.edit_text(f"⚠️ Scan failed: {e}")
+
+async def market_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Combined Market Overview."""
+    trader = get_auto_trader()
+    symbols = ["BTCUSD", "ETHUSD", "SOLUSD", "XAUTUSD"]
+    msg = await reply_safely(update, "🔄 <b>Fetching Global Market Overview...</b>", parse_mode="HTML")
+    
+    lines = ["🌍 <b>GLOBAL MARKET OVERVIEW</b>", "━━━━━━━━━━━━━━━━━━━━━━"]
+    for sym in symbols:
+        try:
+            df = trader.fetch_candles(sym, count=120)
+            if df is not None and not df.empty:
+                current = df['close'].iloc[-1]
+                open_p = df['open'].iloc[0]
+                pct = ((current - open_p) / open_p) * 100
+                icon = "🟢" if pct >= 0 else "🔴"
+                lines.append(f"• <b>{sym.replace('USD','')}</b>: <code>${current:,.2f}</code> {icon} {pct:+.2f}%")
+        except:
+            pass
+            
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("<i>Use /scan [SYM] for deep analysis.</i>")
+    await msg.edit_text("\n".join(lines), parse_mode="HTML")
+
 async def btc_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Show live Bitcoin market ticker and stats card."""
     card = get_ticker_card("BTCUSD")
@@ -1633,6 +1686,7 @@ async def auto_trade_worker(app: Any) -> None:
 
 async def on_post_init(application: Any) -> None:
     asyncio.create_task(auto_trade_worker(application))
+    asyncio.create_task(start_health_server())
 
 
 async def on_post_shutdown(application: Any) -> None:
@@ -1640,10 +1694,6 @@ async def on_post_shutdown(application: Any) -> None:
     trader.is_running = False
 
 
-
-async def post_init(application: Application) -> None:
-    """Start the background health check server."""
-    asyncio.create_task(start_health_server())
 
 def main() -> None:
     load_dotenv()
@@ -1672,13 +1722,18 @@ def main() -> None:
 
     logger.info("Initializing Telegram bot application...")
     app = (
-        ApplicationBuilder().post_init(post_init)
+        ApplicationBuilder()
         .token(telegram_token)
         .post_init(on_post_init)
         .post_shutdown(on_post_shutdown)
         .build()
     )
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("scan", scan_command))
+    app.add_handler(CommandHandler("pro", scan_command))
+    app.add_handler(CommandHandler("market", market_command))
+    app.add_handler(CommandHandler("markets", market_command))
+
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CommandHandler("btc", btc_command))
