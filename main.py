@@ -791,6 +791,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "• /close [all|ID] — Close active positions instantly\n"
         "• /pnl — Performance dashboard & historical trades\n\n"
         "💼 <b>4. Funds & System Configuration</b>\n"
+        "• /chatid [on|off|list] (/myid, /id) — Check your Chat/User ID & manage alert subscriptions\n"
         "• /mode [paper|live] — Switch between simulated paper funds & real API execution\n"
         "• /capital — View and manage trading equity\n"
         "• /api set [binance|delta] [KEY] [SECRET] — Configure live exchange credentials\n"
@@ -831,7 +832,7 @@ async def autotrade_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> N
         )
         await reply_safely(update, reply, parse_mode="HTML")
     elif sub in ("off", "stop", "disable"):
-        msg = trader.disable()
+        msg = trader.disable(chat_id=chat_id)
         await reply_safely(update, f"🔴 <b>{msg}</b>", parse_mode="HTML")
     elif sub == "close":
         if len(args) > 1:
@@ -946,8 +947,9 @@ async def symbols_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def close_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Close an active trade by ID, symbol, or all open positions."""
     trader = get_auto_trader()
+    chat = getattr(update, "effective_chat", None)
+    chat_id = getattr(chat, "id", None) if chat else None
     args = ctx.args or []
 
     if not trader.positions:
@@ -955,7 +957,12 @@ async def close_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if not args:
-        if len(trader.positions) == 1:
+        user_positions = [p for p in trader.positions if p.chat_id == chat_id] if chat_id else []
+        if len(user_positions) == 1:
+            res = trader.close_current_position(reason="MANUAL", position_id=user_positions[0].id)
+            await reply_safely(update, res or "Closed.", parse_mode="HTML")
+            return
+        elif len(trader.positions) == 1:
             res = trader.close_current_position(reason="MANUAL")
             await reply_safely(update, res or "Closed.", parse_mode="HTML")
             return
@@ -965,7 +972,8 @@ async def close_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "Specify which position to close, or close all:\n",
         ]
         for p in trader.positions:
-            lines.append(f"• <code>/close {p.id}</code> — {p.direction} {p.symbol} @ {p.entry_price:.2f}")
+            owner_tag = " 👤 [Yours]" if chat_id and p.chat_id == chat_id else ""
+            lines.append(f"• <code>/close {p.id}</code> — {p.direction} {p.symbol} @ {p.entry_price:.2f}{owner_tag}")
         lines.append("\n• <code>/close all</code> — Close all open positions at market")
         lines.append("• <code>/close btc</code> — Close Bitcoin positions")
         lines.append("• <code>/close gold</code> — Close Gold positions")
@@ -974,7 +982,9 @@ async def close_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     target = args[0].strip()
     if target.lower() == "all":
-        closed_msgs = trader.close_all_positions(reason="MANUAL")
+        user_positions = [p for p in trader.positions if p.chat_id == chat_id] if chat_id else []
+        cid_filter = chat_id if user_positions else None
+        closed_msgs = trader.close_all_positions(reason="MANUAL", chat_id=cid_filter)
         if closed_msgs:
             msg = f"🔄 <b>Closed {len(closed_msgs)} Position(s):</b>\n\n" + "\n\n".join(closed_msgs)
             await reply_safely(update, msg, parse_mode="HTML")
@@ -985,7 +995,9 @@ async def close_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     sym_normalized = trader.normalize_symbol(target)
     matched_sym = [p for p in trader.positions if p.symbol == sym_normalized]
     if matched_sym:
-        closed_msgs = trader.close_positions_by_symbol(sym_normalized, reason="MANUAL")
+        user_sym_positions = [p for p in matched_sym if p.chat_id == chat_id] if chat_id else []
+        cid_filter = chat_id if user_sym_positions else None
+        closed_msgs = trader.close_positions_by_symbol(sym_normalized, reason="MANUAL", chat_id=cid_filter)
         msg = f"🔄 <b>Closed {len(closed_msgs)} position(s) for {sym_normalized}:</b>\n\n" + "\n\n".join(closed_msgs)
         await reply_safely(update, msg, parse_mode="HTML")
         return
@@ -1356,10 +1368,147 @@ async def analyze_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     await reply_safely(update, report, parse_mode="HTML")
 
 
+async def chatid_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Check unique Chat ID & User ID and manage separate user alert subscriptions."""
+    trader = get_auto_trader()
+    chat = getattr(update, "effective_chat", None)
+    user = getattr(update, "effective_user", None)
+    chat_id = getattr(chat, "id", 0) if chat else 0
+    user_id = getattr(user, "id", 0) if user else 0
+    raw_type = getattr(chat, "type", "Private") if chat else "Private"
+    chat_type = raw_type.capitalize() if raw_type else "Private"
+    chat_title = getattr(chat, "title", None) or (getattr(user, "full_name", "Unknown") if user else "Unknown")
+    uname = getattr(user, "username", None) if user else None
+    username_str = f"@{uname}" if uname else "None"
+    args = [a.strip() for a in (ctx.args or [])]
+
+    if args:
+        sub = args[0].lower()
+        if sub in ("on", "sub", "subscribe", "start", "enable"):
+            trader.config.add_notify_chat_id(chat_id)
+            trader.config.save()
+            tot = len(trader.config.get_notify_chat_ids())
+            reply = (
+                f"✅ <b>CHAT SUBSCRIBED TO BOT ALERTS</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Chat ID</b>: <code>{chat_id}</code>\n"
+                f"• <b>Chat Type</b>: <b>{chat_type}</b> ({chat_title})\n"
+                f"• <b>Status</b>: 🟢 <b>SUBSCRIBED & ACTIVE</b>\n"
+                f"• <b>Total Fleet Subscribers</b>: <code>{tot} chat{'s' if tot != 1 else ''}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"This chat will now receive all auto-trade executions, signals, and TP/SL alerts.\n"
+                f"Use <code>/chatid off</code> to unsubscribe anytime."
+            )
+            await reply_safely(update, reply, parse_mode="HTML")
+            return
+        elif sub in ("off", "unsub", "unsubscribe", "stop", "disable"):
+            removed = trader.config.remove_notify_chat_id(chat_id)
+            trader.config.save()
+            tot = len(trader.config.get_notify_chat_ids())
+            status_txt = "⚪ <b>UNSUBSCRIBED</b>" if removed else "⚪ <b>ALREADY NOT SUBSCRIBED</b>"
+            reply = (
+                f"🔕 <b>CHAT NOTIFICATIONS DISABLED</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Chat ID</b>: <code>{chat_id}</code>\n"
+                f"• <b>Status</b>: {status_txt}\n"
+                f"• <b>Remaining Subscribers</b>: <code>{tot} chat{'s' if tot != 1 else ''}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"This chat will no longer receive broadcast alerts. You can still run manual commands and queries."
+            )
+            await reply_safely(update, reply, parse_mode="HTML")
+            return
+        elif sub in ("list", "all", "fleet"):
+            subs = trader.config.get_notify_chat_ids()
+            lines = [
+                f"📋 <b>REGISTERED SUBSCRIBER CHAT FLEET ({len(subs)})</b>",
+                "━━━━━━━━━━━━━━━━━━━━━━",
+            ]
+            if not subs:
+                lines.append("<i>No active subscriber chats currently registered.</i>")
+            else:
+                for idx, cid in enumerate(subs, start=1):
+                    is_current = " 👤 <b>[Current Chat]</b>" if cid == chat_id else ""
+                    lines.append(f"{idx}. <code>{cid}</code>{is_current}")
+            lines.extend(
+                [
+                    "━━━━━━━━━━━━━━━━━━━━━━",
+                    "<i>💡 Add chats: <code>/chatid add &lt;id&gt;</code> | Remove: <code>/chatid rm &lt;id&gt;</code></i>",
+                ]
+            )
+            await reply_safely(update, "\n".join(lines), parse_mode="HTML")
+            return
+        elif sub in ("add", "register") and len(args) > 1:
+            try:
+                target_id = int(args[1])
+                trader.config.add_notify_chat_id(target_id)
+                trader.config.save()
+                tot = len(trader.config.get_notify_chat_ids())
+                await reply_safely(
+                    update,
+                    f"✅ <b>Added Chat ID</b>: <code>{target_id}</code>\n"
+                    f"Total active subscribers: <code>{tot}</code>.",
+                    parse_mode="HTML",
+                )
+            except ValueError:
+                await reply_safely(update, "❌ Invalid Chat ID. Please specify a numeric ID, e.g. <code>/chatid add 123456789</code>", parse_mode="HTML")
+            return
+        elif sub in ("rm", "remove", "del", "delete") and len(args) > 1:
+            try:
+                target_id = int(args[1])
+                ok = trader.config.remove_notify_chat_id(target_id)
+                trader.config.save()
+                tot = len(trader.config.get_notify_chat_ids())
+                if ok:
+                    await reply_safely(
+                        update,
+                        f"⚪ <b>Removed Chat ID</b>: <code>{target_id}</code>\n"
+                        f"Remaining subscribers: <code>{tot}</code>.",
+                        parse_mode="HTML",
+                    )
+                else:
+                    await reply_safely(update, f"⚠️ Chat ID <code>{target_id}</code> was not in the subscriber list.", parse_mode="HTML")
+            except ValueError:
+                await reply_safely(update, "❌ Invalid Chat ID. Please specify a numeric ID.", parse_mode="HTML")
+            return
+
+    # Default overview card
+    all_subscribers = trader.config.get_notify_chat_ids()
+    is_subscribed = chat_id in all_subscribers
+    sub_badge = "🟢 SUBSCRIBED (Active Alerts)" if is_subscribed else "⚪ NOT SUBSCRIBED (Queries Only)"
+
+    your_positions = [p for p in trader.positions if p.chat_id == chat_id]
+    pos_summary = f"<code>{len(your_positions)}</code> active position{'s' if len(your_positions) != 1 else ''}"
+
+    reply = (
+        "🆔 <b>TELEGRAM CHAT & USER ID CARD</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Chat ID</b>: <code>{chat_id}</code>\n"
+        f"• <b>Chat Type</b>: <b>{chat_type}</b>\n"
+        f"• <b>Chat Name</b>: <b>{chat_title}</b>\n"
+        f"• <b>User ID</b>: <code>{user_id}</code>\n"
+        f"• <b>Username</b>: <b>{username_str}</b>\n"
+        f"• <b>Subscription</b>: {sub_badge}\n"
+        f"• <b>Chat Positions</b>: {pos_summary}\n"
+        f"• <b>Fleet Subscribers</b>: <code>{len(all_subscribers)}</code> chat(s) receiving alerts\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "<b>Multi-User Controls:</b>\n"
+        "• <code>/chatid on</code> — Subscribe this chat to auto-trading & signal alerts\n"
+        "• <code>/chatid off</code> — Unsubscribe this chat from alerts\n"
+        "• <code>/chatid list</code> — View all registered subscriber chats\n"
+        "• <code>/chatid add &lt;id&gt;</code> — Register external user/channel ID\n"
+        "• <code>/chatid rm &lt;id&gt;</code> — Unregister external chat ID\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>💡 Separate users and groups can use the bot concurrently without interfering with each other.</i>"
+    )
+    await reply_safely(update, reply, parse_mode="HTML")
+
+
 async def position_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Show active position dashboard or idle status."""
     trader = get_auto_trader()
-    text = trader.get_position_text()
+    chat = getattr(update, "effective_chat", None)
+    chat_id = getattr(chat, "id", None) if chat else None
+    text = trader.get_position_text(chat_id=chat_id)
     await reply_safely(update, text, parse_mode="HTML")
 
 
@@ -1994,7 +2143,8 @@ async def entry_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def execute_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Execute a pinpoint trade plan immediately (at market, limit, or breakout)."""
     trader = get_auto_trader()
-    chat_id = update.effective_chat.id if update.effective_chat else 0
+    chat = getattr(update, "effective_chat", None)
+    chat_id = getattr(chat, "id", 0) if chat else 0
     args = ctx.args or []
 
     cmd_name = ""
@@ -2037,9 +2187,18 @@ async def execute_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             latest_trade_plans[chat_id] = plan
     elif not plan or (target_sym and plan.symbol != target_sym):
         plan = generate_pinpoint_plan(exec_sym, trader=trader)
-        latest_trade_plans[chat_id] = plan
-
-    ok, msg = execute_pinpoint_plan(plan, lot_override=lot_override, entry_mode=entry_mode, trader=trader)
+    user = getattr(update, "effective_user", None)
+    user_id = getattr(user, "id", None) if user else None
+    username = getattr(user, "username", None) if user else None
+    ok, msg = execute_pinpoint_plan(
+        plan,
+        lot_override=lot_override,
+        entry_mode=entry_mode,
+        trader=trader,
+        chat_id=chat_id,
+        user_id=user_id,
+        username=username,
+    )
     await reply_safely(update, msg, parse_mode="HTML")
 
 
@@ -2425,6 +2584,16 @@ def run_diagnostics() -> bool:
     print(f"    API Key       : {ex_status['api_key']}")
     print(f"    Status        : {ex_status['status']}")
 
+    # 6. Telegram Multi-User Notification Fleet Check
+    print("\n[6] Checking Telegram Multi-User Notification Fleet...")
+    chat_ids = trader.config.get_notify_chat_ids()
+    if chat_ids:
+        print(f"    Subscriber Chats : {len(chat_ids)} registered [REDACTED]")
+        print("    Status           : ACTIVE (Multi-User Broadcast Enabled)")
+    else:
+        print("    Subscriber Chats : NONE (Will auto-register when users start /autotrade on or /chatid on)")
+        print("    Status           : AWAITING USER SUBSCRIPTIONS")
+
     print("=" * 60)
     all_ready = bool(token and api_key and (delta_ok or binance_ok))
     print(f" OVERALL STATUS   : {'READY TO RUN' if all_ready else 'CONFIGURATION PENDING'}")
@@ -2441,21 +2610,24 @@ async def auto_trade_worker(app: Any) -> None:
         while trader.is_running:
             try:
                 notifications = trader.step()
-                if notifications and trader.config.notify_chat_id:
-                    for note in notifications:
-                        if not trader.is_running:
-                            break
-                        try:
-                            # Verify app is still active before attempting to send message
-                            if hasattr(app, "updater") and app.updater and not app.updater.running:
+                if notifications:
+                    chat_ids = trader.config.get_notify_chat_ids()
+                    if chat_ids:
+                        for note in notifications:
+                            if not trader.is_running:
                                 break
-                            await app.bot.send_message(
-                                chat_id=trader.config.notify_chat_id,
-                                text=note,
-                                parse_mode="HTML",
-                            )
-                        except Exception as note_err:
-                            logger.warning("Failed to send auto-trade notification: %s", note_err)
+                            for cid in chat_ids:
+                                try:
+                                    # Verify app is still active before attempting to send message
+                                    if hasattr(app, "updater") and app.updater and not app.updater.running:
+                                        break
+                                    await app.bot.send_message(
+                                        chat_id=cid,
+                                        text=note,
+                                        parse_mode="HTML",
+                                    )
+                                except Exception as note_err:
+                                    logger.warning("Failed to send auto-trade notification to chat %s: %s", cid, note_err)
             except Exception as step_err:
                 logger.warning("Error in auto-trade step: %s", step_err)
 
@@ -2597,6 +2769,9 @@ def main() -> None:
     app.add_handler(CommandHandler("api", api_command))
     app.add_handler(CommandHandler("alert", alert_command))
     app.add_handler(CommandHandler("alerts", alert_command))
+    app.add_handler(CommandHandler("chatid", chatid_command))
+    app.add_handler(CommandHandler("myid", chatid_command))
+    app.add_handler(CommandHandler("id", chatid_command))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
