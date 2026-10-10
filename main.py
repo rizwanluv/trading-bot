@@ -2408,8 +2408,7 @@ def run_diagnostics() -> bool:
     api_key = get_gemini_api_key()
     active_models = get_active_gemini_models()
     if api_key:
-        masked_k = api_key[:6] + "..." + api_key[-4:] if len(api_key) > 10 else "***"
-        print(f"    API Key       : {masked_k}")
+        print("    API Key       : [REDACTED]")
         print("    Status        : CONFIGURED")
         print(f"    Active Models : {', '.join(active_models)} (Concurrent Active)")
         print("    Ensemble Mode : ALL GOOGLE MODELS COMBINED & ACTIVE AT THE SAME TIME ⚡")
