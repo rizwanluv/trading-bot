@@ -33,14 +33,17 @@
   "binance_api_secret": "",
   "binance_market": "auto",
   "notify_chat_id": 777,
+  "notify_chat_ids": [
+    777
+  ],
   "alerts_file": "/workspace/bright-darwin/trade_alerts.json",
   "weight_itb": 0.35,
   "weight_pro": 0.35,
   "weight_ai": 0.3,
   "auto_learn_enabled": true,
   "auto_retrain_interval_seconds": 300,
-  "last_retrain_time": "",
-  "learning_cycles": 0,
+  "last_retrain_time": "2026-10-10 09:28:25 UTC",
+  "learning_cycles": 1,
   "auto_breakeven": true,
   "risk_factor": 1.0,
   "engine_stats": {

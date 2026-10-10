@@ -2,6 +2,8 @@
 Unit tests for main.py trading bot.
 """
 import os
+import shutil
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch, AsyncMock
 from types import SimpleNamespace
@@ -3241,6 +3243,219 @@ class TestBinanceDualMarketAndExchangeManagement(unittest.TestCase):
             card = main.get_binance_ticker_card("BTCUSDT")
             self.assertIn("Binance USD-M Futures REST API", card)
             self.assertIn("$82,500.00", card)
+
+
+class TestMultiUserChatId(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        self.cfg_file = os.path.join(self.tmp_dir, "cfg.json")
+        self.pos_file = os.path.join(self.tmp_dir, "pos.json")
+        self.hist_file = os.path.join(self.tmp_dir, "hist.json")
+        self.alerts_file = os.path.join(self.tmp_dir, "alerts.json")
+
+        self.cfg = auto_trade.AutoTradeConfig(
+            config_file=self.cfg_file,
+            open_positions_file=self.pos_file,
+            trades_history_file=self.hist_file,
+            alerts_file=self.alerts_file,
+            notify_chat_ids=[12345],
+        )
+        self.trader = auto_trade.AutoTrader(config=self.cfg)
+        self.orig_trader = auto_trade._GLOBAL_AUTO_TRADER
+        auto_trade._GLOBAL_AUTO_TRADER = self.trader
+
+    def tearDown(self):
+        auto_trade._GLOBAL_AUTO_TRADER = self.orig_trader
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_autotrade_config_multi_user_chat_ids(self):
+        cfg = auto_trade.AutoTradeConfig(
+            config_file=self.cfg_file,
+            notify_chat_id=111,
+            notify_chat_ids=[222, 333],
+        )
+        # Should unify notify_chat_id and notify_chat_ids
+        cids = cfg.get_notify_chat_ids()
+        self.assertIn(111, cids)
+        self.assertIn(222, cids)
+        self.assertIn(333, cids)
+
+        # Add duplicate should not duplicate
+        self.assertTrue(cfg.add_notify_chat_id(222))
+        self.assertEqual(cfg.get_notify_chat_ids().count(222), 1)
+
+        # Add new id
+        self.assertTrue(cfg.add_notify_chat_id(444))
+        self.assertIn(444, cfg.get_notify_chat_ids())
+
+        # Remove an id
+        self.assertTrue(cfg.remove_notify_chat_id(222))
+        self.assertNotIn(222, cfg.get_notify_chat_ids())
+
+        # Serialization to dict
+        d = cfg.to_dict()
+        self.assertIn("notify_chat_ids", d)
+        self.assertIn(444, d["notify_chat_ids"])
+
+    def test_autotrade_enable_disable_multi_user(self):
+        self.trader.config.notify_chat_ids = []
+        msg1 = self.trader.enable(chat_id=101)
+        self.assertTrue(self.trader.config.enabled)
+        self.assertIn(101, self.trader.config.get_notify_chat_ids())
+        self.assertIn("Subscribers: 1", msg1)
+
+        msg2 = self.trader.enable(chat_id=202)
+        self.assertIn(202, self.trader.config.get_notify_chat_ids())
+        self.assertIn("Subscribers: 2", msg2)
+
+        # Disabling from chat 101 only unsubscribes chat 101 since 202 is still active
+        msg3 = self.trader.disable(chat_id=101)
+        self.assertTrue(self.trader.config.enabled)
+        self.assertNotIn(101, self.trader.config.get_notify_chat_ids())
+        self.assertIn(202, self.trader.config.get_notify_chat_ids())
+        self.assertIn("1 subscriber chat remaining", msg3)
+
+        # Disabling from chat 202 disables auto-trade completely
+        msg4 = self.trader.disable(chat_id=202)
+        self.assertFalse(self.trader.config.enabled)
+        self.assertIn("DISABLED (OFF)", msg4)
+
+    async def test_chatid_command_default_card(self):
+        mock_update = MagicMock()
+        mock_update.effective_chat = MagicMock(id=55555, type="supergroup", title="Alpha Crypto Group")
+        mock_update.effective_user = MagicMock(id=88888, username="trader_bob", full_name="Bob Trader")
+        mock_update.message = MagicMock()
+        mock_update.message.reply_text = AsyncMock()
+        mock_ctx = MagicMock(args=[])
+
+        await main.chatid_command(mock_update, mock_ctx)
+        call_args = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("55555", call_args)
+        self.assertIn("88888", call_args)
+        self.assertIn("@trader_bob", call_args)
+        self.assertIn("Supergroup", call_args)
+
+    async def test_chatid_command_subcommands(self):
+        mock_update = MagicMock()
+        mock_update.effective_chat = MagicMock(id=77777, type="private", title=None)
+        mock_update.effective_user = MagicMock(id=77777, username="sol_master", full_name="Sol Master")
+        mock_update.message = MagicMock()
+        mock_update.message.reply_text = AsyncMock()
+
+        # 1. Subscribe
+        mock_ctx = MagicMock(args=["on"])
+        await main.chatid_command(mock_update, mock_ctx)
+        self.assertIn(77777, self.trader.config.get_notify_chat_ids())
+        reply1 = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("CHAT SUBSCRIBED", reply1)
+
+        # 2. List
+        mock_ctx = MagicMock(args=["list"])
+        await main.chatid_command(mock_update, mock_ctx)
+        reply2 = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("77777", reply2)
+        self.assertIn("Current Chat", reply2)
+
+        # 3. Add custom ID
+        mock_ctx = MagicMock(args=["add", "99999"])
+        await main.chatid_command(mock_update, mock_ctx)
+        self.assertIn(99999, self.trader.config.get_notify_chat_ids())
+
+        # 4. Remove custom ID
+        mock_ctx = MagicMock(args=["rm", "99999"])
+        await main.chatid_command(mock_update, mock_ctx)
+        self.assertNotIn(99999, self.trader.config.get_notify_chat_ids())
+
+        # 5. Unsubscribe
+        mock_ctx = MagicMock(args=["off"])
+        await main.chatid_command(mock_update, mock_ctx)
+        self.assertNotIn(77777, self.trader.config.get_notify_chat_ids())
+
+    def test_position_tracking_with_user_attribution(self):
+        ok, msg, pos = self.trader.open_position_manually(
+            symbol="BTCUSD",
+            direction="LONG",
+            entry_price=82000.0,
+            stop_loss=81000.0,
+            take_profit_1=84000.0,
+            lot_size=0.1,
+            chat_id=11111,
+            user_id=22222,
+            username="crypto_whale",
+        )
+        self.assertTrue(ok)
+        self.assertIsNotNone(pos)
+        self.assertEqual(pos.chat_id, 11111)
+        self.assertEqual(pos.user_id, 22222)
+        self.assertEqual(pos.username, "crypto_whale")
+
+        # Check position text with matching chat_id
+        pos_txt_matching = self.trader.get_position_text(chat_id=11111)
+        self.assertIn("@crypto_whale", pos_txt_matching)
+        self.assertIn("[Yours]", pos_txt_matching)
+        self.assertIn("Yours: 1", pos_txt_matching)
+
+        # Check position text with non-matching chat_id
+        pos_txt_other = self.trader.get_position_text(chat_id=99999)
+        self.assertIn("@crypto_whale", pos_txt_other)
+        self.assertNotIn("[Yours]", pos_txt_other)
+
+    async def test_close_command_multi_user_filtering(self):
+        # Open position for user 1
+        self.trader.open_position_manually(
+            symbol="BTCUSD",
+            direction="LONG",
+            entry_price=82000.0,
+            stop_loss=81000.0,
+            take_profit_1=84000.0,
+            chat_id=111,
+            username="user_one",
+        )
+        # Open position for user 2
+        self.trader.open_position_manually(
+            symbol="XAUTUSD",
+            direction="LONG",
+            entry_price=4100.0,
+            stop_loss=4050.0,
+            take_profit_1=4200.0,
+            chat_id=222,
+            username="user_two",
+        )
+        self.assertEqual(len(self.trader.positions), 2)
+
+        # User 1 calls /close all -> only User 1's position is closed
+        mock_update = MagicMock()
+        mock_update.effective_chat = MagicMock(id=111)
+        mock_update.message = MagicMock()
+        mock_update.message.reply_text = AsyncMock()
+        mock_ctx = MagicMock(args=["all"])
+
+        await main.close_command(mock_update, mock_ctx)
+        self.assertEqual(len(self.trader.positions), 1)
+        self.assertEqual(self.trader.positions[0].chat_id, 222)
+
+    async def test_auto_trade_worker_broadcasts_to_all_chats(self):
+        self.trader.config.notify_chat_ids = [101, 202]
+        self.trader.config.poll_seconds = 0.01
+
+        step_calls = [0]
+        def mock_step():
+            step_calls[0] += 1
+            if step_calls[0] == 1:
+                return ["🚀 Multi-User Signal: BTC Breakout!"]
+            self.trader.is_running = False
+            return []
+
+        self.trader.step = mock_step
+        mock_app = MagicMock()
+        mock_app.bot.send_message = AsyncMock()
+
+        await main.auto_trade_worker(mock_app)
+
+        # Verify send_message was called for both subscriber chat IDs
+        called_chat_ids = [call.kwargs.get("chat_id") for call in mock_app.bot.send_message.call_args_list]
+        self.assertIn(101, called_chat_ids)
+        self.assertIn(202, called_chat_ids)
 
 
 def tearDownModule():
