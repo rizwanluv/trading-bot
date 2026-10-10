@@ -53,12 +53,13 @@ from auto_trade import (
 )
 
 try:
-    from health_server import start_health_server
+    from health_server import start_health_server, stop_health_server
 except ImportError:
     try:
-        from .health_server import start_health_server  # type: ignore
+        from .health_server import start_health_server, stop_health_server  # type: ignore
     except Exception:
         start_health_server = None
+        stop_health_server = None
 
 # Optional import for google-genai SDK (Python >= 3.9/3.10)
 try:
@@ -2468,18 +2469,32 @@ async def auto_trade_worker(app: Any) -> None:
         logger.info("Auto-trade background worker stopped.")
 
 
+_bg_tasks = set()
+_health_runner = None
+
 async def on_post_init(application: Any) -> None:
-    asyncio.create_task(auto_trade_worker(application))
+    global _health_runner
+    task1 = asyncio.create_task(auto_trade_worker(application))
+    _bg_tasks.add(task1)
+    task1.add_done_callback(_bg_tasks.discard)
+    
     if start_health_server is not None:
         try:
-            asyncio.create_task(start_health_server())
+            _health_runner = await start_health_server()
         except Exception as exc:
-            logger.warning("Could not schedule health server: %s", exc)
+            logger.warning("Could not start health server: %s", exc)
 
 
 async def on_post_shutdown(application: Any) -> None:
+    global _health_runner
     trader = get_auto_trader()
     trader.is_running = False
+    
+    if stop_health_server is not None and _health_runner is not None:
+        try:
+            await stop_health_server(_health_runner)
+        except Exception as exc:
+            logger.warning("Error stopping health server: %s", exc)
 
 
 
