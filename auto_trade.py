@@ -143,7 +143,6 @@ class AutoTradeConfig:
     binance_api_secret: str = ""
     binance_market: str = "auto"  # "auto", "spot", "futures"
     notify_chat_id: Optional[int] = None
-    notify_chat_ids: List[int] = field(default_factory=list)
     config_file: str = CONFIG_FILE_PATH
     trades_history_file: str = TRADES_HISTORY_PATH
     open_positions_file: str = OPEN_POSITIONS_PATH
@@ -188,76 +187,6 @@ class AutoTradeConfig:
         elif self.symbol not in self.symbols:
             self.symbols.insert(0, self.symbol)
 
-        # Synchronize multi-user chat IDs with environment & single chat_id
-        env_chat = os.getenv("TELEGRAM_CHAT_ID") or os.getenv("CHAT_ID")
-        if env_chat:
-            try:
-                env_cid = int(str(env_chat).strip())
-                if env_cid not in self.notify_chat_ids:
-                    self.notify_chat_ids.append(env_cid)
-                if self.notify_chat_id is None:
-                    self.notify_chat_id = env_cid
-            except ValueError:
-                pass
-        if self.notify_chat_id and self.notify_chat_id not in self.notify_chat_ids:
-            self.notify_chat_ids.append(self.notify_chat_id)
-        elif not self.notify_chat_id and self.notify_chat_ids:
-            self.notify_chat_id = self.notify_chat_ids[0]
-
-    def get_notify_chat_ids(self) -> List[int]:
-        """Return unique list of all active subscriber chat IDs."""
-        ids: List[int] = []
-        for cid in self.notify_chat_ids:
-            try:
-                val = int(cid)
-                if val != 0 and val not in ids:
-                    ids.append(val)
-            except (ValueError, TypeError):
-                pass
-        if self.notify_chat_id:
-            try:
-                val = int(self.notify_chat_id)
-                if val != 0 and val not in ids:
-                    ids.append(val)
-            except (ValueError, TypeError):
-                pass
-        return ids
-
-    def add_notify_chat_id(self, chat_id: int) -> bool:
-        """Register a new user or group chat ID for bot alerts."""
-        try:
-            cid = int(chat_id)
-            if cid == 0:
-                return False
-            if cid not in self.notify_chat_ids:
-                self.notify_chat_ids.append(cid)
-            self.notify_chat_id = cid
-            return True
-        except (ValueError, TypeError):
-            return False
-
-    def remove_notify_chat_id(self, chat_id: int) -> bool:
-        """Unregister a user or group chat ID from bot alerts."""
-        try:
-            cid = int(chat_id)
-            removed = False
-            while cid in self.notify_chat_ids:
-                self.notify_chat_ids.remove(cid)
-                removed = True
-            if self.notify_chat_id == cid:
-                self.notify_chat_id = None
-                for rem in self.notify_chat_ids:
-                    try:
-                        val = int(rem)
-                        if val != 0:
-                            self.notify_chat_id = val
-                            break
-                    except (ValueError, TypeError):
-                        pass
-            return removed
-        except (ValueError, TypeError):
-            return False
-
     def to_dict(self) -> Dict[str, Any]:
         return {
             "enabled": self.enabled,
@@ -291,7 +220,6 @@ class AutoTradeConfig:
             "binance_api_secret": self.binance_api_secret,
             "binance_market": self.binance_market,
             "notify_chat_id": self.notify_chat_id,
-            "notify_chat_ids": self.get_notify_chat_ids(),
             "alerts_file": self.alerts_file,
             "weight_itb": self.weight_itb,
             "weight_pro": self.weight_pro,
@@ -368,9 +296,6 @@ class AutoTradePosition:
     conviction_mult: float = 1.0
     quality_score: float = 3.5
     mtf_alignment: int = 1
-    chat_id: Optional[int] = None
-    user_id: Optional[int] = None
-    username: Optional[str] = None
 
     def current_pnl(self, current_price: float) -> float:
         if self.direction == "LONG":
@@ -1415,22 +1340,12 @@ class AutoTrader:
     def enable(self, chat_id: Optional[int] = None) -> str:
         self.config.enabled = True
         if chat_id is not None:
-            self.config.add_notify_chat_id(chat_id)
+            self.config.notify_chat_id = chat_id
         self.config.save()
-        total_subscribers = len(self.config.get_notify_chat_ids())
-        sub_info = f" (Subscribers: {total_subscribers} chat{'s' if total_subscribers != 1 else ''})" if total_subscribers else ""
-        return f"Auto Trade is now ENABLED (ON){sub_info}. Monitoring market for strategy signals."
+        return "Auto Trade is now ENABLED (ON). Monitoring market for strategy signals."
 
-    def disable(self, chat_id: Optional[int] = None) -> str:
-        if chat_id is not None and len(self.config.get_notify_chat_ids()) > 1:
-            self.config.remove_notify_chat_id(chat_id)
-            self.config.save()
-            rem = len(self.config.get_notify_chat_ids())
-            return f"Auto Trade alerts unsubscribed for your chat ({rem} subscriber chat{'s' if rem != 1 else ''} remaining)."
-
+    def disable(self) -> str:
         self.config.enabled = False
-        if chat_id is not None:
-            self.config.remove_notify_chat_id(chat_id)
         self.config.save()
         return "Auto Trade is now DISABLED (OFF). No new automatic trades will be executed."
 
@@ -1445,7 +1360,7 @@ class AutoTrader:
         if new_state:
             msg = self.enable(chat_id)
         else:
-            msg = self.disable(chat_id)
+            msg = self.disable()
         return new_state, msg
 
     def set_lot_size(self, size: float, mode: str = "fixed") -> Tuple[bool, str]:
@@ -3199,14 +3114,6 @@ class AutoTrader:
                 logger.warning("Could not submit live exit order for %s: %s", pos.id, e)
 
         sign = "+" if pnl >= 0 else ""
-        owner_info = ""
-        if pos.username:
-            owner_info = f"\n• User: @{pos.username}"
-        elif pos.user_id:
-            owner_info = f"\n• User ID: <code>{pos.user_id}</code>"
-        elif pos.chat_id:
-            owner_info = f"\n• Chat ID: <code>{pos.chat_id}</code>"
-
         return (
             f"🔄 Position Closed ({reason})\n"
             f"• ID: <code>{pos.id}</code>\n"
@@ -3215,7 +3122,7 @@ class AutoTrader:
             f"• Entry: {pos.entry_price:.2f} | Exit: {price:.2f}\n"
             f"• Lot Size: {pos.lot_size}\n"
             f"• Realized PnL: {sign}${pnl:.2f}\n"
-            f"• New Account Equity: ${self.config.equity:.2f}{owner_info}{live_note}"
+            f"• New Account Equity: ${self.config.equity:.2f}{live_note}"
         )
 
     def close_current_position(
@@ -3223,7 +3130,6 @@ class AutoTrader:
         current_price: Optional[float] = None,
         reason: str = "MANUAL",
         position_id: Optional[str] = None,
-        chat_id: Optional[int] = None,
     ) -> Optional[str]:
         if not self.positions:
             return None
@@ -3236,13 +3142,6 @@ class AutoTrader:
                     break
             if not target_pos:
                 return None
-        elif chat_id is not None:
-            for p in self.positions:
-                if p.chat_id == chat_id:
-                    target_pos = p
-                    break
-            if not target_pos:
-                target_pos = self.positions[0]
         else:
             target_pos = self.positions[0]
 
@@ -3257,32 +3156,21 @@ class AutoTrader:
         return None
 
     def close_positions_by_symbol(
-        self,
-        symbol: str,
-        current_price: Optional[float] = None,
-        reason: str = "MANUAL",
-        chat_id: Optional[int] = None,
+        self, symbol: str, current_price: Optional[float] = None, reason: str = "MANUAL"
     ) -> List[str]:
         sym_norm = self.normalize_symbol(symbol)
         closed_msgs: List[str] = []
         for pos in list(self.positions):
-            if chat_id is not None and pos.chat_id is not None and pos.chat_id != chat_id:
-                continue
             if pos.symbol.upper() == sym_norm:
                 msg = self._close_single_position(pos, current_price=current_price, reason=reason)
                 closed_msgs.append(msg)
         return closed_msgs
 
     def close_all_positions(
-        self,
-        current_prices: Optional[Dict[str, float]] = None,
-        reason: str = "MANUAL",
-        chat_id: Optional[int] = None,
+        self, current_prices: Optional[Dict[str, float]] = None, reason: str = "MANUAL"
     ) -> List[str]:
         closed_msgs: List[str] = []
         for pos in list(self.positions):
-            if chat_id is not None and pos.chat_id is not None and pos.chat_id != chat_id:
-                continue
             cp = current_prices.get(pos.symbol) if current_prices else None
             msg = self._close_single_position(pos, current_price=cp, reason=reason)
             closed_msgs.append(msg)
@@ -3673,7 +3561,6 @@ class AutoTrader:
             f"• <b>Trailing Stop</b>: {'🟢 ON' if self.config.trailing_sl else '⚪ OFF'}",
             f"• <b>Daily Risk Guard</b>: {self.config.max_daily_loss_pct}% equity",
             f"• <b>Capital / Equity</b>: <code>${self.config.equity:,.2f}</code>",
-            f"• <b>Subscriber Chats</b>: <code>{len(self.config.get_notify_chat_ids())}</code>",
             "━━━━━━━━━━━━━━━━━━━━━━",
         ]
 
@@ -3685,10 +3572,9 @@ class AutoTrader:
                 pnl = pos.current_pnl(cp)
                 sign = "+" if pnl >= 0 else ""
                 emoji = "🟢" if pnl >= 0 else "🔴"
-                user_tag = f" | @{pos.username}" if pos.username else (f" | Chat:{pos.chat_id}" if pos.chat_id else "")
                 text.extend(
                     [
-                        f"  • <b>[{pos.id}]</b> {pos.direction} {pos.symbol} @ {pos.entry_price:.2f}{user_tag}",
+                        f"  • <b>[{pos.id}]</b> {pos.direction} {pos.symbol} @ {pos.entry_price:.2f}",
                         f"    Lot: {pos.lot_size} | TP: {pos.take_profit_1:.2f} | SL: {pos.stop_loss:.2f}",
                         f"    PnL: {emoji} {sign}${pnl:.2f} | Time: {pos.entry_time}",
                     ]
@@ -3714,7 +3600,7 @@ class AutoTrader:
 
         return "\n".join(text)
 
-    def get_position_text(self, chat_id: Optional[int] = None) -> str:
+    def get_position_text(self) -> str:
         """Return formatted dashboard text of all open positions or idle status."""
         if not self.positions:
             symbols_str = ", ".join(self.config.symbols) if self.config.symbols else self.config.symbol
@@ -3731,14 +3617,8 @@ class AutoTrader:
             )
 
         total_unrealized = 0.0
-        your_count = sum(1 for p in self.positions if p.chat_id == chat_id) if chat_id is not None else 0
-        hdr_count = (
-            f"{len(self.positions)}/{self.config.max_positions} | Yours: {your_count}"
-            if chat_id is not None and your_count > 0
-            else f"{len(self.positions)}/{self.config.max_positions}"
-        )
         lines = [
-            f"💼 <b>Active Positions ({hdr_count})</b>",
+            f"💼 <b>Active Positions ({len(self.positions)}/{self.config.max_positions})</b>",
             "━━━━━━━━━━━━━━━━━━━━━━",
         ]
 
@@ -3766,24 +3646,13 @@ class AutoTrader:
             pnl_emoji = "🟢" if pnl >= 0 else "🔴"
             tp2_str = f" | TP2: <code>${pos.take_profit_2:,.2f}</code>" if pos.take_profit_2 else ""
 
-            owner_label = ""
-            if pos.username:
-                owner_label = f" | <b>User</b>: @{pos.username}"
-            elif pos.user_id:
-                owner_label = f" | <b>User ID</b>: <code>{pos.user_id}</code>"
-            elif pos.chat_id:
-                owner_label = f" | <b>Chat ID</b>: <code>{pos.chat_id}</code>"
-
-            if chat_id is not None and pos.chat_id == chat_id:
-                owner_label += " 👤 <b>[Yours]</b>"
-
             lines.append(
                 f"<b>#{idx} • {pos.symbol} [{pos.id}]</b>\n"
                 f"• Direction: <b>{pos.direction}</b> {'🟢' if pos.direction == 'LONG' else '🔴'}\n"
                 f"• Entry: <code>${pos.entry_price:,.2f}</code> | Current: <code>${current_price:,.2f}</code>\n"
                 f"• PnL: {pnl_emoji} <b>{sign}${pnl:,.2f}</b> ({sign}{pnl_pct:.2f}%)\n"
                 f"• Lot: <code>{pos.lot_size}</code> | SL: <code>${pos.stop_loss:,.2f}</code> | TP1: <code>${pos.take_profit_1:,.2f}</code>{tp_meter}{tp2_str}\n"
-                f"• Opened: <code>{pos.entry_time}</code>{owner_label}"
+                f"• Opened: <code>{pos.entry_time}</code>"
             )
             if idx < len(self.positions):
                 lines.append("──────────────────────")
@@ -3974,9 +3843,6 @@ class AutoTrader:
         lot_size: Optional[float] = None,
         reason: str = "Pinpoint Manual Execution",
         strategy: str = "Pinpoint Strategy",
-        chat_id: Optional[int] = None,
-        user_id: Optional[int] = None,
-        username: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[AutoTradePosition]]:
         """
         Manually or semi-automatically open a new position with custom or pinpoint parameters.
@@ -4010,9 +3876,6 @@ class AutoTrader:
                 conviction_multiplier=1.0,
             )
 
-        if chat_id is not None:
-            self.config.add_notify_chat_id(chat_id)
-
         pos_id = f"TRADE_{symbol_upper[:3]}_{int(time.time())}_{len(self.positions) + 1}"
         new_pos = AutoTradePosition(
             id=pos_id,
@@ -4030,9 +3893,6 @@ class AutoTrader:
             lowest_price=entry_price,
             mode=self.config.trading_mode,
             initial_stop_loss=round(stop_loss, 2),
-            chat_id=chat_id,
-            user_id=user_id,
-            username=username,
         )
 
         if self.config.trading_mode == "live":
@@ -4055,14 +3915,6 @@ class AutoTrader:
             else ""
         )
         mode_tag = " [LIVE 🚨]" if new_pos.mode == "live" else " [PAPER 📄]"
-        user_info = ""
-        if username:
-            user_info = f"• <b>Trader</b>: @{username}\n"
-        elif user_id:
-            user_info = f"• <b>User ID</b>: <code>{user_id}</code>\n"
-        elif chat_id:
-            user_info = f"• <b>Chat ID</b>: <code>{chat_id}</code>\n"
-
         return (
             True,
             f"🚀 <b>POSITION OPENED SUCCESSFULLY{mode_tag}</b>\n"
@@ -4076,7 +3928,6 @@ class AutoTrader:
             f"• <b>Stop Loss</b>: <code>${new_pos.stop_loss:,.2f}</code>\n"
             f"• <b>Take Profit 1</b>: <code>${new_pos.take_profit_1:,.2f}</code>\n"
             f"{tp2_str}"
-            f"{user_info}"
             f"• <b>Strategy</b>: {new_pos.strategy}\n"
             f"• <b>Reason</b>: {new_pos.reason}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -4420,9 +4271,6 @@ def execute_pinpoint_plan(
     lot_override: Optional[float] = None,
     entry_mode: str = "market",
     trader: Optional[AutoTrader] = None,
-    chat_id: Optional[int] = None,
-    user_id: Optional[int] = None,
-    username: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Execute a pinpoint trade plan directly through the AutoTrader engine."""
     if trader is None:
@@ -4445,9 +4293,6 @@ def execute_pinpoint_plan(
         lot_size=lots,
         reason=f"Pinpoint {plan.direction} ({plan.reason})",
         strategy="Pinpoint Strategy",
-        chat_id=chat_id,
-        user_id=user_id,
-        username=username,
     )
     return success, msg
 
